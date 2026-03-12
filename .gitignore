@@ -47,3 +47,6 @@ rabbitmqdata/
 
 # MyPy
 .mypy_cache/
+
+# Claude Code
+.claude/
