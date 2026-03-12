@@ -21,4 +21,9 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=30, hour="*/6"),
         "options": {"queue": "feeds"},
     },
+    "process-feed-entries-every-5m": {
+        "task": "phishkiller.tasks.feeds.process_feed_entries",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "feeds"},
+    },
 }

@@ -2,11 +2,13 @@
 
 import hashlib
 import logging
+import uuid
 
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
 from phishkiller.models.feed_entry import FeedEntry, FeedSource
+from phishkiller.models.kit import Kit, KitStatus
 from phishkiller.utils.http_client import get_sync_client
 
 logger = logging.getLogger(__name__)
@@ -228,5 +230,76 @@ def ingest_openphish(self) -> dict:
         db.rollback()
         logger.exception("OpenPhish ingestion error: %s", e)
         raise self.retry(exc=e)
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="phishkiller.tasks.feeds.process_feed_entries",
+    bind=True,
+    queue="feeds",
+    max_retries=0,
+)
+def process_feed_entries(self, batch_size: int = 500) -> dict:
+    """Pick up unprocessed feed entries and submit them as kits for analysis.
+
+    Creates a Kit record for each entry and kicks off the full analysis chain
+    (download -> hash -> extract/DOM -> IOCs). Entries are marked processed
+    immediately so they won't be re-selected in the next batch.
+    """
+    from phishkiller.tasks.analysis import build_analysis_chain
+
+    db = get_sync_db()
+    processed = 0
+    failed = 0
+
+    try:
+        entries = (
+            db.query(FeedEntry)
+            .filter(FeedEntry.is_processed == False)  # noqa: E712
+            .order_by(FeedEntry.created_at)
+            .limit(batch_size)
+            .all()
+        )
+
+        if not entries:
+            logger.info("No unprocessed feed entries found.")
+            return {"processed": 0, "failed": 0}
+
+        logger.info("Processing %d unprocessed feed entries...", len(entries))
+
+        for entry in entries:
+            try:
+                kit = Kit(
+                    id=uuid.uuid4(),
+                    source_url=entry.url,
+                    source_feed=entry.source.value,
+                    feed_entry_id=entry.id,
+                    status=KitStatus.PENDING,
+                )
+                db.add(kit)
+                db.flush()
+
+                build_analysis_chain(str(kit.id)).apply_async()
+                entry.is_processed = True
+                processed += 1
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to process feed entry %s: %s", entry.id, e
+                )
+                entry.is_processed = True  # Mark processed to avoid retrying
+                failed += 1
+
+        db.commit()
+        logger.info(
+            "Feed processing complete: %d submitted, %d failed", processed, failed
+        )
+        return {"processed": processed, "failed": failed}
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("Feed processing error: %s", e)
+        return {"processed": processed, "failed": failed, "error": str(e)}
     finally:
         db.close()
