@@ -98,10 +98,25 @@ def compute_hashes(self, prev_result: dict) -> dict:
     queue="analysis",
 )
 def extract_archive(self, prev_result: dict) -> dict:
-    """Extract the kit archive into a directory for analysis."""
+    """Extract the kit archive into a directory for analysis.
+
+    Skips extraction for non-archive files (HTML pages, etc.) and passes
+    them through so IOC extraction can scan the raw downloaded file.
+    """
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
         return prev_result
+
+    # Skip extraction for non-archive files
+    filepath = prev_result.get("filepath", "")
+    if filepath:
+        archive_extensions = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".rar"}
+        suffixes = {s.lower() for s in Path(filepath).suffixes}
+        if not suffixes & archive_extensions:
+            logger.info(
+                "Kit %s is not an archive, skipping extraction", kit_id
+            )
+            return {**prev_result, "extracted": False, "skipped_extraction": True}
 
     settings = get_settings()
     db = get_sync_db()
@@ -164,6 +179,10 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
         return prev_result
+
+    # Skip if extraction was skipped (non-archive file)
+    if prev_result.get("skipped_extraction"):
+        return {**prev_result, "deobfuscated": False}
 
     extract_dir = prev_result.get("extract_dir")
     if not extract_dir:
@@ -238,13 +257,15 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
     queue="analysis",
 )
 def extract_iocs(self, prev_result: dict) -> dict:
-    """Extract IOCs from the (deobfuscated) kit files and store them."""
+    """Extract IOCs from kit files (extracted archive or single downloaded file)."""
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
         return prev_result
 
     extract_dir = prev_result.get("extract_dir")
-    if not extract_dir:
+    filepath = prev_result.get("filepath")
+
+    if not extract_dir and not filepath:
         return {**prev_result, "iocs_extracted": 0}
 
     db = get_sync_db()
@@ -258,7 +279,10 @@ def extract_iocs(self, prev_result: dict) -> dict:
         from phishkiller.analysis.ioc_engine import IOCExtractor
 
         extractor = IOCExtractor()
-        result = extractor.scan_directory(extract_dir)
+        if extract_dir:
+            result = extractor.scan_directory(extract_dir)
+        else:
+            result = extractor.scan_file(filepath)
 
         # Store indicators
         for ioc in result.iocs:

@@ -86,6 +86,18 @@ class IOCExtractor:
         iocs.extend(self._extract_base64_blocks(content, source_file))
         return self._deduplicate(iocs)
 
+    def scan_file(self, filepath: str) -> ExtractionResult:
+        """Scan a single file for IOCs. Returns an ExtractionResult."""
+        result = ExtractionResult()
+        try:
+            file_iocs = self._scan_file(filepath, str(Path(filepath).parent))
+            result.iocs.extend(file_iocs)
+            result.files_processed = 1
+        except Exception as e:
+            result.errors.append(f"{filepath}: {e}")
+        result.iocs = self._deduplicate(result.iocs)
+        return result
+
     def _scan_file(self, filepath: str, base_dir: str) -> list[ExtractedIOC]:
         relative_path = os.path.relpath(filepath, base_dir)
         try:

@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 @celery_app.task(
     name="phishkiller.tasks.download.download_kit",
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,
+    max_retries=1,
+    default_retry_delay=30,
     queue="downloads",
 )
 def download_kit(self, kit_id: str) -> dict:
