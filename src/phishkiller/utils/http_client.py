@@ -21,23 +21,25 @@ DEFAULT_HEADERS = {
 def get_sync_client(**kwargs) -> httpx.Client:
     """Get a configured sync HTTP client for use in Celery tasks."""
     settings = get_settings()
-    return httpx.Client(
-        headers=DEFAULT_HEADERS,
-        timeout=settings.download_timeout,
-        follow_redirects=True,
-        **kwargs,
-    )
+    defaults = {
+        "headers": DEFAULT_HEADERS,
+        "timeout": settings.download_timeout,
+        "follow_redirects": True,
+    }
+    defaults.update(kwargs)
+    return httpx.Client(**defaults)
 
 
 async def get_async_client(**kwargs) -> httpx.AsyncClient:
     """Get a configured async HTTP client."""
     settings = get_settings()
-    return httpx.AsyncClient(
-        headers=DEFAULT_HEADERS,
-        timeout=settings.download_timeout,
-        follow_redirects=True,
-        **kwargs,
-    )
+    defaults = {
+        "headers": DEFAULT_HEADERS,
+        "timeout": settings.download_timeout,
+        "follow_redirects": True,
+    }
+    defaults.update(kwargs)
+    return httpx.AsyncClient(**defaults)
 
 
 def download_file(url: str, dest_dir: str, max_size_mb: int = 50) -> Path | None:
