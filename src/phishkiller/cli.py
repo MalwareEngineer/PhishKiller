@@ -72,7 +72,7 @@ def submit(
 ):
     """Submit a phishing kit URL for download and analysis."""
     data = _api("post", "/kits", json={"url": url, "source_feed": source})
-    console.print(f"[green]✓[/green] Kit submitted: [bold]{data['kit_id']}[/bold]")
+    console.print(f"[green]+[/green] Kit submitted: [bold]{data['kit_id']}[/bold]")
     console.print(f"  Task ID: {data['task_id']}")
     console.print(f"  Track status: phishkiller status {data['kit_id']}")
 
@@ -132,7 +132,7 @@ def analyze(
 ):
     """Re-run the full analysis pipeline on an existing kit."""
     data = _api("post", f"/kits/{kit_id}/reanalyze")
-    console.print(f"[green]✓[/green] Analysis re-triggered for {kit_id[:8]}…")
+    console.print(f"[green]+[/green] Analysis re-triggered for {kit_id[:8]}…")
     console.print(f"  Task ID: {data['task_id']}")
 
 
@@ -214,7 +214,7 @@ def kits_delete(
     if not confirm:
         typer.confirm(f"Delete kit {kit_id}?", abort=True)
     _api("delete", f"/kits/{kit_id}")
-    console.print(f"[green]✓[/green] Kit {kit_id[:8]}… deleted")
+    console.print(f"[green]+[/green] Kit {kit_id[:8]}… deleted")
 
 
 # ─── IOCs Sub-Commands ───────────────────────────────────────────────
@@ -305,7 +305,7 @@ def feeds_ingest(
 ):
     """Trigger feed ingestion manually."""
     data = _api("post", "/feeds/ingest", json={"source": source})
-    console.print(f"[green]✓[/green] {data['message']}")
+    console.print(f"[green]+[/green] {data['message']}")
     for tid in data.get("task_ids", []):
         console.print(f"  Task: {tid}")
 
@@ -355,7 +355,7 @@ def feeds_entries(
         table.add_row(
             entry["source"],
             entry["url"][:60],
-            "✓" if entry["is_processed"] else "✗",
+            "Y" if entry["is_processed"] else "N",
             entry["created_at"][:19],
         )
     console.print(table)

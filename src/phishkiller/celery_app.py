@@ -29,4 +29,9 @@ celery_app.conf.update(
     },
 )
 
-celery_app.autodiscover_tasks(["phishkiller.tasks"])
+celery_app.conf.include = [
+    "phishkiller.tasks.feeds",
+    "phishkiller.tasks.download",
+    "phishkiller.tasks.analysis",
+    "phishkiller.tasks.certstream_monitor",
+]
