@@ -43,7 +43,7 @@ def download_kit(self, kit_id: str) -> dict:
         download_dir = Path(settings.kit_download_dir) / kit_id
         download_dir.mkdir(parents=True, exist_ok=True)
 
-        filepath = download_file(
+        filepath, reason = download_file(
             kit.source_url,
             str(download_dir),
             max_size_mb=settings.max_kit_size_mb,
@@ -51,9 +51,9 @@ def download_kit(self, kit_id: str) -> dict:
 
         if not filepath:
             kit.status = KitStatus.FAILED
-            kit.error_message = "Download failed or exceeded size limit"
+            kit.error_message = reason
             db.commit()
-            return {"kit_id": kit_id, "status": "failed", "error": "download_failed"}
+            return {"kit_id": kit_id, "status": "failed", "error": reason}
 
         # Update kit metadata
         kit.local_path = str(filepath)

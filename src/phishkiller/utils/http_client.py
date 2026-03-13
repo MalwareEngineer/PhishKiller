@@ -42,9 +42,13 @@ async def get_async_client(**kwargs) -> httpx.AsyncClient:
     return httpx.AsyncClient(**defaults)
 
 
-def download_file(url: str, dest_dir: str, max_size_mb: int = 50) -> Path | None:
-    """Download a file from URL to dest_dir. Returns the file path or None on failure.
+def download_file(
+    url: str, dest_dir: str, max_size_mb: int = 50,
+) -> tuple[Path | None, str]:
+    """Download a file from URL to dest_dir.
 
+    Returns (filepath, reason) — filepath is None on failure,
+    reason is "ok" on success or a short error description.
     Streams the download to enforce size limits without loading into memory.
     """
     dest_path = Path(dest_dir)
@@ -71,20 +75,25 @@ def download_file(url: str, dest_dir: str, max_size_mb: int = 50) -> Path | None
                                 url,
                             )
                             filepath.unlink(missing_ok=True)
-                            return None
+                            return None, f"Exceeded size limit ({max_size_mb} MB)"
+
                         f.write(chunk)
 
                 logger.info("Downloaded %s (%d bytes) to %s", url, total, filepath)
-                return filepath
+                return filepath, "ok"
 
     except httpx.HTTPStatusError as e:
         logger.error("HTTP error downloading %s: %s", url, e.response.status_code)
+        return None, f"HTTP {e.response.status_code}"
+    except httpx.TimeoutException as e:
+        logger.error("Timeout downloading %s: %s", url, e)
+        return None, "Connection timed out"
     except httpx.RequestError as e:
         logger.error("Request error downloading %s: %s", url, e)
+        return None, f"Request error: {type(e).__name__}"
     except Exception as e:
         logger.error("Unexpected error downloading %s: %s", url, e)
-
-    return None
+        return None, f"Unexpected error: {type(e).__name__}"
 
 
 def _extract_filename(url: str, response: httpx.Response) -> str:
