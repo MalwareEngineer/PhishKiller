@@ -25,6 +25,10 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+nul
+
+# Logs
+*.log
 
 # Test / Coverage
 .pytest_cache/
