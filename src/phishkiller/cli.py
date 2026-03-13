@@ -15,6 +15,7 @@ Commands:
     phishkiller feeds status           Feed processing status
     phishkiller analyze <kit_id>       Re-run analysis on a kit
     phishkiller health                 Check service health
+    phishkiller worker recover         Recover stuck kits
 """
 
 import json
@@ -34,10 +35,12 @@ app = typer.Typer(
 kits_app = typer.Typer(help="Kit management commands", no_args_is_help=True)
 iocs_app = typer.Typer(help="IOC query commands", no_args_is_help=True)
 feeds_app = typer.Typer(help="Feed management commands", no_args_is_help=True)
+worker_app = typer.Typer(help="Worker management commands", no_args_is_help=True)
 
 app.add_typer(kits_app, name="kits")
 app.add_typer(iocs_app, name="iocs")
 app.add_typer(feeds_app, name="feeds")
+app.add_typer(worker_app, name="worker")
 
 console = Console()
 
@@ -359,6 +362,22 @@ def feeds_entries(
             entry["created_at"][:19],
         )
     console.print(table)
+
+
+# ─── Worker Sub-Commands ────────────────────────────────────────────
+
+
+@worker_app.command("recover")
+def worker_recover(
+    timeout: int = typer.Option(30, "--timeout", "-t", help="Minutes a kit must be stuck before recovery"),
+):
+    """Recover kits stuck in transient states (DOWNLOADING/ANALYZING/DOWNLOADED)."""
+    from phishkiller.tasks.recovery import recover_stuck_kits
+
+    result = recover_stuck_kits.delay(timeout_minutes=timeout)
+    console.print(f"[green]+[/green] Recovery task dispatched (task_id={result.id})")
+    console.print(f"  Timeout: {timeout} minutes")
+    console.print("  Check worker logs for recovery details.")
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────

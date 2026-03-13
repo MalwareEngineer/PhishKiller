@@ -26,4 +26,10 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute="*/5"),
         "options": {"queue": "feeds"},
     },
+    "recover-stuck-kits-every-15m": {
+        "task": "phishkiller.tasks.recovery.recover_stuck_kits",
+        "schedule": crontab(minute="*/15"),
+        "args": [30],
+        "options": {"queue": "celery"},
+    },
 }

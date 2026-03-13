@@ -1,0 +1,15 @@
+.venv/
+.git/
+.env
+downloads/
+extracted/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.claude/
+*.egg-info/
+dist/
+build/
+celery.log
+nul
