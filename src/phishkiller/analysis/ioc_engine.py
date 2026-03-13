@@ -6,15 +6,21 @@ from pathlib import Path
 
 from phishkiller.analysis.patterns import (
     BASE64_BLOCK_PATTERN,
+    BENIGN_DOMAINS,
     BENIGN_URL_DOMAINS,
+    BENIGN_URL_EXTENSIONS,
     BITCOIN_PATTERN,
+    C2_KEYWORDS,
     C2_URL_PATTERN,
+    DOMAIN_PATTERN,
     EMAIL_EXCLUSIONS,
     EMAIL_PATTERN,
     ETHEREUM_PATTERN,
+    FALSE_DOMAIN_EXTENSIONS,
     IPV4_PATTERN,
     PHP_MAIL_PATTERN,
     PHP_MAIL_TO_PATTERN,
+    PHONE_PATTERN,
     PRIVATE_IP_PREFIXES,
     SMTP_HOST_PATTERN,
     SMTP_PASS_PATTERN,
@@ -22,6 +28,8 @@ from phishkiller.analysis.patterns import (
     TELEGRAM_API_PATTERN,
     TELEGRAM_BOT_TOKEN_PATTERN,
     TELEGRAM_CHAT_ID_PATTERN,
+    TELEGRAM_HANDLE_EXCLUSIONS,
+    TELEGRAM_HANDLE_PATTERN,
 )
 from phishkiller.models.indicator import IndicatorType
 
@@ -78,10 +86,13 @@ class IOCExtractor:
             iocs.extend(self._extract_emails(line, source_file, line_num))
             iocs.extend(self._extract_telegram_tokens(line, source_file, line_num))
             iocs.extend(self._extract_telegram_chat_ids(line, source_file, line_num))
+            iocs.extend(self._extract_telegram_handles(line, source_file, line_num))
             iocs.extend(self._extract_urls(line, source_file, line_num))
+            iocs.extend(self._extract_domains(line, source_file, line_num))
             iocs.extend(self._extract_ips(line, source_file, line_num))
             iocs.extend(self._extract_smtp_creds(line, source_file, line_num))
             iocs.extend(self._extract_crypto_wallets(line, source_file, line_num))
+            iocs.extend(self._extract_phone_numbers(line, source_file, line_num))
 
         iocs.extend(self._extract_base64_blocks(content, source_file))
         return self._deduplicate(iocs)
@@ -202,16 +213,24 @@ class IOCExtractor:
         # General C2/exfil URLs
         for match in C2_URL_PATTERN.finditer(line):
             url = match.group(0)
-            if any(benign in url.lower() for benign in BENIGN_URL_DOMAINS):
+            url_lower = url.lower()
+
+            # Skip benign domains
+            if any(benign in url_lower for benign in BENIGN_URL_DOMAINS):
                 continue
-            if "api.telegram.org" in url:
+            if "api.telegram.org" in url_lower:
                 continue
-            confidence = 50
-            if any(
-                kw in url.lower()
-                for kw in ("send", "post", "exfil", "result", "log", "gate")
-            ):
-                confidence = 75
+
+            # Skip static asset URLs (CSS, fonts, images)
+            if any(url_lower.endswith(ext) for ext in BENIGN_URL_EXTENSIONS):
+                continue
+
+            # Score confidence based on context
+            confidence = 60  # base (raised from 50)
+            line_lower = line.lower()
+            if any(kw in url_lower or kw in line_lower for kw in C2_KEYWORDS):
+                confidence = 85
+
             results.append(ExtractedIOC(
                 type=IndicatorType.C2_URL,
                 value=url,
@@ -281,6 +300,78 @@ class IOCExtractor:
             results.append(ExtractedIOC(
                 type=IndicatorType.CRYPTOCURRENCY_WALLET,
                 value=match.group(0),
+                source_file=source_file,
+                line_number=line_num,
+                context=line[:200],
+                confidence=70,
+            ))
+        return results
+
+    def _extract_domains(
+        self, line: str, source_file: str, line_num: int
+    ) -> list[ExtractedIOC]:
+        results = []
+        for match in DOMAIN_PATTERN.finditer(line):
+            domain = match.group(1).lower()
+            if domain in BENIGN_DOMAINS:
+                continue
+            # Skip very short domains (likely false positives)
+            if len(domain) < 5:
+                continue
+            # Skip if the "TLD" is actually a file extension
+            dot_ext = "." + domain.rsplit(".", 1)[-1]
+            if dot_ext in FALSE_DOMAIN_EXTENSIONS:
+                continue
+            # Must have at least one dot (SLD.TLD)
+            if "." not in domain:
+                continue
+            confidence = 60
+            line_lower = line.lower()
+            if any(
+                kw in line_lower
+                for kw in ("host", "server", "smtp", "url", "send", "post", "gate")
+            ):
+                confidence = 80
+            results.append(ExtractedIOC(
+                type=IndicatorType.DOMAIN,
+                value=domain,
+                source_file=source_file,
+                line_number=line_num,
+                context=line[:200],
+                confidence=confidence,
+            ))
+        return results
+
+    def _extract_phone_numbers(
+        self, line: str, source_file: str, line_num: int
+    ) -> list[ExtractedIOC]:
+        results = []
+        for match in PHONE_PATTERN.finditer(line):
+            phone = match.group(0).strip()
+            results.append(ExtractedIOC(
+                type=IndicatorType.PHONE_NUMBER,
+                value=phone,
+                source_file=source_file,
+                line_number=line_num,
+                context=line[:200],
+                confidence=65,
+            ))
+        return results
+
+    def _extract_telegram_handles(
+        self, line: str, source_file: str, line_num: int
+    ) -> list[ExtractedIOC]:
+        results = []
+        for match in TELEGRAM_HANDLE_PATTERN.finditer(line):
+            handle = match.group(1).lower()
+            if handle in TELEGRAM_HANDLE_EXCLUSIONS:
+                continue
+            # Skip if it looks like a CSS/JS keyword (all lowercase, common word)
+            if len(handle) < 5:
+                continue
+            results.append(ExtractedIOC(
+                type=IndicatorType.TELEGRAM_CHAT_ID,  # Re-use existing type for handles
+                value=f"@{handle}",
                 source_file=source_file,
                 line_number=line_num,
                 context=line[:200],

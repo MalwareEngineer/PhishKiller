@@ -1,11 +1,22 @@
-"""YARA rule scanning stub — to be implemented as a fast-follow.
+"""YARA rule scanning for phishing kit classification.
 
 Requires the optional `yara-python` dependency:
     pip install phishkiller[yara]
 """
 
+import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# File extensions worth scanning with YARA
+SCANNABLE_EXTENSIONS = {
+    ".php", ".js", ".html", ".htm", ".txt", ".json",
+    ".conf", ".ini", ".xml", ".inc", ".htaccess",
+    ".css",  # .htaccess rules sometimes in CSS-like files
+}
 
 
 @dataclass
@@ -21,6 +32,7 @@ class YaraMatch:
 class YaraScanResult:
     matches: list[YaraMatch] = field(default_factory=list)
     rules_loaded: int = 0
+    files_scanned: int = 0
     error: str | None = None
 
 
@@ -30,6 +42,7 @@ class YaraScanner:
     def __init__(self, rules_dir: str | None = None):
         self.rules_dir = rules_dir
         self._compiled_rules = None
+        self._rules_count = 0
 
     def load_rules(self) -> int:
         """Load and compile YARA rules from the rules directory."""
@@ -40,6 +53,10 @@ class YaraScanner:
             import yara
 
             rules_path = Path(self.rules_dir)
+            if not rules_path.exists():
+                logger.warning("YARA rules directory not found: %s", self.rules_dir)
+                return 0
+
             rule_files = {}
             for yar_file in rules_path.glob("**/*.yar"):
                 rule_files[yar_file.stem] = str(yar_file)
@@ -48,16 +65,19 @@ class YaraScanner:
 
             if rule_files:
                 self._compiled_rules = yara.compile(filepaths=rule_files)
-                return len(rule_files)
+                self._rules_count = len(rule_files)
+                logger.info("Loaded %d YARA rule files from %s", self._rules_count, self.rules_dir)
+                return self._rules_count
+
         except ImportError:
-            pass
-        except Exception:
-            pass
+            logger.debug("yara-python not installed, YARA scanning disabled")
+        except Exception as e:
+            logger.error("Failed to compile YARA rules: %s", e)
 
         return 0
 
     def scan_file(self, filepath: str) -> YaraScanResult:
-        """Scan a file against loaded YARA rules."""
+        """Scan a single file against loaded YARA rules."""
         if not self._compiled_rules:
             return YaraScanResult(error="No YARA rules loaded")
 
@@ -74,11 +94,63 @@ class YaraScanner:
                     )
                     for m in matches
                 ],
-                rules_loaded=self.rules_loaded,
+                rules_loaded=self._rules_count,
+                files_scanned=1,
             )
         except Exception as e:
             return YaraScanResult(error=str(e))
 
+    def scan_directory(self, directory: str) -> YaraScanResult:
+        """Scan all scannable files in a directory against loaded YARA rules."""
+        if not self._compiled_rules:
+            return YaraScanResult(error="No YARA rules loaded")
+
+        all_matches: list[YaraMatch] = []
+        files_scanned = 0
+        errors: list[str] = []
+
+        for root, _, files in os.walk(directory):
+            for filename in files:
+                filepath = os.path.join(root, filename)
+                ext = Path(filepath).suffix.lower()
+
+                # Also scan extensionless files (e.g., .htaccess)
+                basename = Path(filepath).name.lower()
+                if ext not in SCANNABLE_EXTENSIONS and basename != ".htaccess":
+                    continue
+
+                try:
+                    result = self.scan_file(filepath)
+                    files_scanned += 1
+                    if result.matches:
+                        # Tag matches with source file
+                        rel_path = os.path.relpath(filepath, directory)
+                        for match in result.matches:
+                            match.meta["source_file"] = rel_path
+                        all_matches.extend(result.matches)
+                except Exception as e:
+                    errors.append(f"{filepath}: {e}")
+
+        error_msg = None
+        if errors:
+            error_msg = f"{len(errors)} scan errors"
+
+        return YaraScanResult(
+            matches=all_matches,
+            rules_loaded=self._rules_count,
+            files_scanned=files_scanned,
+            error=error_msg,
+        )
+
     @property
     def rules_loaded(self) -> int:
-        return 0 if not self._compiled_rules else 1
+        return self._rules_count
+
+    @property
+    def is_available(self) -> bool:
+        """Check if YARA scanning is available (library installed)."""
+        try:
+            import yara  # noqa: F401
+            return True
+        except ImportError:
+            return False

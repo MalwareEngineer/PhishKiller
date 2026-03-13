@@ -11,8 +11,9 @@ COPY pyproject.toml .
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
+COPY rules/ rules/
 
-RUN pip install --no-cache-dir ".[tlsh]"
+RUN pip install --no-cache-dir ".[tlsh,yara]"
 
 # Dirs for kit downloads and extraction (volume-mounted in compose)
 RUN mkdir -p /app/downloads /app/extracted
