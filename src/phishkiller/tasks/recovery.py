@@ -59,18 +59,9 @@ def recover_stuck_kits(self, timeout_minutes: int = 30) -> dict:
                 old_status.value,
             )
 
-        # Also re-dispatch PENDING kits that were queued but never picked up
-        stale_pending = db.scalars(
-            select(Kit).where(
-                Kit.status == KitStatus.PENDING,
-                Kit.updated_at < cutoff,
-            )
-        ).all()
-
-        for kit in stale_pending:
-            build_analysis_chain(str(kit.id)).apply_async()
-            recovered += 1
-            logger.info("[recovery] Re-dispatched stale PENDING kit %s", kit.id)
+        # NOTE: We do NOT re-dispatch PENDING kits here. They already have
+        # messages in the queue (task_acks_late ensures redelivery on restart).
+        # Re-dispatching them would create duplicate messages.
 
         db.commit()
         logger.info("[recovery] Recovered %d stuck kits", recovered)
