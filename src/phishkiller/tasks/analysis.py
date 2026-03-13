@@ -56,6 +56,22 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
         result = do_hash(kit.local_path)
 
+        # Check for duplicate SHA256 before writing
+        existing = db.query(Kit).filter(
+            Kit.sha256 == result.sha256,
+            Kit.id != kit.id,
+        ).first()
+
+        if existing:
+            kit.status = KitStatus.FAILED
+            kit.error_message = f"Duplicate of kit {existing.id} (same SHA256)"
+            db.commit()
+            logger.info(
+                "Kit %s is duplicate of %s (sha256=%s)",
+                kit_id, existing.id, result.sha256[:16],
+            )
+            return {**prev_result, "status": "failed", "error": "duplicate_sha256"}
+
         kit.sha256 = result.sha256
         kit.md5 = result.md5
         kit.sha1 = result.sha1
@@ -87,6 +103,15 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
     except Exception as e:
         logger.exception("Error hashing kit %s: %s", kit_id, e)
+        try:
+            db.rollback()
+            kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+            if kit:
+                kit.status = KitStatus.FAILED
+                kit.error_message = str(e)[:500]
+                db.commit()
+        except Exception:
+            pass
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
@@ -164,6 +189,15 @@ def extract_archive(self, prev_result: dict) -> dict:
 
     except Exception as e:
         logger.exception("Error extracting kit %s: %s", kit_id, e)
+        try:
+            db.rollback()
+            kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+            if kit:
+                kit.status = KitStatus.FAILED
+                kit.error_message = str(e)[:500]
+                db.commit()
+        except Exception:
+            pass
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
@@ -246,6 +280,15 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
 
     except Exception as e:
         logger.exception("Error deobfuscating kit %s: %s", kit_id, e)
+        try:
+            db.rollback()
+            kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+            if kit:
+                kit.status = KitStatus.FAILED
+                kit.error_message = str(e)[:500]
+                db.commit()
+        except Exception:
+            pass
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
