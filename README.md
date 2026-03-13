@@ -35,7 +35,7 @@ The `docker compose up -d` command starts:
 
 The worker automatically recovers stuck kits on startup and runs periodic tasks:
 - Feed ingestion (PhishTank every 3h, URLhaus hourly, OpenPhish every 6h)
-- Feed entry processing (every 5 minutes, batches of 500)
+- Feed entry processing (every 2 minutes, batches of 2000)
 - Stuck kit recovery sweep (every 15 minutes)
 
 ### Local Development (without Docker worker)
