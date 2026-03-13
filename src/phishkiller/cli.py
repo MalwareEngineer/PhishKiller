@@ -36,11 +36,13 @@ kits_app = typer.Typer(help="Kit management commands", no_args_is_help=True)
 iocs_app = typer.Typer(help="IOC query commands", no_args_is_help=True)
 feeds_app = typer.Typer(help="Feed management commands", no_args_is_help=True)
 worker_app = typer.Typer(help="Worker management commands", no_args_is_help=True)
+actors_app = typer.Typer(help="Actor/threat group commands", no_args_is_help=True)
 
 app.add_typer(kits_app, name="kits")
 app.add_typer(iocs_app, name="iocs")
 app.add_typer(feeds_app, name="feeds")
 app.add_typer(worker_app, name="worker")
+app.add_typer(actors_app, name="actors")
 
 console = Console()
 
@@ -378,6 +380,181 @@ def worker_recover(
     console.print(f"[green]+[/green] Recovery task dispatched (task_id={result.id})")
     console.print(f"  Timeout: {timeout} minutes")
     console.print("  Check worker logs for recovery details.")
+
+
+# ─── Actors Sub-Commands ───────────────────────────────────────────
+
+
+@actors_app.command("list")
+def actors_list(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
+):
+    """List auto-correlated threat actors."""
+    from phishkiller.database import get_sync_db
+    from phishkiller.models.actor import Actor
+    from phishkiller.models.indicator import Indicator
+    from sqlalchemy import func, select
+
+    db = get_sync_db()
+    try:
+        # Get actors with kit count via indicators
+        actors = db.execute(
+            select(
+                Actor,
+                func.count(func.distinct(Indicator.kit_id)).label("kit_count"),
+                func.count(Indicator.id).label("ioc_count"),
+            )
+            .outerjoin(Indicator, Indicator.actor_id == Actor.id)
+            .group_by(Actor.id)
+            .order_by(func.count(func.distinct(Indicator.kit_id)).desc())
+            .limit(limit)
+        ).all()
+
+        if not actors:
+            console.print("[yellow]No actors found yet. Actors are auto-created during analysis.[/yellow]")
+            return
+
+        table = Table(title=f"Threat Actors ({len(actors)} shown)")
+        table.add_column("ID", style="dim", max_width=12)
+        table.add_column("Name", style="bold")
+        table.add_column("Kits", justify="right")
+        table.add_column("IOCs", justify="right")
+        table.add_column("Emails", max_width=40)
+        table.add_column("First Seen")
+        table.add_column("Last Seen")
+
+        for actor, kit_count, ioc_count in actors:
+            emails = ", ".join(actor.email_addresses[:3]) if actor.email_addresses else "—"
+            if actor.email_addresses and len(actor.email_addresses) > 3:
+                emails += f" (+{len(actor.email_addresses) - 3})"
+            table.add_row(
+                str(actor.id)[:12] + "…",
+                actor.name,
+                str(kit_count),
+                str(ioc_count),
+                emails,
+                actor.first_seen or "—",
+                actor.last_seen or "—",
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@actors_app.command("get")
+def actors_get(
+    actor_id: str = typer.Argument(..., help="Actor UUID"),
+):
+    """Show detailed actor information with linked kits and IOCs."""
+    from phishkiller.database import get_sync_db
+    from phishkiller.models.actor import Actor
+    from phishkiller.models.indicator import Indicator
+    from phishkiller.models.kit import Kit
+    from sqlalchemy import select, func
+    import uuid as uuid_mod
+
+    db = get_sync_db()
+    try:
+        actor = db.query(Actor).filter(Actor.id == uuid_mod.UUID(actor_id)).first()
+        if not actor:
+            console.print(f"[red]Actor {actor_id} not found[/red]")
+            raise typer.Exit(1)
+
+        table = Table(title=f"Actor: {actor.name}", show_header=False, padding=(0, 2))
+        table.add_column("Field", style="bold cyan")
+        table.add_column("Value")
+
+        table.add_row("ID", str(actor.id))
+        table.add_row("Name", actor.name)
+        table.add_row("Description", actor.description or "—")
+        table.add_row("First Seen", actor.first_seen or "—")
+        table.add_row("Last Seen", actor.last_seen or "—")
+        table.add_row("Emails", ", ".join(actor.email_addresses) if actor.email_addresses else "—")
+        table.add_row("Telegram", ", ".join(actor.telegram_handles) if actor.telegram_handles else "—")
+        console.print(table)
+
+        # Show linked kits
+        linked_kits = db.execute(
+            select(Kit.id, Kit.source_url, Kit.status, Kit.sha256)
+            .join(Indicator, Indicator.kit_id == Kit.id)
+            .where(Indicator.actor_id == actor.id)
+            .distinct()
+            .limit(20)
+        ).all()
+
+        if linked_kits:
+            console.print(f"\n[bold]Linked Kits ({len(linked_kits)}):[/bold]")
+            kit_table = Table()
+            kit_table.add_column("Kit ID", max_width=12)
+            kit_table.add_column("Status")
+            kit_table.add_column("SHA256", max_width=20)
+            kit_table.add_column("URL", max_width=50)
+            for kid, url, st, sha in linked_kits:
+                kit_table.add_row(str(kid)[:12] + "…", _status_badge(st.value), (sha or "—")[:20], url[:50])
+            console.print(kit_table)
+
+        # Show linked IOCs
+        linked_iocs = db.scalars(
+            select(Indicator)
+            .where(Indicator.actor_id == actor.id)
+            .limit(20)
+        ).all()
+
+        if linked_iocs:
+            console.print(f"\n[bold]Linked IOCs ({len(linked_iocs)}):[/bold]")
+            ioc_table = Table()
+            ioc_table.add_column("Type", style="bold")
+            ioc_table.add_column("Value", max_width=60)
+            ioc_table.add_column("Conf", justify="right")
+            for ioc in linked_iocs:
+                ioc_table.add_row(ioc.type.value, ioc.value[:60], str(ioc.confidence))
+            console.print(ioc_table)
+
+    finally:
+        db.close()
+
+
+@actors_app.command("search")
+def actors_search(
+    query: str = typer.Argument(..., help="Search by name, email, or handle"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
+):
+    """Search actors by name, email address, or Telegram handle."""
+    from phishkiller.database import get_sync_db
+    from phishkiller.models.actor import Actor
+    from sqlalchemy import or_, func
+
+    db = get_sync_db()
+    try:
+        actors = db.query(Actor).filter(
+            or_(
+                Actor.name.ilike(f"%{query}%"),
+                Actor.email_addresses.any(query),
+                Actor.telegram_handles.any(query),
+            )
+        ).limit(limit).all()
+
+        if not actors:
+            console.print(f"[yellow]No actors matching '{query}'[/yellow]")
+            return
+
+        table = Table(title=f"Actor Search: '{query}' ({len(actors)} results)")
+        table.add_column("ID", style="dim", max_width=12)
+        table.add_column("Name", style="bold")
+        table.add_column("Emails", max_width=40)
+        table.add_column("First Seen")
+
+        for actor in actors:
+            emails = ", ".join(actor.email_addresses[:2]) if actor.email_addresses else "—"
+            table.add_row(
+                str(actor.id)[:12] + "…",
+                actor.name,
+                emails,
+                actor.first_seen or "—",
+            )
+        console.print(table)
+    finally:
+        db.close()
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────

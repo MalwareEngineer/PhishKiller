@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     max_kit_size_mb: int = 50
     download_timeout: int = 30
     tlsh_min_size: int = 50
+    yara_rules_dir: str = "./rules"
 
     # CertStream
     certstream_url: str = "wss://certstream.calidog.io"

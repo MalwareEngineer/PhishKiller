@@ -21,12 +21,17 @@ def build_analysis_chain(kit_id: str) -> chain:
     """Build the full analysis Celery chain for a kit."""
     from phishkiller.tasks.download import download_kit
 
+    from phishkiller.tasks.correlation import correlate_kit_actors
+
     return chain(
         download_kit.s(kit_id),
         compute_hashes.s(),
         extract_archive.s(),
         deobfuscate_files.s(),
+        yara_scan.s(),
         extract_iocs.s(),
+        compute_similarity.s(),
+        correlate_kit_actors.s(),
     )
 
 
@@ -386,5 +391,188 @@ def extract_iocs(self, prev_result: dict) -> dict:
         except Exception:
             pass
         return {**prev_result, "status": "failed", "error": str(e)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# YARA Scanning
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    name="phishkiller.tasks.analysis.yara_scan",
+    bind=True,
+    queue="analysis",
+)
+def yara_scan(self, prev_result: dict) -> dict:
+    """Scan kit files against YARA rules for family/technique classification."""
+    kit_id = prev_result["kit_id"]
+    if prev_result.get("status") == "failed":
+        return prev_result
+
+    extract_dir = prev_result.get("extract_dir")
+    filepath = prev_result.get("filepath")
+
+    if not extract_dir and not filepath:
+        return {**prev_result, "yara_matches": []}
+
+    db = get_sync_db()
+    start = time.time()
+
+    try:
+        kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+        if not kit:
+            return {**prev_result, "yara_matches": []}
+
+        settings = get_settings()
+        from phishkiller.analysis.yara_scanner import YaraScanner
+
+        scanner = YaraScanner(rules_dir=settings.yara_rules_dir)
+        rules_count = scanner.load_rules()
+
+        if rules_count == 0:
+            logger.debug("No YARA rules loaded, skipping scan for kit %s", kit_id)
+            return {**prev_result, "yara_matches": []}
+
+        if extract_dir:
+            result = scanner.scan_directory(extract_dir)
+        else:
+            result = scanner.scan_file(filepath)
+
+        duration = time.time() - start
+
+        match_data = [
+            {
+                "rule": m.rule,
+                "namespace": m.namespace,
+                "tags": m.tags,
+                "meta": m.meta,
+            }
+            for m in result.matches
+        ]
+
+        # Deduplicate by rule name (same rule may match multiple files)
+        seen_rules = set()
+        unique_matches = []
+        for m in match_data:
+            if m["rule"] not in seen_rules:
+                seen_rules.add(m["rule"])
+                unique_matches.append(m)
+
+        analysis = AnalysisResult(
+            kit_id=kit.id,
+            analysis_type=AnalysisType.YARA_SCAN,
+            result_data={
+                "rules_loaded": rules_count,
+                "matches": unique_matches,
+                "match_count": len(unique_matches),
+                "files_scanned": result.files_scanned,
+                "error": result.error,
+            },
+            duration_seconds=round(duration, 3),
+            files_processed=result.files_scanned,
+        )
+        db.add(analysis)
+        db.commit()
+
+        if unique_matches:
+            rule_names = [m["rule"] for m in unique_matches]
+            logger.info(
+                "YARA scan for kit %s: %d rules matched (%s)",
+                kit_id, len(unique_matches), ", ".join(rule_names[:5]),
+            )
+        else:
+            logger.debug("YARA scan for kit %s: no matches", kit_id)
+
+        return {
+            **prev_result,
+            "yara_matches": unique_matches,
+        }
+
+    except Exception as e:
+        logger.exception("Error in YARA scan for kit %s: %s", kit_id, e)
+        # YARA failure is non-fatal — don't fail the kit
+        return {**prev_result, "yara_matches": []}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# TLSH Similarity
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    name="phishkiller.tasks.analysis.compute_similarity",
+    bind=True,
+    queue="analysis",
+)
+def compute_similarity(self, prev_result: dict) -> dict:
+    """Compare kit TLSH against recent analyzed kits for similarity clustering."""
+    kit_id = prev_result["kit_id"]
+    if prev_result.get("status") == "failed":
+        return prev_result
+
+    db = get_sync_db()
+    start = time.time()
+
+    try:
+        kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+        if not kit or not kit.tlsh:
+            return {**prev_result, "similar_kits": []}
+
+        from phishkiller.analysis.hasher import compute_tlsh_distance
+        from sqlalchemy import select
+
+        # Compare against recent analyzed kits with TLSH (limit 500 for perf)
+        candidates = db.scalars(
+            select(Kit).where(
+                Kit.tlsh.isnot(None),
+                Kit.id != kit.id,
+                Kit.status == KitStatus.ANALYZED,
+            ).order_by(Kit.created_at.desc()).limit(500)
+        ).all()
+
+        threshold = 100
+        similar = []
+        for candidate in candidates:
+            distance = compute_tlsh_distance(kit.tlsh, candidate.tlsh)
+            if distance is not None and distance <= threshold:
+                similar.append({
+                    "kit_id": str(candidate.id),
+                    "distance": distance,
+                    "sha256": candidate.sha256,
+                    "source_url": candidate.source_url,
+                })
+
+        similar.sort(key=lambda x: x["distance"])
+
+        duration = time.time() - start
+
+        analysis = AnalysisResult(
+            kit_id=kit.id,
+            analysis_type=AnalysisType.SIMILARITY,
+            result_data={
+                "similar_kits": similar[:50],  # cap stored results
+                "candidates_checked": len(candidates),
+                "threshold": threshold,
+                "matches_found": len(similar),
+            },
+            duration_seconds=round(duration, 3),
+        )
+        db.add(analysis)
+        db.commit()
+
+        if similar:
+            logger.info(
+                "Similarity for kit %s: %d similar kits (closest distance=%d)",
+                kit_id, len(similar), similar[0]["distance"],
+            )
+
+        return {**prev_result, "similar_kits": similar[:10]}
+
+    except Exception as e:
+        logger.exception("Error computing similarity for kit %s: %s", kit_id, e)
+        # Similarity failure is non-fatal
+        return {**prev_result, "similar_kits": []}
     finally:
         db.close()

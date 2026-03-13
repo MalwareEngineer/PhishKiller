@@ -8,10 +8,13 @@ EMAIL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 EMAIL_EXCLUSIONS = {
-    "example.com", "example.org", "test.com", "localhost",
-    "w3.org", "jquery.com", "google.com", "schema.org",
+    "example.com", "example.org", "example.net", "test.com", "localhost",
+    "w3.org", "jquery.com", "google.com", "gmail.com", "schema.org",
     "apache.org", "mozilla.org", "php.net", "github.com",
     "wordpress.org", "gravatar.com", "fontawesome.com",
+    "microsoft.com", "apple.com", "icloud.com",
+    "w3schools.com", "stackoverflow.com", "npmjs.com",
+    "bootstrap.com", "getbootstrap.com",
 }
 
 # ---------- Telegram Bot Tokens ----------
@@ -39,7 +42,30 @@ TELEGRAM_API_PATTERN = re.compile(
 BENIGN_URL_DOMAINS = {
     "jquery", "bootstrap", "cdnjs", "googleapis", "gstatic",
     "cloudflare", "jsdelivr", "unpkg", "fontawesome", "w3.org",
-    "schema.org", "microsoft.com/schemas", "github.com",
+    "schema.org", "microsoft.com", "github.com", "github.io",
+    "maxcdn", "twimg", "fbcdn", "akamai", "stackpath",
+    "wordpress.org", "wp.com", "w3schools", "stackoverflow",
+    "php.net", "apache.org", "mozilla.org", "apple.com",
+    "windows.net", "azureedge.net", "cloudfront.net",
+    "google-analytics.com", "googlesyndication", "doubleclick",
+    "recaptcha", "gstatic.com", "googletagmanager",
+    "facebook.com", "twitter.com", "linkedin.com",
+    "youtube.com", "vimeo.com", "instagram.com",
+}
+
+# URL path patterns that indicate static assets (not C2)
+BENIGN_URL_EXTENSIONS = {
+    ".css", ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+    ".map", ".min.js", ".min.css",
+}
+
+# C2/exfil keywords that boost confidence
+C2_KEYWORDS = {
+    "send", "post", "exfil", "result", "log", "gate",
+    "receive", "submit", "upload", "steal", "grab",
+    "collect", "report", "panel", "admin", "login",
+    "next.php", "post.php", "done.php", "finish.php",
 }
 
 # ---------- PHP mail() function patterns ----------
@@ -88,3 +114,48 @@ BITCOIN_PATTERN = re.compile(
 ETHEREUM_PATTERN = re.compile(
     r"(?<![a-zA-Z0-9])0x[0-9a-fA-F]{40}(?![a-zA-Z0-9])"
 )
+
+# ---------- Domain Names ----------
+# Standalone domain references — multi-label domains like smtp.evil-mailer.org
+DOMAIN_PATTERN = re.compile(
+    r'(?<![/])'
+    r'([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
+    r'(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*'
+    r'\.[a-zA-Z]{2,6})'
+    r'(?![/\w.])',
+    re.IGNORECASE,
+)
+# File extensions that look like TLDs but aren't domains
+FALSE_DOMAIN_EXTENSIONS = {
+    ".php", ".js", ".css", ".html", ".htm", ".json", ".xml",
+    ".txt", ".png", ".jpg", ".gif", ".svg", ".ico", ".map",
+    ".min", ".inc", ".conf", ".ini", ".log", ".sql", ".bak",
+}
+BENIGN_DOMAINS = EMAIL_EXCLUSIONS | {
+    "jquery.com", "bootstrapcdn.com", "cdnjs.cloudflare.com",
+    "fonts.googleapis.com", "ajax.googleapis.com",
+    "code.jquery.com", "maxcdn.bootstrapcdn.com",
+    "stackpath.bootstrapcdn.com", "cdn.jsdelivr.net",
+    "unpkg.com", "use.fontawesome.com",
+    "google-analytics.com", "googletagmanager.com",
+    "facebook.com", "twitter.com", "youtube.com",
+    "linkedin.com", "instagram.com",
+}
+
+# ---------- Phone Numbers ----------
+PHONE_PATTERN = re.compile(
+    r"(?<![0-9a-zA-Z])\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}(?![0-9a-zA-Z])"
+)
+
+# ---------- Telegram Handles ----------
+TELEGRAM_HANDLE_PATTERN = re.compile(
+    r"(?<![a-zA-Z0-9])@([a-zA-Z][a-zA-Z0-9_]{4,31})(?![a-zA-Z0-9_])"
+)
+# Common false positives for @handles (CSS/JS/email conventions)
+TELEGRAM_HANDLE_EXCLUSIONS = {
+    "media", "keyframes", "import", "charset", "font-face",
+    "supports", "layer", "scope", "container", "property",
+    "param", "return", "throws", "override", "deprecated",
+    "author", "version", "license", "copyright", "since",
+    "gmail", "yahoo", "outlook", "hotmail",
+}

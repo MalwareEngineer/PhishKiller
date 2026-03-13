@@ -33,6 +33,7 @@ celery_app.conf.include = [
     "phishkiller.tasks.feeds",
     "phishkiller.tasks.download",
     "phishkiller.tasks.analysis",
+    "phishkiller.tasks.correlation",
     "phishkiller.tasks.certstream_monitor",
     "phishkiller.tasks.recovery",
     "phishkiller.tasks.periodic",
