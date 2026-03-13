@@ -34,4 +34,5 @@ celery_app.conf.include = [
     "phishkiller.tasks.download",
     "phishkiller.tasks.analysis",
     "phishkiller.tasks.certstream_monitor",
+    "phishkiller.tasks.recovery",
 ]
