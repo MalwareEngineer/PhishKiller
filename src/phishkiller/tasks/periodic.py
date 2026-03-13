@@ -21,9 +21,10 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=30, hour="*/6"),
         "options": {"queue": "feeds"},
     },
-    "process-feed-entries-every-5m": {
+    "process-feed-entries-every-2m": {
         "task": "phishkiller.tasks.feeds.process_feed_entries",
-        "schedule": crontab(minute="*/5"),
+        "schedule": crontab(minute="*/2"),
+        "args": [2000],
         "options": {"queue": "feeds"},
     },
     "recover-stuck-kits-every-15m": {
