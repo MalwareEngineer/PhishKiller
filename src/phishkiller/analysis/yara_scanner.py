@@ -45,7 +45,11 @@ class YaraScanner:
         self._rules_count = 0
 
     def load_rules(self) -> int:
-        """Load and compile YARA rules from the rules directory."""
+        """Load and compile YARA rules from the rules directory.
+
+        Compiles rules individually so one broken rule file doesn't prevent
+        all other rules from loading.
+        """
         if not self.rules_dir:
             return 0
 
@@ -63,10 +67,35 @@ class YaraScanner:
             for yar_file in rules_path.glob("**/*.yara"):
                 rule_files[yar_file.stem] = str(yar_file)
 
-            if rule_files:
+            if not rule_files:
+                return 0
+
+            # Try compiling all at once first (fastest path)
+            try:
                 self._compiled_rules = yara.compile(filepaths=rule_files)
                 self._rules_count = len(rule_files)
                 logger.info("Loaded %d YARA rule files from %s", self._rules_count, self.rules_dir)
+                return self._rules_count
+            except Exception as e:
+                logger.warning("Bulk YARA compile failed (%s), trying individual compilation", e)
+
+            # Fall back to individual compilation — skip broken files
+            good_files = {}
+            bad_count = 0
+            for name, filepath in rule_files.items():
+                try:
+                    yara.compile(filepaths={name: filepath})
+                    good_files[name] = filepath
+                except Exception:
+                    bad_count += 1
+
+            if good_files:
+                self._compiled_rules = yara.compile(filepaths=good_files)
+                self._rules_count = len(good_files)
+                logger.info(
+                    "Loaded %d YARA rule files (%d skipped due to errors) from %s",
+                    self._rules_count, bad_count, self.rules_dir,
+                )
                 return self._rules_count
 
         except ImportError:

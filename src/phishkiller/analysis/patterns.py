@@ -131,6 +131,35 @@ FALSE_DOMAIN_EXTENSIONS = {
     ".txt", ".png", ".jpg", ".gif", ".svg", ".ico", ".map",
     ".min", ".inc", ".conf", ".ini", ".log", ".sql", ".bak",
 }
+# Real TLDs — only extract domains whose final label is in this set
+VALID_TLDS = {
+    # Generic
+    "com", "org", "net", "edu", "gov", "mil", "int",
+    # Common gTLDs
+    "io", "co", "me", "info", "biz", "name", "pro", "mobi", "tel", "asia",
+    "xyz", "online", "site", "store", "app", "dev", "cloud", "tech", "live",
+    "shop", "club", "fun", "space", "top", "work", "click", "link", "help",
+    "news", "world", "today", "life", "website", "host", "email", "page",
+    "solutions", "zone", "agency", "digital", "media", "center", "network",
+    # Country codes (most common)
+    "us", "uk", "ca", "au", "de", "fr", "it", "es", "nl", "be", "ch", "at",
+    "ru", "cn", "jp", "kr", "in", "br", "mx", "za", "ng", "ke", "eg",
+    "pl", "cz", "se", "no", "dk", "fi", "pt", "ie", "nz", "sg", "hk",
+    "tw", "th", "ph", "id", "my", "vn", "pk", "bd", "ar", "cl",
+    "pe", "ve", "ua", "ro", "hu", "bg", "hr", "sk", "si", "lt", "lv",
+    "ee", "is", "lu", "gr", "tr", "il", "ae", "sa", "qa",
+    # Phishing-popular free/cheap TLDs
+    "tk", "ml", "ga", "cf", "gq", "buzz", "rest", "surf", "icu",
+    "cc", "ws", "pw", "to", "ly", "su", "la", "nu",
+}
+# JS property accesses that happen to have valid TLDs (e.g. navigator.online)
+JS_FALSE_DOMAINS = {
+    "navigator.online", "window.location", "document.domain",
+    "window.top", "window.name", "self.name", "parent.top",
+    "screen.info", "history.link", "location.host", "location.site",
+    "window.site", "document.link", "element.click", "event.page",
+    "document.page", "window.app", "window.dev",
+}
 BENIGN_DOMAINS = EMAIL_EXCLUSIONS | {
     "jquery.com", "bootstrapcdn.com", "cdnjs.cloudflare.com",
     "fonts.googleapis.com", "ajax.googleapis.com",

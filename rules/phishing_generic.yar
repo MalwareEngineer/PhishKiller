@@ -102,7 +102,7 @@ rule PhishKit_Credential_Logger
         $pass   = "password" ascii nocase
 
     condition:
-        $fopen and $fwrite and $post and $pass
+        $fopen and $fwrite and $post and $pass and $append
 }
 
 rule PhishKit_Social_Engineering_Lure
