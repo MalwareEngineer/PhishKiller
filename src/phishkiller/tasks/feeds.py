@@ -124,15 +124,30 @@ def ingest_urlhaus(self) -> dict:
     total = 0
 
     try:
+        settings = get_settings()
+        if not settings.urlhaus_auth_key:
+            logger.warning(
+                "PK_URLHAUS_AUTH_KEY not set — URLhaus API requires auth. "
+                "Get a key at https://auth.abuse.ch/"
+            )
+
         logger.info("Ingesting URLhaus feed...")
+
+        headers = {"Accept": "application/json"}
+        if settings.urlhaus_auth_key:
+            headers["Auth-Key"] = settings.urlhaus_auth_key
 
         with get_sync_client(timeout=60) as client:
             response = client.get(
                 "https://urlhaus-api.abuse.ch/v1/urls/recent/",
-                headers={"Accept": "application/json"},
+                headers=headers,
             )
             response.raise_for_status()
             data = response.json()
+
+        query_status = data.get("query_status", "")
+        if query_status != "ok":
+            raise ValueError(f"URLhaus API query_status: {query_status}")
 
         entries = data.get("urls", [])
         for entry in entries:
@@ -252,6 +267,7 @@ def process_feed_entries(self, batch_size: int = 500) -> dict:
     db = get_sync_db()
     processed = 0
     failed = 0
+    skipped = 0
 
     try:
         entries = (
@@ -264,12 +280,26 @@ def process_feed_entries(self, batch_size: int = 500) -> dict:
 
         if not entries:
             logger.info("No unprocessed feed entries found.")
-            return {"processed": 0, "failed": 0}
+            return {"processed": 0, "failed": 0, "skipped": 0}
 
         logger.info("Processing %d unprocessed feed entries...", len(entries))
 
         for entry in entries:
             try:
+                # Cross-source URL dedup — skip if a non-failed Kit already exists
+                existing_kit = (
+                    db.query(Kit)
+                    .filter(
+                        Kit.source_url == entry.url,
+                        Kit.status != KitStatus.FAILED,
+                    )
+                    .first()
+                )
+                if existing_kit:
+                    entry.is_processed = True
+                    skipped += 1
+                    continue
+
                 kit = Kit(
                     id=uuid.uuid4(),
                     source_url=entry.url,
@@ -293,9 +323,10 @@ def process_feed_entries(self, batch_size: int = 500) -> dict:
 
         db.commit()
         logger.info(
-            "Feed processing complete: %d submitted, %d failed", processed, failed
+            "Feed processing complete: %d submitted, %d failed, %d skipped (dedup)",
+            processed, failed, skipped,
         )
-        return {"processed": processed, "failed": failed}
+        return {"processed": processed, "failed": failed, "skipped": skipped}
 
     except Exception as e:
         db.rollback()
