@@ -34,6 +34,30 @@ def download_kit(self, kit_id: str) -> dict:
         if not kit:
             raise ValueError(f"Kit {kit_id} not found")
 
+        # If file already exists on disk (e.g. manual upload), skip download
+        if kit.local_path and Path(kit.local_path).exists():
+            filepath = Path(kit.local_path)
+            kit.file_size = filepath.stat().st_size
+            kit.filename = filepath.name
+            kit.status = KitStatus.DOWNLOADED
+            suffix = filepath.suffix.lower()
+            mime_map = {
+                ".zip": "application/zip",
+                ".gz": "application/gzip",
+                ".tar": "application/x-tar",
+                ".rar": "application/x-rar-compressed",
+                ".php": "application/x-php",
+            }
+            kit.mime_type = mime_map.get(suffix, "application/octet-stream")
+            db.commit()
+            logger.info("Kit %s already has local file, skipping download", kit_id)
+            return {
+                "kit_id": kit_id,
+                "status": "downloaded",
+                "filepath": kit.local_path,
+                "file_size": kit.file_size,
+            }
+
         kit.status = KitStatus.DOWNLOADING
         db.commit()
 
