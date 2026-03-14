@@ -18,6 +18,7 @@ from phishkiller.analysis.patterns import (
     ETHEREUM_PATTERN,
     FALSE_DOMAIN_EXTENSIONS,
     IPV4_PATTERN,
+    JS_FALSE_DOMAINS,
     PHP_MAIL_PATTERN,
     PHP_MAIL_TO_PATTERN,
     PHONE_PATTERN,
@@ -30,6 +31,7 @@ from phishkiller.analysis.patterns import (
     TELEGRAM_CHAT_ID_PATTERN,
     TELEGRAM_HANDLE_EXCLUSIONS,
     TELEGRAM_HANDLE_PATTERN,
+    VALID_TLDS,
 )
 from phishkiller.models.indicator import IndicatorType
 
@@ -315,15 +317,25 @@ class IOCExtractor:
             domain = match.group(1).lower()
             if domain in BENIGN_DOMAINS:
                 continue
+            if domain in JS_FALSE_DOMAINS:
+                continue
             # Skip very short domains (likely false positives)
             if len(domain) < 5:
                 continue
-            # Skip if the "TLD" is actually a file extension
-            dot_ext = "." + domain.rsplit(".", 1)[-1]
-            if dot_ext in FALSE_DOMAIN_EXTENSIONS:
-                continue
             # Must have at least one dot (SLD.TLD)
             if "." not in domain:
+                continue
+            tld = domain.rsplit(".", 1)[-1]
+            # Skip if the "TLD" is actually a file extension
+            if "." + tld in FALSE_DOMAIN_EXTENSIONS:
+                continue
+            # Only accept real TLDs — kills JS property false positives
+            # like w.length, document.fonts, date.now, window.google
+            if tld not in VALID_TLDS:
+                continue
+            # Require each label to be 2+ chars (filters w.com, a.net)
+            labels = domain.split(".")
+            if any(len(label) < 2 for label in labels):
                 continue
             confidence = 60
             line_lower = line.lower()
