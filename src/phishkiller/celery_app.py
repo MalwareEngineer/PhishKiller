@@ -24,6 +24,7 @@ celery_app.conf.update(
     task_routes={
         "phishkiller.tasks.feeds.*": {"queue": "feeds"},
         "phishkiller.tasks.download.*": {"queue": "downloads"},
+        "phishkiller.tasks.discovery.*": {"queue": "downloads"},
         "phishkiller.tasks.analysis.*": {"queue": "analysis"},
         "phishkiller.tasks.certstream_monitor.*": {"queue": "certstream"},
     },
@@ -32,6 +33,7 @@ celery_app.conf.update(
 celery_app.conf.include = [
     "phishkiller.tasks.feeds",
     "phishkiller.tasks.download",
+    "phishkiller.tasks.discovery",
     "phishkiller.tasks.analysis",
     "phishkiller.tasks.correlation",
     "phishkiller.tasks.certstream_monitor",
