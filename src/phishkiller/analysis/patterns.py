@@ -1,6 +1,7 @@
 """Pre-compiled regex patterns for IOC extraction from phishing kit source files."""
 
 import re
+from urllib.parse import urlparse
 
 # ---------- Email addresses ----------
 EMAIL_PATTERN = re.compile(
@@ -15,6 +16,8 @@ EMAIL_EXCLUSIONS = {
     "microsoft.com", "apple.com", "icloud.com",
     "w3schools.com", "stackoverflow.com", "npmjs.com",
     "bootstrap.com", "getbootstrap.com",
+    "yahoo.com", "hotmail.com", "outlook.com", "live.com",
+    "aol.com", "protonmail.com", "zoho.com",
 }
 
 # ---------- Telegram Bot Tokens ----------
@@ -34,31 +37,180 @@ C2_URL_PATTERN = re.compile(
     r"https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]{10,500}",
     re.IGNORECASE,
 )
+# Strip trailing syntax junk that the broad regex consumes
+URL_TRAILING_JUNK = re.compile(r"['\";,)\]}>\\]+$")
+
 TELEGRAM_API_PATTERN = re.compile(
     r"https?://api\.telegram\.org/bot[0-9A-Za-z_\-:/]+",
     re.IGNORECASE,
 )
-# Benign URL domains to skip
-BENIGN_URL_DOMAINS = {
-    "jquery", "bootstrap", "cdnjs", "googleapis", "gstatic",
-    "cloudflare", "jsdelivr", "unpkg", "fontawesome", "w3.org",
-    "schema.org", "microsoft.com", "github.com", "github.io",
-    "maxcdn", "twimg", "fbcdn", "akamai", "stackpath",
-    "wordpress.org", "wp.com", "w3schools", "stackoverflow",
-    "php.net", "apache.org", "mozilla.org", "apple.com",
-    "windows.net", "azureedge.net", "cloudfront.net",
-    "google-analytics.com", "googlesyndication", "doubleclick",
-    "recaptcha", "gstatic.com", "googletagmanager",
-    "facebook.com", "twitter.com", "linkedin.com",
-    "youtube.com", "vimeo.com", "instagram.com",
-}
+
+# Benign root domains — extract the registrable domain from a URL and check
+# membership. Uses root-domain matching (e.g. "docs.google.com" → "google.com").
+BENIGN_URL_ROOT_DOMAINS = frozenset({
+    # Google ecosystem
+    "google.com", "google.co.uk", "google.co.jp", "google.de", "google.fr",
+    "google.co.in", "google.com.br", "google.com.au",
+    "googleapis.com", "gstatic.com", "googleusercontent.com",
+    "googlesyndication.com", "googletagmanager.com", "google-analytics.com",
+    "doubleclick.net", "withgoogle.com", "ggpht.com", "gvt1.com",
+    "gvt2.com", "googlevideo.com", "googleadservices.com",
+    # Microsoft ecosystem
+    "microsoft.com", "microsoftonline.com", "windows.net", "azure.com",
+    "azureedge.net", "office.com", "office365.com", "live.com",
+    "outlook.com", "bing.com", "msn.com", "hotmail.com",
+    "windowsupdate.com", "visualstudio.com",
+    # Amazon / AWS
+    "amazon.com", "amazonaws.com", "amazontrust.com", "cloudfront.net",
+    "awsstatic.com",
+    # CDNs
+    "cloudflare.com", "cloudflare-dns.com",
+    "jsdelivr.net", "unpkg.com", "cdnjs.com",
+    "akamaized.net", "akamai.net", "akamaihd.net", "akamaitechnologies.com",
+    "fastly.net", "fastlycdn.com",
+    "bootstrapcdn.com", "stackpath.com", "stackpathcdn.com",
+    # Libraries / frameworks
+    "jquery.com", "getbootstrap.com", "tailwindcss.com", "fontawesome.com",
+    "reactjs.org", "vuejs.org", "angular.io",
+    # Site builders / hosting platforms
+    "weebly.com", "weeblysite.com", "editmysite.com",
+    "wix.com", "wixsite.com", "parastorage.com", "wixmp.com",
+    "strikingly.com", "mystrikingly.com",
+    "squarespace.com", "sqspcdn.com",
+    "wordpress.com", "wordpress.org", "wp.com", "wpcomstaging.com",
+    "shopify.com", "shopifycdn.com",
+    "webflow.com", "webflow.io",
+    "godaddy.com", "secureserver.net",
+    "hostinger.com", "bluehost.com",
+    # Code hosting / docs
+    "github.com", "github.io", "githubusercontent.com", "githubassets.com",
+    "gitlab.com", "gitlab.io",
+    "gitbook.io", "gitbook.com",
+    "bitbucket.org",
+    "readthedocs.io", "readthedocs.org",
+    # Social media
+    "facebook.com", "fbcdn.net", "fbsbx.com",
+    "twitter.com", "x.com", "twimg.com",
+    "instagram.com", "cdninstagram.com",
+    "linkedin.com", "licdn.com",
+    "youtube.com", "youtu.be", "ytimg.com",
+    "vimeo.com", "vimeocdn.com",
+    "tiktok.com", "tiktokcdn.com",
+    "reddit.com", "redditmedia.com", "redditstatic.com",
+    "pinterest.com", "pinimg.com",
+    "tumblr.com",
+    # SaaS / productivity
+    "zoom.us", "zoomcdn.com",
+    "calendly.com",
+    "jotform.com", "jotfor.ms",
+    "typeform.com",
+    "mailchimp.com",
+    "slack.com", "slack-imgs.com",
+    "notion.so", "notion.site",
+    "canva.com",
+    "figma.com",
+    "atlassian.com", "atlassian.net",
+    # Form / survey platforms
+    "surveymonkey.com", "surveygizmo.com",
+    "qualtrics.com",
+    # Gaming platforms (phishing targets — their own assets aren't IOCs)
+    "roblox.com", "rbxcdn.com",
+    "steampowered.com", "steamcommunity.com", "steamstatic.com",
+    "epicgames.com",
+    "ea.com",
+    # Email providers
+    "yahoo.com", "yimg.com",
+    "protonmail.com", "proton.me",
+    "zoho.com",
+    "mail.ru",
+    # Payment / finance (targets, not actor infra)
+    "paypal.com", "paypalobjects.com",
+    "stripe.com", "stripe.network",
+    "venmo.com",
+    # Cloud storage (targets, not actor infra)
+    "dropbox.com", "dropboxusercontent.com",
+    "box.com",
+    "onedrive.com",
+    # Apple
+    "apple.com", "icloud.com", "mzstatic.com", "cdn-apple.com",
+    # Standards / reference
+    "w3.org", "w3schools.com",
+    "schema.org",
+    "php.net", "apache.org", "mozilla.org", "mozilla.net",
+    "stackoverflow.com", "stackexchange.com",
+    "npmjs.com", "yarnpkg.com",
+    # Captcha / anti-bot
+    "recaptcha.net", "hcaptcha.com",
+    "gstatic.com",
+    # Analytics
+    "segment.io", "segment.com",
+    "mixpanel.com",
+    "amplitude.com",
+    "newrelic.com",
+    # Other benign
+    "archive.org", "pearltrees.com",
+    "gravatar.com", "wp.com",
+    "cloudinary.com",
+    "sentry.io",
+    "intercom.io", "intercomcdn.com",
+    "zendesk.com", "zdassets.com",
+    "hubspot.com", "hsforms.com", "hubspotusercontent.com",
+    "pxf.io", "shareasale.com", "impact.com",  # affiliate networks
+    "tistory.com",  # Korean blogging platform
+    "qr-code-generator.com",
+    "n9.cl",  # URL shortener
+})
+
+# Two-part country-code SLDs (e.g. .co.uk, .com.br) — need 3 labels for root domain
+_TWO_PART_TLDS = frozenset({
+    "co.uk", "co.jp", "co.kr", "co.in", "co.nz", "co.za", "co.id",
+    "com.au", "com.br", "com.mx", "com.ar", "com.co", "com.tr",
+    "com.sg", "com.my", "com.ph", "com.pk", "com.ng", "com.eg",
+    "org.uk", "org.au", "net.au", "gov.uk", "ac.uk",
+    "ne.jp", "or.jp", "go.jp",
+})
+
+
+def extract_root_domain(hostname: str) -> str:
+    """Extract the registrable root domain from a hostname.
+
+    Examples:
+        "docs.google.com" → "google.com"
+        "cdn.jsdelivr.net" → "jsdelivr.net"
+        "foo.co.uk" → "foo.co.uk"
+    """
+    hostname = hostname.lower().rstrip(".")
+    parts = hostname.split(".")
+    if len(parts) >= 3:
+        last_two = ".".join(parts[-2:])
+        if last_two in _TWO_PART_TLDS:
+            return ".".join(parts[-3:])
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return hostname
+
+
+def is_benign_url(url: str) -> bool:
+    """Check if a URL belongs to a known benign service."""
+    try:
+        hostname = urlparse(url).hostname
+        if not hostname:
+            return False
+        root = extract_root_domain(hostname)
+        return root in BENIGN_URL_ROOT_DOMAINS
+    except Exception:
+        return False
+
 
 # URL path patterns that indicate static assets (not C2)
-BENIGN_URL_EXTENSIONS = {
+BENIGN_URL_EXTENSIONS = frozenset({
     ".css", ".woff", ".woff2", ".ttf", ".eot", ".otf",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
     ".map", ".min.js", ".min.css",
-}
+    ".js",  # standalone .js files are library assets, not C2 endpoints
+    ".mp3", ".mp4", ".webm", ".ogg",
+    ".pdf",
+})
 
 # C2/exfil keywords that boost confidence
 C2_KEYWORDS = {
@@ -117,8 +269,10 @@ ETHEREUM_PATTERN = re.compile(
 
 # ---------- Domain Names ----------
 # Standalone domain references — multi-label domains like smtp.evil-mailer.org
+# Lookbehind blocks alphanumeric, slashes, and URL-path chars to prevent
+# matching fragments inside URLs (e.g. "orkspace.google.com" from https://workspace...)
 DOMAIN_PATTERN = re.compile(
-    r'(?<![/])'
+    r'(?<![a-zA-Z0-9/\-_%.:])'
     r'([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
     r'(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*'
     r'\.[a-zA-Z]{2,6})'
@@ -151,6 +305,8 @@ VALID_TLDS = {
     # Phishing-popular free/cheap TLDs
     "tk", "ml", "ga", "cf", "gq", "buzz", "rest", "surf", "icu",
     "cc", "ws", "pw", "to", "ly", "su", "la", "nu",
+    # Additional
+    "sbs", "cfd", "icu", "cyou", "best",
 }
 # JS property accesses that happen to have valid TLDs (e.g. navigator.online)
 JS_FALSE_DOMAINS = {
@@ -159,17 +315,15 @@ JS_FALSE_DOMAINS = {
     "screen.info", "history.link", "location.host", "location.site",
     "window.site", "document.link", "element.click", "event.page",
     "document.page", "window.app", "window.dev",
+    # Additional observed false positives
+    "object.is", "x22object.is", "link.click",
+    "el-descriptions--mini.is",
+    "locale-dataset.countries.com",
 }
-BENIGN_DOMAINS = EMAIL_EXCLUSIONS | {
-    "jquery.com", "bootstrapcdn.com", "cdnjs.cloudflare.com",
-    "fonts.googleapis.com", "ajax.googleapis.com",
-    "code.jquery.com", "maxcdn.bootstrapcdn.com",
-    "stackpath.bootstrapcdn.com", "cdn.jsdelivr.net",
-    "unpkg.com", "use.fontawesome.com",
-    "google-analytics.com", "googletagmanager.com",
-    "facebook.com", "twitter.com", "youtube.com",
-    "linkedin.com", "instagram.com",
-}
+# Benign domains to skip in standalone domain extraction.
+# Uses root-domain matching via extract_root_domain() — so adding "google.com"
+# covers docs.google.com, meet.google.com, etc.
+BENIGN_DOMAINS = BENIGN_URL_ROOT_DOMAINS | EMAIL_EXCLUSIONS
 
 # ---------- Phone Numbers ----------
 PHONE_PATTERN = re.compile(
