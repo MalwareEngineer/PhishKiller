@@ -1,105 +1,76 @@
 # PhishKiller
 
-Phishing kit tracking and analysis platform. Downloads, extracts, deobfuscates, and scans phishing kits for indicators of compromise.
+Automated phishing kit collection, extraction, and analysis platform.
 
-## Prerequisites
-
-- Python 3.12+
-- Docker & Docker Compose
-
-## Quick Start
+## Setup
 
 ```bash
-# Clone and configure
-cp .env.example .env
-# Edit .env with your API keys (PhishTank, URLhaus)
-
-# Start everything (infra + worker)
-docker compose up -d
-
-# Install locally for CLI and API server
-pip install -e ".[tlsh]"
-
-# Run database migrations
-alembic upgrade head
-
-# Start the API server
+cp .env.example .env        # configure API keys (PhishTank, URLhaus)
+docker compose up -d         # postgres, redis, rabbitmq, worker
+pip install -e ".[tlsh]"     # local CLI + API
+alembic upgrade head         # run migrations
 uvicorn phishkiller.main:app --reload
 ```
 
-The `docker compose up -d` command starts:
-- **PostgreSQL 16** — primary database
-- **Redis 7** — result backend and cache
-- **RabbitMQ 3.13** — Celery message broker
-- **Celery worker** — task processing with embedded Beat scheduler
+## Analysis Pipeline
 
-The worker automatically recovers stuck kits on startup and runs periodic tasks:
-- Feed ingestion (PhishTank every 3h, URLhaus hourly, OpenPhish every 6h)
-- Feed entry processing (every 2 minutes, batches of 2000)
-- Stuck kit recovery sweep (every 15 minutes)
-
-### Local Development (without Docker worker)
-
-For development/debugging, you can run the worker on your host instead:
-
-```bash
-# Stop the Docker worker
-docker compose stop worker
-
-# Run locally with Beat scheduler
-celery -A phishkiller.celery_app worker -l info -P solo -B -Q celery,feeds,downloads,analysis,certstream
-```
-
-## Architecture
+Each kit runs through an 8-step Celery chain:
 
 ```
-Feed Sources (PhishTank, URLhaus, OpenPhish)
-    |
-    v
-[Feed Ingestion] --> feed_entries table
-    |
-    v
-[process_feed_entries] --> kits table (status: PENDING)
-    |
-    v
-[Analysis Chain per kit]
-    download_kit ........... PENDING -> DOWNLOADING -> DOWNLOADED
-    compute_hashes ......... SHA256, MD5, SHA1, TLSH
-    extract_archive ........ ZIP/TAR/RAR extraction (skips non-archives)
-    deobfuscate_files ...... JS/PHP deobfuscation
-    extract_iocs ........... IOC extraction -> ANALYZED
+download → hash → extract → deobfuscate → yara_scan → extract_iocs → compute_similarity → correlate_actors
 ```
+
+- **Hash**: SHA256, MD5, SHA1, TLSH (fuzzy)
+- **Extract**: ZIP/TAR/RAR, skips non-archives
+- **Deobfuscate**: PHP `eval(base64_decode(...))` unwrapping
+- **YARA**: 892 rules — 890 t4d ZIP-level kit signatures + custom content rules
+- **IOCs**: emails, URLs, domains, IPs, crypto wallets, Telegram tokens/handles, SMTP creds, PHP mailers
+- **Similarity**: TLSH distance clustering (threshold ≤100)
+- **Actors**: Auto-correlates kits sharing exfil infrastructure
 
 ## CLI
 
 ```bash
-# Submit a kit for analysis
+# Submit & inspect
 phishkiller submit https://example.com/kit.zip
-
-# Check kit status
 phishkiller status <kit_id>
-
-# List and manage kits
 phishkiller kits list --status analyzed
-phishkiller kits get <kit_id>
-phishkiller kits similar <kit_id>    # TLSH fuzzy matching
-phishkiller kits delete <kit_id>
+phishkiller kits similar <kit_id>
 
-# Query indicators of compromise
+# IOCs
 phishkiller iocs list --type url
 phishkiller iocs search "admin@"
 phishkiller iocs stats
 
-# Feed management
-phishkiller feeds ingest              # Trigger feed ingestion
-phishkiller feeds status              # Processing stats
-phishkiller feeds entries             # List entries
+# Actors
+phishkiller actors list
+phishkiller actors get <actor_id>
 
-# Worker management
-phishkiller worker recover            # Recover stuck kits manually
+# Feeds
+phishkiller feeds ingest
+phishkiller feeds status
 
-# Service health
+# Operations
+phishkiller worker recover          # unstick hung kits
+phishkiller worker reset            # purge queues + re-run all kits on current chain
 phishkiller health
+```
+
+## Feeds
+
+| Source | Interval |
+|--------|----------|
+| PhishTank | 3h |
+| URLhaus | 1h |
+| OpenPhish | 6h |
+| Feed entry processing | 2min (batch 2000) |
+| Stuck kit recovery | 15min |
+
+## Local Dev (no Docker worker)
+
+```bash
+docker compose stop worker
+celery -A phishkiller.celery_app worker -l info -P solo -B -Q celery,feeds,downloads,analysis,certstream
 ```
 
 ## License
