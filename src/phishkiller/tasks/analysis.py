@@ -434,10 +434,20 @@ def yara_scan(self, prev_result: dict) -> dict:
             logger.debug("No YARA rules loaded, skipping scan for kit %s", kit_id)
             return {**prev_result, "yara_matches": []}
 
+        # Always scan the raw downloaded file first (t4d rules match ZIP headers)
+        result = scanner.scan_file(filepath) if filepath else None
+
+        # Also scan extracted directory if available (our custom rules match PHP/HTML content)
         if extract_dir:
-            result = scanner.scan_directory(extract_dir)
-        else:
-            result = scanner.scan_file(filepath)
+            dir_result = scanner.scan_directory(extract_dir)
+            if result:
+                result.matches.extend(dir_result.matches)
+                result.files_scanned += dir_result.files_scanned
+            else:
+                result = dir_result
+
+        if not result:
+            return {**prev_result, "yara_matches": []}
 
         duration = time.time() - start
 
