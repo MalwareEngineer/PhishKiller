@@ -46,13 +46,71 @@ services:
       timeout: 10s
       retries: 5
 
-  worker:
+  worker-beat:
     build: .
-    container_name: phishkiller-worker
+    container_name: phishkiller-worker-beat
     command: >
       celery -A phishkiller.celery_app worker
-      -l info -P prefork -c 4 -B
-      -Q celery,feeds,downloads,analysis,certstream
+      -l info -P solo -B
+      -Q celery,feeds
+    environment:
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://phishkiller:phishkiller@postgres:5432/phishkiller
+      PK_DATABASE_URL: postgresql+asyncpg://phishkiller:phishkiller@postgres:5432/phishkiller
+      PK_CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
+      PK_REDIS_URL: redis://redis:6379/0
+      PK_KIT_DOWNLOAD_DIR: /app/downloads
+      PK_KIT_EXTRACT_DIR: /app/extracted
+    env_file:
+      - .env
+    volumes:
+      - downloads:/app/downloads
+      - extracted:/app/extracted
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-downloads:
+    build: .
+    container_name: phishkiller-worker-downloads
+    command: >
+      celery -A phishkiller.celery_app worker
+      -l info -P prefork -c 8
+      -Q downloads
+    environment:
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://phishkiller:phishkiller@postgres:5432/phishkiller
+      PK_DATABASE_URL: postgresql+asyncpg://phishkiller:phishkiller@postgres:5432/phishkiller
+      PK_CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
+      PK_REDIS_URL: redis://redis:6379/0
+      PK_KIT_DOWNLOAD_DIR: /app/downloads
+      PK_KIT_EXTRACT_DIR: /app/extracted
+    env_file:
+      - .env
+    volumes:
+      - downloads:/app/downloads
+      - extracted:/app/extracted
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker-analysis:
+    build: .
+    container_name: phishkiller-worker-analysis
+    command: >
+      celery -A phishkiller.celery_app worker
+      -l info -P prefork -c 8
+      -Q analysis
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://phishkiller:phishkiller@postgres:5432/phishkiller
       PK_DATABASE_URL: postgresql+asyncpg://phishkiller:phishkiller@postgres:5432/phishkiller

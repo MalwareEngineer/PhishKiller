@@ -6,7 +6,7 @@ Automated phishing kit collection, extraction, and analysis platform.
 
 ```bash
 cp .env.example .env        # configure API keys (PhishTank, URLhaus)
-docker compose up -d         # postgres, redis, rabbitmq, worker
+docker compose up -d         # postgres, redis, rabbitmq, 3 workers
 pip install -e ".[tlsh]"     # local CLI + API
 alembic upgrade head         # run migrations
 uvicorn phishkiller.main:app --reload
@@ -66,10 +66,18 @@ phishkiller health
 | Feed entry processing | 2min (batch 2000) |
 | Stuck kit recovery | 15min |
 
-## Local Dev (no Docker worker)
+## Workers
+
+| Container | Pool | Concurrency | Queues | Workload |
+|-----------|------|-------------|--------|----------|
+| worker-beat | solo | 1 | celery, feeds | Beat scheduler, feed ingestion, recovery |
+| worker-downloads | prefork | 8 | downloads | I/O-bound kit downloads |
+| worker-analysis | prefork | 8 | analysis | CPU-bound YARA, hashing, extraction |
+
+## Local Dev (no Docker workers)
 
 ```bash
-docker compose stop worker
+docker compose stop worker-beat worker-downloads worker-analysis
 celery -A phishkiller.celery_app worker -l info -P solo -B -Q celery,feeds,downloads,analysis,certstream
 ```
 
