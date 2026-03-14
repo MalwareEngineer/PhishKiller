@@ -3,11 +3,11 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from phishkiller.analysis.patterns import (
     BASE64_BLOCK_PATTERN,
     BENIGN_DOMAINS,
-    BENIGN_URL_DOMAINS,
     BENIGN_URL_EXTENSIONS,
     BITCOIN_PATTERN,
     C2_KEYWORDS,
@@ -31,7 +31,10 @@ from phishkiller.analysis.patterns import (
     TELEGRAM_CHAT_ID_PATTERN,
     TELEGRAM_HANDLE_EXCLUSIONS,
     TELEGRAM_HANDLE_PATTERN,
+    URL_TRAILING_JUNK,
     VALID_TLDS,
+    extract_root_domain,
+    is_benign_url,
 )
 from phishkiller.models.indicator import IndicatorType
 
@@ -89,8 +92,23 @@ class IOCExtractor:
             iocs.extend(self._extract_telegram_tokens(line, source_file, line_num))
             iocs.extend(self._extract_telegram_chat_ids(line, source_file, line_num))
             iocs.extend(self._extract_telegram_handles(line, source_file, line_num))
-            iocs.extend(self._extract_urls(line, source_file, line_num))
-            iocs.extend(self._extract_domains(line, source_file, line_num))
+
+            # Extract URLs first, then pass their hostnames to domain extraction
+            # so we don't double-count domains already captured in URLs
+            url_iocs = self._extract_urls(line, source_file, line_num)
+            iocs.extend(url_iocs)
+            url_hostnames = set()
+            for ioc in url_iocs:
+                try:
+                    hostname = urlparse(ioc.value).hostname
+                    if hostname:
+                        url_hostnames.add(hostname.lower())
+                except Exception:
+                    pass
+
+            iocs.extend(self._extract_domains(
+                line, source_file, line_num, skip_domains=url_hostnames,
+            ))
             iocs.extend(self._extract_ips(line, source_file, line_num))
             iocs.extend(self._extract_smtp_creds(line, source_file, line_num))
             iocs.extend(self._extract_crypto_wallets(line, source_file, line_num))
@@ -202,10 +220,13 @@ class IOCExtractor:
         results = []
 
         # Telegram API URLs (high confidence)
+        telegram_urls = set()
         for match in TELEGRAM_API_PATTERN.finditer(line):
+            url = URL_TRAILING_JUNK.sub("", match.group(0))
+            telegram_urls.add(url)
             results.append(ExtractedIOC(
                 type=IndicatorType.C2_URL,
-                value=match.group(0),
+                value=url,
                 source_file=source_file,
                 line_number=line_num,
                 context=line[:200],
@@ -215,20 +236,33 @@ class IOCExtractor:
         # General C2/exfil URLs
         for match in C2_URL_PATTERN.finditer(line):
             url = match.group(0)
+
+            # Strip trailing syntax junk (quotes, semicolons, commas, etc.)
+            url = URL_TRAILING_JUNK.sub("", url)
+
             url_lower = url.lower()
 
-            # Skip benign domains
-            if any(benign in url_lower for benign in BENIGN_URL_DOMAINS):
+            # Skip if already captured as Telegram API URL
+            if url in telegram_urls:
                 continue
             if "api.telegram.org" in url_lower:
                 continue
 
-            # Skip static asset URLs (CSS, fonts, images)
-            if any(url_lower.endswith(ext) for ext in BENIGN_URL_EXTENSIONS):
+            # Skip benign domains using root-domain matching
+            if is_benign_url(url):
+                continue
+
+            # Skip static asset URLs — check the URL *path*, not the full string
+            # so query strings like .js?ver=3.0 are still caught
+            try:
+                url_path = urlparse(url).path.lower()
+            except Exception:
+                url_path = url_lower
+            if any(url_path.endswith(ext) for ext in BENIGN_URL_EXTENSIONS):
                 continue
 
             # Score confidence based on context
-            confidence = 60  # base (raised from 50)
+            confidence = 60
             line_lower = line.lower()
             if any(kw in url_lower or kw in line_lower for kw in C2_KEYWORDS):
                 confidence = 85
@@ -310,12 +344,29 @@ class IOCExtractor:
         return results
 
     def _extract_domains(
-        self, line: str, source_file: str, line_num: int
+        self, line: str, source_file: str, line_num: int,
+        skip_domains: set[str] | None = None,
     ) -> list[ExtractedIOC]:
         results = []
+        skip = skip_domains or set()
+
         for match in DOMAIN_PATTERN.finditer(line):
             domain = match.group(1).lower()
-            if domain in BENIGN_DOMAINS:
+
+            # Skip domains already captured as part of URLs
+            if domain in skip:
+                continue
+
+            # Skip URL-encoded fragments (e.g. "2fwww.ionos.com" from %2F...)
+            if domain[:2] in ("2f", "3a", "3d", "26", "3f"):
+                continue
+            # Also catch hex-encoded prefixes like "https3a2f2f..."
+            if any(frag in domain for frag in ("3a2f", "2f2f")):
+                continue
+
+            # Use root-domain matching for benign check
+            root = extract_root_domain(domain)
+            if root in BENIGN_DOMAINS:
                 continue
             if domain in JS_FALSE_DOMAINS:
                 continue
@@ -329,14 +380,22 @@ class IOCExtractor:
             # Skip if the "TLD" is actually a file extension
             if "." + tld in FALSE_DOMAIN_EXTENSIONS:
                 continue
-            # Only accept real TLDs — kills JS property false positives
-            # like w.length, document.fonts, date.now, window.google
+            # Only accept real TLDs
             if tld not in VALID_TLDS:
                 continue
             # Require each label to be 2+ chars (filters w.com, a.net)
             labels = domain.split(".")
             if any(len(label) < 2 for label in labels):
                 continue
+
+            # Skip CSS class-like patterns that end in a valid TLD (e.g.
+            # "wp-block-buttons.is", "spectrum-textfield--multiline.is")
+            # Real domains rarely have double-hyphens or BEM-like naming
+            if "--" in domain or (
+                tld == "is" and "-" in labels[0] and len(labels) == 2
+            ):
+                continue
+
             confidence = 60
             line_lower = line.lower()
             if any(
