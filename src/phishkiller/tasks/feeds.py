@@ -1,4 +1,4 @@
-"""Feed ingestion Celery tasks — PhishTank, URLhaus, OpenPhish."""
+"""Feed ingestion Celery tasks — PhishTank, URLhaus, OpenPhish, PhishStats, Phishing.Database."""
 
 import hashlib
 import logging
@@ -250,6 +250,152 @@ def ingest_openphish(self) -> dict:
 
 
 @celery_app.task(
+    name="phishkiller.tasks.feeds.ingest_phishstats",
+    bind=True,
+    queue="feeds",
+    max_retries=3,
+    default_retry_delay=600,
+)
+def ingest_phishstats(self) -> dict:
+    """Ingest phishing URLs from PhishStats CSV feed.
+
+    PhishStats: https://phishstats.info/phish_score.csv
+    CSV columns: date, score, url, ip
+    Filters for score >= 5 (high confidence).
+    """
+    import csv
+    import io
+
+    db = get_sync_db()
+    new_count = 0
+    total = 0
+
+    try:
+        logger.info("Ingesting PhishStats feed...")
+
+        with get_sync_client(timeout=120) as client:
+            response = client.get("https://phishstats.info/phish_score.csv")
+            response.raise_for_status()
+            text = response.text
+
+        reader = csv.reader(io.StringIO(text))
+        for row in reader:
+            # Skip header and comment rows
+            if not row or row[0].startswith("#") or row[0] == "date":
+                continue
+            if len(row) < 3:
+                continue
+
+            try:
+                score = float(row[1])
+            except (ValueError, IndexError):
+                continue
+
+            # Only high-confidence entries
+            if score < 5:
+                continue
+
+            url = row[2].strip()
+            if not url or not url.startswith("http"):
+                continue
+
+            total += 1
+            # Use URL hash as external_id
+            external_id = hashlib.sha256(url.encode()).hexdigest()[:32]
+
+            if _upsert_feed_entry(
+                db,
+                source=FeedSource.PHISHSTATS,
+                url=url,
+                external_id=external_id,
+            ):
+                new_count += 1
+
+            if total % 500 == 0:
+                db.commit()
+
+        db.commit()
+        logger.info("PhishStats: %d new / %d total entries", new_count, total)
+        return {
+            "source": "phishstats",
+            "new_entries": new_count,
+            "total_fetched": total,
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("PhishStats ingestion error: %s", e)
+        raise self.retry(exc=e)
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="phishkiller.tasks.feeds.ingest_phishing_database",
+    bind=True,
+    queue="feeds",
+    max_retries=3,
+    default_retry_delay=600,
+)
+def ingest_phishing_database(self) -> dict:
+    """Ingest phishing URLs from Phishing.Database (GitHub).
+
+    Feed: https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-links-ACTIVE.txt
+    Plain text, one URL per line.
+    """
+    db = get_sync_db()
+    new_count = 0
+    total = 0
+
+    try:
+        logger.info("Ingesting Phishing.Database feed...")
+
+        with get_sync_client(timeout=120) as client:
+            response = client.get(
+                "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database"
+                "/master/phishing-links-ACTIVE.txt"
+            )
+            response.raise_for_status()
+            text = response.text
+
+        for line in text.strip().splitlines():
+            url = line.strip()
+            if not url or not url.startswith("http"):
+                continue
+
+            total += 1
+            external_id = hashlib.sha256(url.encode()).hexdigest()[:32]
+
+            if _upsert_feed_entry(
+                db,
+                source=FeedSource.PHISHING_DATABASE,
+                url=url,
+                external_id=external_id,
+            ):
+                new_count += 1
+
+            if total % 500 == 0:
+                db.commit()
+
+        db.commit()
+        logger.info(
+            "Phishing.Database: %d new / %d total entries", new_count, total
+        )
+        return {
+            "source": "phishing_database",
+            "new_entries": new_count,
+            "total_fetched": total,
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("Phishing.Database ingestion error: %s", e)
+        raise self.retry(exc=e)
+    finally:
+        db.close()
+
+
+@celery_app.task(
     name="phishkiller.tasks.feeds.process_feed_entries",
     bind=True,
     queue="feeds",
@@ -263,6 +409,7 @@ def process_feed_entries(self, batch_size: int = 500) -> dict:
     immediately so they won't be re-selected in the next batch.
     """
     from phishkiller.tasks.analysis import build_analysis_chain
+    from phishkiller.tasks.discovery import discover_kits
 
     db = get_sync_db()
     processed = 0
@@ -311,6 +458,10 @@ def process_feed_entries(self, batch_size: int = 500) -> dict:
                 db.flush()
 
                 build_analysis_chain(str(kit.id)).apply_async()
+
+                # Also probe for additional kits at this URL's host
+                discover_kits.delay(str(entry.id))
+
                 entry.is_processed = True
                 processed += 1
 

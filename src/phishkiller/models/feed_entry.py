@@ -19,6 +19,8 @@ class FeedSource(str, enum.Enum):
     PHISHTANK = "phishtank"
     URLHAUS = "urlhaus"
     OPENPHISH = "openphish"
+    PHISHSTATS = "phishstats"
+    PHISHING_DATABASE = "phishing_database"
     CERTSTREAM = "certstream"
     MANUAL = "manual"
 
