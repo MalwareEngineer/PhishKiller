@@ -1,11 +1,16 @@
 """Kit API endpoints."""
 
 import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 
 from phishkiller.api.deps import DbSession, Pagination
+from phishkiller.config import get_settings
 from phishkiller.schemas.kit import (
+    KitBulkCreate,
+    KitBulkResponse,
+    KitBulkResult,
     KitCreate,
     KitDetail,
     KitListResponse,
@@ -37,10 +42,72 @@ async def list_kits(
 @router.post("", response_model=KitSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_kit(payload: KitCreate, db: DbSession) -> KitSubmitResponse:
     service = KitService(db)
-    kit, task_id = await service.submit_kit(
+    kit, task_id, duplicate = await service.submit_kit(
         str(payload.url), payload.source_feed
     )
+    return KitSubmitResponse(
+        kit_id=kit.id,
+        task_id=task_id or "",
+        duplicate=duplicate,
+        message="Duplicate — existing kit returned" if duplicate else "Kit submitted for analysis",
+    )
+
+
+@router.post("/upload", response_model=KitSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+async def upload_kit(
+    db: DbSession,
+    file: UploadFile,
+    source_feed: str = Form("manual"),
+) -> KitSubmitResponse:
+    """Upload a local phishing kit file for analysis (skips download step)."""
+    settings = get_settings()
+    max_bytes = settings.max_kit_size_mb * 1024 * 1024
+
+    # Read file content with size check
+    content = await file.read()
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {settings.max_kit_size_mb}MB limit",
+        )
+
+    # Save to download dir so the chain can find it
+    kit_id = uuid.uuid4()
+    download_dir = Path(settings.kit_download_dir) / str(kit_id)
+    download_dir.mkdir(parents=True, exist_ok=True)
+    filepath = download_dir / (file.filename or "upload.bin")
+    filepath.write_bytes(content)
+
+    service = KitService(db)
+    kit, task_id = await service.submit_file(
+        filename=file.filename or "upload.bin",
+        local_path=str(filepath),
+        source_feed=source_feed,
+        kit_id=kit_id,
+    )
+
     return KitSubmitResponse(kit_id=kit.id, task_id=task_id)
+
+
+@router.post("/bulk", response_model=KitBulkResponse, status_code=status.HTTP_202_ACCEPTED)
+async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
+    """Submit multiple URLs for download and analysis."""
+    if len(payload.urls) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 500 URLs per bulk request",
+        )
+
+    service = KitService(db)
+    results, submitted, skipped = await service.submit_bulk(
+        [str(u) for u in payload.urls], payload.source_feed
+    )
+
+    return KitBulkResponse(
+        submitted=submitted,
+        skipped_duplicate=skipped,
+        results=[KitBulkResult(**r) for r in results],
+    )
 
 
 @router.get("/{kit_id}", response_model=KitDetail)

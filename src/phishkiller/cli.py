@@ -3,7 +3,9 @@
 Entry point registered in pyproject.toml as `phishkiller` console script.
 
 Commands:
-    phishkiller submit <url>           Submit a kit URL for analysis
+    phishkiller submit <url|file>      Submit a kit URL or local file for analysis
+    phishkiller submit --batch f.txt   Bulk submit URLs from a file
+    phishkiller watch <kit_id>         Watch analysis progress until completion
     phishkiller status <kit_id>        Check analysis status
     phishkiller kits list              List kits with filters
     phishkiller kits get <kit_id>      Get kit details
@@ -20,10 +22,14 @@ Commands:
 
 import json
 import sys
+import time
+from pathlib import Path
 
 import httpx
 import typer
 from rich.console import Console
+from rich.live import Live
+from rich.spinner import Spinner
 from rich.table import Table
 
 app = typer.Typer(
@@ -72,14 +78,91 @@ def _api(method: str, path: str, **kwargs) -> dict | list | None:
 
 @app.command()
 def submit(
-    url: str = typer.Argument(..., help="URL of phishing kit to download and analyze"),
+    target: str = typer.Argument(None, help="URL or local file path of phishing kit"),
     source: str = typer.Option("manual", "--source", "-s", help="Source feed name"),
+    batch: str = typer.Option(None, "--batch", "-b", help="File containing one URL per line (bulk submit)"),
 ):
-    """Submit a phishing kit URL for download and analysis."""
-    data = _api("post", "/kits", json={"url": url, "source_feed": source})
-    console.print(f"[green]+[/green] Kit submitted: [bold]{data['kit_id']}[/bold]")
-    console.print(f"  Task ID: {data['task_id']}")
-    console.print(f"  Track status: phishkiller status {data['kit_id']}")
+    """Submit a phishing kit for analysis.
+
+    Accepts a URL, a local file path, or --batch for bulk URL submission.
+
+    Examples:
+        phishkiller submit https://example.com/kit.zip
+        phishkiller submit ./suspicious-kit.zip --source ir-42
+        phishkiller submit --batch urls.txt
+    """
+    if batch:
+        # Bulk URL mode
+        batch_path = Path(batch)
+        if not batch_path.exists():
+            console.print(f"[red]File not found:[/red] {batch}")
+            raise typer.Exit(1)
+        urls = [
+            line.strip()
+            for line in batch_path.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if not urls:
+            console.print("[yellow]No URLs found in file[/yellow]")
+            raise typer.Exit(1)
+        if len(urls) > 500:
+            console.print(f"[red]Too many URLs ({len(urls)}). Maximum is 500 per batch.[/red]")
+            raise typer.Exit(1)
+
+        data = _api("post", "/kits/bulk", json={"urls": urls, "source_feed": source})
+        console.print(
+            f"[green]+[/green] Bulk submit: "
+            f"[bold]{data['submitted']}[/bold] submitted, "
+            f"[yellow]{data['skipped_duplicate']}[/yellow] duplicates skipped"
+        )
+        table = Table(title="Results")
+        table.add_column("URL", max_width=60)
+        table.add_column("Kit ID", max_width=12)
+        table.add_column("Status")
+        for r in data["results"]:
+            status_str = "[yellow]duplicate[/yellow]" if r["duplicate"] else "[green]queued[/green]"
+            table.add_row(r["url"][:60], str(r["kit_id"])[:12] + "…", status_str)
+        console.print(table)
+        return
+
+    if not target:
+        console.print("[red]Error:[/red] Provide a URL, file path, or use --batch")
+        raise typer.Exit(1)
+
+    # Check if target is a local file
+    target_path = Path(target)
+    if target_path.exists() and target_path.is_file():
+        # File upload mode
+        with open(target_path, "rb") as f:
+            try:
+                with httpx.Client(timeout=60) as client:
+                    response = client.post(
+                        f"{API_BASE}/kits/upload",
+                        files={"file": (target_path.name, f)},
+                        data={"source_feed": source},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+            except httpx.ConnectError:
+                console.print(f"[red]Error: Cannot connect to API at {API_BASE}[/red]")
+                raise typer.Exit(1)
+            except httpx.HTTPStatusError as e:
+                console.print(f"[red]API Error {e.response.status_code}:[/red] {e.response.text}")
+                raise typer.Exit(1)
+        console.print(f"[green]+[/green] File uploaded: [bold]{data['kit_id']}[/bold]")
+        console.print(f"  Task ID: {data['task_id']}")
+        console.print(f"  Watch progress: phishkiller watch {data['kit_id']}")
+        return
+
+    # URL mode (default)
+    data = _api("post", "/kits", json={"url": target, "source_feed": source})
+    if data.get("duplicate"):
+        console.print(f"[yellow]≡[/yellow] Duplicate — existing kit: [bold]{data['kit_id']}[/bold]")
+        console.print(f"  Check status: phishkiller status {data['kit_id']}")
+    else:
+        console.print(f"[green]+[/green] Kit submitted: [bold]{data['kit_id']}[/bold]")
+        console.print(f"  Task ID: {data['task_id']}")
+        console.print(f"  Watch progress: phishkiller watch {data['kit_id']}")
 
 
 @app.command()
@@ -139,6 +222,55 @@ def analyze(
     data = _api("post", f"/kits/{kit_id}/reanalyze")
     console.print(f"[green]+[/green] Analysis re-triggered for {kit_id[:8]}…")
     console.print(f"  Task ID: {data['task_id']}")
+
+
+@app.command()
+def watch(
+    kit_id: str = typer.Argument(..., help="Kit UUID to watch"),
+    timeout: int = typer.Option(600, "--timeout", "-t", help="Timeout in seconds"),
+    interval: int = typer.Option(3, "--interval", "-i", help="Poll interval in seconds"),
+):
+    """Watch a kit's analysis progress until completion."""
+    terminal_states = {"analyzed", "failed"}
+    start = time.time()
+
+    with Live(Spinner("dots", text=f"Watching kit {kit_id[:8]}…"), console=console) as live:
+        while time.time() - start < timeout:
+            try:
+                data = _api("get", f"/kits/{kit_id}")
+            except SystemExit:
+                return
+
+            kit_status = data["status"]
+            live.update(
+                Spinner("dots", text=f"Kit {kit_id[:8]}… [{kit_status}]")
+            )
+
+            if kit_status in terminal_states:
+                live.stop()
+                if kit_status == "analyzed":
+                    ioc_count = len(data.get("indicators", []))
+                    yara_count = len([
+                        r for r in data.get("analysis_results", [])
+                        if r.get("analysis_type") == "yara_scan"
+                    ])
+                    console.print(
+                        f"[green]✓[/green] Kit {kit_id[:8]}… analyzed — "
+                        f"{ioc_count} IOCs, {yara_count} YARA results"
+                    )
+                else:
+                    error = data.get("error_message") or "unknown"
+                    console.print(
+                        f"[red]✗[/red] Kit {kit_id[:8]}… failed: {error}"
+                    )
+                # Print full status
+                status(kit_id)
+                return
+
+            time.sleep(interval)
+
+    console.print(f"[yellow]⏱[/yellow] Timeout after {timeout}s — kit still {kit_status}")
+    console.print(f"  Check later: phishkiller status {kit_id}")
 
 
 # ─── Kits Sub-Commands ───────────────────────────────────────────────

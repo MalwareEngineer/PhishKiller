@@ -65,7 +65,26 @@ class KitListResponse(BaseModel):
 class KitSubmitResponse(BaseModel):
     kit_id: uuid.UUID
     task_id: str
+    duplicate: bool = False
     message: str = "Kit submitted for analysis"
+
+
+class KitBulkCreate(BaseModel):
+    urls: list[HttpUrl]
+    source_feed: str | None = None
+
+
+class KitBulkResult(BaseModel):
+    url: str
+    kit_id: uuid.UUID
+    task_id: str | None = None
+    duplicate: bool = False
+
+
+class KitBulkResponse(BaseModel):
+    submitted: int
+    skipped_duplicate: int
+    results: list[KitBulkResult]
 
 
 class SimilarKit(BaseModel):
