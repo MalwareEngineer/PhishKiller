@@ -4,9 +4,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from celery.signals import worker_ready
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from phishkiller.celery_app import celery_app
+from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
 from phishkiller.models.kit import Kit, KitStatus
 
@@ -70,6 +71,78 @@ def recover_stuck_kits(self, timeout_minutes: int = 30) -> dict:
     except Exception:
         db.rollback()
         logger.exception("[recovery] Failed to recover stuck kits")
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="phishkiller.tasks.recovery.full_reset_and_redispatch",
+    bind=True,
+    queue="celery",
+    max_retries=0,
+)
+def full_reset_and_redispatch(self) -> dict:
+    """Purge all queues, clean old analysis data, and re-dispatch all non-failed kits.
+
+    This forces every kit through the current (new) analysis chain, ensuring
+    new pipeline steps like YARA scanning and actor correlation run on all kits.
+    """
+    from kombu import Connection
+
+    from phishkiller.tasks.analysis import build_analysis_chain
+
+    db = get_sync_db()
+    try:
+        # 1. Purge RabbitMQ queues
+        settings = get_settings()
+        logger.info("[reset] Purging downloads and analysis queues...")
+        with Connection(settings.celery_broker_url) as conn:
+            for queue_name in ("downloads", "analysis"):
+                try:
+                    simple_q = conn.SimpleQueue(queue_name)
+                    simple_q.clear()
+                    simple_q.close()
+                    logger.info("[reset] Purged queue: %s", queue_name)
+                except Exception as e:
+                    logger.warning("[reset] Could not purge %s: %s", queue_name, e)
+
+        # 2. Bulk delete indicators and analysis_results
+        ind_count = db.execute(text("DELETE FROM indicators")).rowcount
+        ar_count = db.execute(text("DELETE FROM analysis_results")).rowcount
+        db.flush()
+        logger.info("[reset] Deleted %d indicators, %d analysis_results", ind_count, ar_count)
+
+        # 3. Reset all non-FAILED kits to PENDING
+        non_failed = db.scalars(
+            select(Kit).where(Kit.status != KitStatus.FAILED)
+        ).all()
+
+        for kit in non_failed:
+            kit.status = KitStatus.PENDING
+            kit.sha256 = None
+            kit.md5 = None
+            kit.sha1 = None
+            kit.tlsh = None
+            kit.error_message = None
+
+        db.commit()
+        logger.info("[reset] Reset %d kits to PENDING", len(non_failed))
+
+        # 4. Re-dispatch in batches
+        dispatched = 0
+        for kit in non_failed:
+            build_analysis_chain(str(kit.id)).apply_async()
+            dispatched += 1
+            if dispatched % 1000 == 0:
+                logger.info("[reset] Dispatched %d / %d kits", dispatched, len(non_failed))
+
+        logger.info("[reset] Complete — reset %d kits, dispatched %d chains", len(non_failed), dispatched)
+        return {"reset": len(non_failed), "dispatched": dispatched, "indicators_deleted": ind_count, "results_deleted": ar_count}
+
+    except Exception:
+        db.rollback()
+        logger.exception("[reset] Failed during full reset")
         raise
     finally:
         db.close()

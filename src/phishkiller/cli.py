@@ -382,6 +382,21 @@ def worker_recover(
     console.print("  Check worker logs for recovery details.")
 
 
+@worker_app.command("reset")
+def worker_reset():
+    """Purge all queues, clean DB analysis data, and re-dispatch all non-failed kits on the new chain."""
+    typer.confirm(
+        "This will purge ALL queued messages, delete all indicators/analysis_results, "
+        "and re-run every non-failed kit through the full analysis chain. Continue?",
+        abort=True,
+    )
+    from phishkiller.tasks.recovery import full_reset_and_redispatch
+
+    result = full_reset_and_redispatch.delay()
+    console.print(f"[green]+[/green] Full reset task dispatched (task_id={result.id})")
+    console.print("  Monitor progress: docker compose logs -f worker")
+
+
 # ─── Actors Sub-Commands ───────────────────────────────────────────
 
 
