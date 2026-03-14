@@ -366,6 +366,78 @@ def feeds_entries(
     console.print(table)
 
 
+@feeds_app.command("health")
+def feeds_health():
+    """Check feed health — flag sources with no recent ingestion."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func, select
+
+    from phishkiller.database import get_sync_db
+    from phishkiller.models.feed_entry import FeedEntry, FeedSource
+
+    expected_intervals = {
+        FeedSource.PHISHTANK: timedelta(hours=4),
+        FeedSource.URLHAUS: timedelta(hours=2),
+        FeedSource.OPENPHISH: timedelta(hours=8),
+    }
+
+    db = get_sync_db()
+    try:
+        now = datetime.now(timezone.utc)
+
+        table = Table(title="Feed Health")
+        table.add_column("Source", style="bold")
+        table.add_column("Last Entry")
+        table.add_column("Age")
+        table.add_column("Threshold")
+        table.add_column("Status")
+
+        any_unhealthy = False
+
+        for source, max_interval in expected_intervals.items():
+            last_entry = db.execute(
+                select(func.max(FeedEntry.created_at))
+                .where(FeedEntry.source == source)
+            ).scalar()
+
+            threshold_hrs = int(max_interval.total_seconds() // 3600)
+
+            if last_entry is None:
+                table.add_row(
+                    source.value, "never", "—",
+                    f"{threshold_hrs}h", "[red]NO DATA[/red]",
+                )
+                any_unhealthy = True
+                continue
+
+            age = now - last_entry.replace(tzinfo=timezone.utc)
+            hours = int(age.total_seconds() // 3600)
+            minutes = int((age.total_seconds() % 3600) // 60)
+            healthy = age <= max_interval
+            status_str = "[green]OK[/green]" if healthy else "[red]STALE[/red]"
+
+            if not healthy:
+                any_unhealthy = True
+
+            table.add_row(
+                source.value,
+                last_entry.strftime("%Y-%m-%d %H:%M UTC"),
+                f"{hours}h {minutes}m",
+                f"{threshold_hrs}h",
+                status_str,
+            )
+
+        console.print(table)
+        if any_unhealthy:
+            console.print(
+                "\n[red]WARNING:[/red] One or more feeds are stale or missing data."
+            )
+            raise typer.Exit(1)
+    finally:
+        db.close()
+
+
 # ─── Worker Sub-Commands ────────────────────────────────────────────
 
 
