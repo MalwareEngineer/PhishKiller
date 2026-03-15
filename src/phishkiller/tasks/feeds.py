@@ -4,38 +4,44 @@ import hashlib
 import logging
 import uuid
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
 from phishkiller.models.feed_entry import FeedEntry, FeedSource
 from phishkiller.models.kit import Kit, KitStatus
-from phishkiller.utils.http_client import get_sync_client
+from phishkiller.utils.http_client import fetch_with_cache, get_sync_client
 
 logger = logging.getLogger(__name__)
 
 
-def _upsert_feed_entry(
-    db, source: FeedSource, url: str, external_id: str,
-    raw_data: dict | None = None, target_brand: str | None = None,
-) -> bool:
-    """Insert a feed entry if it doesn't already exist. Returns True if new."""
-    existing = (
-        db.query(FeedEntry)
-        .filter(FeedEntry.source == source, FeedEntry.external_id == external_id)
-        .first()
-    )
-    if existing:
-        return False
+def _bulk_upsert_feed_entries(db, entries: list[dict]) -> int:
+    """Bulk-insert feed entries, skipping duplicates via ON CONFLICT DO NOTHING.
 
-    entry = FeedEntry(
-        source=source,
-        url=url,
-        external_id=external_id,
-        raw_data=raw_data,
-        target_brand=target_brand,
-    )
-    db.add(entry)
-    return True
+    Each dict must contain: id, source, url, external_id, and optionally
+    raw_data and target_brand.  Returns total number of rows inserted.
+    """
+    if not entries:
+        return 0
+
+    inserted = 0
+    chunk_size = 500
+
+    for i in range(0, len(entries), chunk_size):
+        chunk = entries[i : i + chunk_size]
+        stmt = (
+            pg_insert(FeedEntry.__table__)
+            .values(chunk)
+            .on_conflict_do_nothing(
+                index_elements=["source", "external_id"],
+            )
+        )
+        result = db.execute(stmt)
+        inserted += result.rowcount
+        db.commit()
+
+    return inserted
 
 
 @celery_app.task(
@@ -53,8 +59,6 @@ def ingest_phishtank(self) -> dict:
     """
     settings = get_settings()
     db = get_sync_db()
-    new_count = 0
-    total = 0
 
     try:
         url = "http://data.phishtank.com/data/online-valid.json"
@@ -66,37 +70,34 @@ def ingest_phishtank(self) -> dict:
 
         logger.info("Ingesting PhishTank feed...")
 
-        with get_sync_client(timeout=120) as client:
-            response = client.get(url, headers={"Accept": "application/json"})
-            response.raise_for_status()
-            entries = response.json()
+        response = fetch_with_cache(
+            url, timeout=120, headers={"Accept": "application/json"},
+        )
+        if response is None:
+            return {"source": "phishtank", "new_entries": 0, "cached": True}
 
-        for entry in entries:
-            total += 1
+        raw_entries = response.json()
+
+        entries = []
+        for entry in raw_entries:
             phish_url = entry.get("url", "")
             phish_id = str(entry.get("phish_id", ""))
             target = entry.get("target", "")
+            entries.append({
+                "id": uuid.uuid4(),
+                "source": FeedSource.PHISHTANK,
+                "url": phish_url,
+                "external_id": phish_id,
+                "raw_data": entry,
+                "target_brand": target if target else None,
+            })
 
-            if _upsert_feed_entry(
-                db,
-                source=FeedSource.PHISHTANK,
-                url=phish_url,
-                external_id=phish_id,
-                raw_data=entry,
-                target_brand=target if target else None,
-            ):
-                new_count += 1
-
-            # Batch commit every 500
-            if total % 500 == 0:
-                db.commit()
-
-        db.commit()
-        logger.info("PhishTank: %d new / %d total entries", new_count, total)
+        new_count = _bulk_upsert_feed_entries(db, entries)
+        logger.info("PhishTank: %d new / %d total entries", new_count, len(entries))
         return {
             "source": "phishtank",
             "new_entries": new_count,
-            "total_fetched": total,
+            "total_fetched": len(entries),
         }
 
     except Exception as e:
@@ -120,8 +121,6 @@ def ingest_urlhaus(self) -> dict:
     URLhaus API: https://urlhaus-api.abuse.ch/v1/urls/recent/
     """
     db = get_sync_db()
-    new_count = 0
-    total = 0
 
     try:
         settings = get_settings()
@@ -133,51 +132,45 @@ def ingest_urlhaus(self) -> dict:
 
         logger.info("Ingesting URLhaus feed...")
 
-        headers = {"Accept": "application/json"}
+        req_headers = {"Accept": "application/json"}
         if settings.urlhaus_auth_key:
-            headers["Auth-Key"] = settings.urlhaus_auth_key
+            req_headers["Auth-Key"] = settings.urlhaus_auth_key
 
-        with get_sync_client(timeout=60) as client:
-            response = client.get(
-                "https://urlhaus-api.abuse.ch/v1/urls/recent/",
-                headers=headers,
-            )
-            response.raise_for_status()
-            data = response.json()
+        response = fetch_with_cache(
+            "https://urlhaus-api.abuse.ch/v1/urls/recent/",
+            timeout=60,
+            headers=req_headers,
+        )
+        if response is None:
+            return {"source": "urlhaus", "new_entries": 0, "cached": True}
+
+        data = response.json()
 
         query_status = data.get("query_status", "")
         if query_status != "ok":
             raise ValueError(f"URLhaus API query_status: {query_status}")
 
-        entries = data.get("urls", [])
-        for entry in entries:
-            total += 1
+        raw_entries = data.get("urls", [])
+        entries = []
+        for entry in raw_entries:
             entry_url = entry.get("url", "")
             entry_id = str(entry.get("id", ""))
-
-            # Filter for phishing-related tags
-            tags = entry.get("tags", []) or []
             threat = entry.get("threat", "")
+            entries.append({
+                "id": uuid.uuid4(),
+                "source": FeedSource.URLHAUS,
+                "url": entry_url,
+                "external_id": entry_id,
+                "raw_data": entry,
+                "target_brand": threat if threat else None,
+            })
 
-            if _upsert_feed_entry(
-                db,
-                source=FeedSource.URLHAUS,
-                url=entry_url,
-                external_id=entry_id,
-                raw_data=entry,
-                target_brand=threat if threat else None,
-            ):
-                new_count += 1
-
-            if total % 500 == 0:
-                db.commit()
-
-        db.commit()
-        logger.info("URLhaus: %d new / %d total entries", new_count, total)
+        new_count = _bulk_upsert_feed_entries(db, entries)
+        logger.info("URLhaus: %d new / %d total entries", new_count, len(entries))
         return {
             "source": "urlhaus",
             "new_entries": new_count,
-            "total_fetched": total,
+            "total_fetched": len(entries),
         }
 
     except Exception as e:
@@ -199,46 +192,38 @@ def ingest_openphish(self) -> dict:
     """Ingest phishing URLs from OpenPhish community feed.
 
     OpenPhish: https://openphish.com/feed.txt (one URL per line)
-    No IDs — URL is used as external_id via SHA256 hash.
+    No IDs — URL is used as external_id via full SHA256 hash.
     """
     db = get_sync_db()
-    new_count = 0
-    total = 0
 
     try:
         logger.info("Ingesting OpenPhish feed...")
 
-        with get_sync_client(timeout=60) as client:
-            response = client.get("https://openphish.com/feed.txt")
-            response.raise_for_status()
-            text = response.text
+        response = fetch_with_cache("https://openphish.com/feed.txt", timeout=60)
+        if response is None:
+            return {"source": "openphish", "new_entries": 0, "cached": True}
 
+        text = response.text
+        entries = []
         for line in text.strip().splitlines():
             url = line.strip()
             if not url or not url.startswith("http"):
                 continue
 
-            total += 1
-            # Use URL hash as external_id since OpenPhish has no IDs
-            external_id = hashlib.sha256(url.encode()).hexdigest()[:32]
+            external_id = hashlib.sha256(url.encode()).hexdigest()
+            entries.append({
+                "id": uuid.uuid4(),
+                "source": FeedSource.OPENPHISH,
+                "url": url,
+                "external_id": external_id,
+            })
 
-            if _upsert_feed_entry(
-                db,
-                source=FeedSource.OPENPHISH,
-                url=url,
-                external_id=external_id,
-            ):
-                new_count += 1
-
-            if total % 500 == 0:
-                db.commit()
-
-        db.commit()
-        logger.info("OpenPhish: %d new / %d total entries", new_count, total)
+        new_count = _bulk_upsert_feed_entries(db, entries)
+        logger.info("OpenPhish: %d new / %d total entries", new_count, len(entries))
         return {
             "source": "openphish",
             "new_entries": new_count,
-            "total_fetched": total,
+            "total_fetched": len(entries),
         }
 
     except Exception as e:
@@ -267,20 +252,20 @@ def ingest_phishstats(self) -> dict:
     import io
 
     db = get_sync_db()
-    new_count = 0
-    total = 0
 
     try:
         logger.info("Ingesting PhishStats feed...")
 
-        with get_sync_client(timeout=120) as client:
-            response = client.get("https://phishstats.info/phish_score.csv")
-            response.raise_for_status()
-            text = response.text
+        response = fetch_with_cache(
+            "https://phishstats.info/phish_score.csv", timeout=120,
+        )
+        if response is None:
+            return {"source": "phishstats", "new_entries": 0, "cached": True}
 
+        text = response.text
+        entries = []
         reader = csv.reader(io.StringIO(text))
         for row in reader:
-            # Skip header and comment rows
             if not row or row[0].startswith("#") or row[0] == "date":
                 continue
             if len(row) < 3:
@@ -291,7 +276,6 @@ def ingest_phishstats(self) -> dict:
             except (ValueError, IndexError):
                 continue
 
-            # Only high-confidence entries
             if score < 5:
                 continue
 
@@ -299,27 +283,20 @@ def ingest_phishstats(self) -> dict:
             if not url or not url.startswith("http"):
                 continue
 
-            total += 1
-            # Use URL hash as external_id
-            external_id = hashlib.sha256(url.encode()).hexdigest()[:32]
+            external_id = hashlib.sha256(url.encode()).hexdigest()
+            entries.append({
+                "id": uuid.uuid4(),
+                "source": FeedSource.PHISHSTATS,
+                "url": url,
+                "external_id": external_id,
+            })
 
-            if _upsert_feed_entry(
-                db,
-                source=FeedSource.PHISHSTATS,
-                url=url,
-                external_id=external_id,
-            ):
-                new_count += 1
-
-            if total % 500 == 0:
-                db.commit()
-
-        db.commit()
-        logger.info("PhishStats: %d new / %d total entries", new_count, total)
+        new_count = _bulk_upsert_feed_entries(db, entries)
+        logger.info("PhishStats: %d new / %d total entries", new_count, len(entries))
         return {
             "source": "phishstats",
             "new_entries": new_count,
-            "total_fetched": total,
+            "total_fetched": len(entries),
         }
 
     except Exception as e:
@@ -344,47 +321,41 @@ def ingest_phishing_database(self) -> dict:
     Plain text, one URL per line.
     """
     db = get_sync_db()
-    new_count = 0
-    total = 0
 
     try:
         logger.info("Ingesting Phishing.Database feed...")
 
-        with get_sync_client(timeout=120) as client:
-            response = client.get(
-                "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database"
-                "/master/phishing-links-ACTIVE.txt"
-            )
-            response.raise_for_status()
-            text = response.text
+        response = fetch_with_cache(
+            "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database"
+            "/master/phishing-links-ACTIVE.txt",
+            timeout=120,
+        )
+        if response is None:
+            return {"source": "phishing_database", "new_entries": 0, "cached": True}
 
+        text = response.text
+        entries = []
         for line in text.strip().splitlines():
             url = line.strip()
             if not url or not url.startswith("http"):
                 continue
 
-            total += 1
-            external_id = hashlib.sha256(url.encode()).hexdigest()[:32]
+            external_id = hashlib.sha256(url.encode()).hexdigest()
+            entries.append({
+                "id": uuid.uuid4(),
+                "source": FeedSource.PHISHING_DATABASE,
+                "url": url,
+                "external_id": external_id,
+            })
 
-            if _upsert_feed_entry(
-                db,
-                source=FeedSource.PHISHING_DATABASE,
-                url=url,
-                external_id=external_id,
-            ):
-                new_count += 1
-
-            if total % 500 == 0:
-                db.commit()
-
-        db.commit()
+        new_count = _bulk_upsert_feed_entries(db, entries)
         logger.info(
-            "Phishing.Database: %d new / %d total entries", new_count, total
+            "Phishing.Database: %d new / %d total entries", new_count, len(entries),
         )
         return {
             "source": "phishing_database",
             "new_entries": new_count,
-            "total_fetched": total,
+            "total_fetched": len(entries),
         }
 
     except Exception as e:

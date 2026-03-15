@@ -1,10 +1,12 @@
 """HTTP client utilities for downloading kits and fetching feeds."""
 
+import json
 import logging
 import random
 from pathlib import Path
 
 import httpx
+import redis
 
 from phishkiller.config import get_settings
 
@@ -61,6 +63,57 @@ def get_sync_client(**kwargs) -> httpx.Client:
     }
     defaults.update(kwargs)
     return httpx.Client(**defaults)
+
+
+def fetch_with_cache(
+    url: str, *, timeout: int = 120, headers: dict | None = None,
+) -> httpx.Response | None:
+    """Fetch a URL with ETag/If-Modified-Since caching via Redis.
+
+    Returns the response on 200, or None on 304 Not Modified (caller should
+    skip ingestion). Falls back to unconditional GET if Redis is unavailable.
+    """
+    settings = get_settings()
+    cache_key = f"feed_cache:{url}"
+    conditional_headers: dict[str, str] = {}
+
+    # Try to load cached ETag/Last-Modified from Redis
+    try:
+        r = redis.from_url(settings.redis_url)
+        cached = r.get(cache_key)
+        if cached:
+            meta = json.loads(cached)
+            if meta.get("etag"):
+                conditional_headers["If-None-Match"] = meta["etag"]
+            if meta.get("last_modified"):
+                conditional_headers["If-Modified-Since"] = meta["last_modified"]
+    except Exception:
+        logger.debug("Redis unavailable for feed cache, using unconditional GET")
+
+    # Merge conditional headers with any caller-supplied headers
+    merged_headers = {**(headers or {}), **conditional_headers}
+
+    with get_sync_client(timeout=timeout) as client:
+        response = client.get(url, headers=merged_headers)
+
+    if response.status_code == 304:
+        logger.info("Feed %s: 304 Not Modified, skipping ingestion", url[:80])
+        return None
+
+    response.raise_for_status()
+
+    # Cache the response's ETag/Last-Modified for next time
+    try:
+        meta = {
+            "etag": response.headers.get("etag"),
+            "last_modified": response.headers.get("last-modified"),
+        }
+        r = redis.from_url(settings.redis_url)
+        r.setex(cache_key, 86400, json.dumps(meta))
+    except Exception:
+        logger.debug("Failed to cache feed headers in Redis for %s", url[:80])
+
+    return response
 
 
 async def get_async_client(**kwargs) -> httpx.AsyncClient:
