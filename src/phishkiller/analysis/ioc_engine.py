@@ -28,6 +28,8 @@ from phishkiller.analysis.patterns import (
     FALSE_DOMAIN_EXTENSIONS,
     IPV4_PATTERN,
     JS_FALSE_DOMAINS,
+    _JS_OBJECT_PREFIXES,
+    _JS_PRONE_TLDS,
     PHP_MAIL_PATTERN,
     PHP_MAIL_TO_PATTERN,
     PHONE_PATTERN,
@@ -181,7 +183,7 @@ class IOCExtractor:
             for match in pattern.finditer(line):
                 email = match.group(1)
                 domain = email.split("@")[1].lower()
-                if domain not in EMAIL_EXCLUSIONS:
+                if domain not in EMAIL_EXCLUSIONS and extract_root_domain(domain) not in BENIGN_DOMAINS:
                     results.append(ExtractedIOC(
                         type=IndicatorType.EMAIL,
                         value=email,
@@ -196,6 +198,10 @@ class IOCExtractor:
             email = match.group(0)
             domain = email.split("@")[1].lower()
             if domain in EMAIL_EXCLUSIONS:
+                continue
+            # Also check root domain (catches uuid@o293668.ingest.sentry.io etc.)
+            root = extract_root_domain(domain)
+            if root in BENIGN_DOMAINS:
                 continue
             # Skip if already captured by mail() patterns
             if any(ioc.value == email for ioc in results):
@@ -284,12 +290,22 @@ class IOCExtractor:
             if is_benign_url(url):
                 continue
 
-            # Skip static asset URLs — check the URL *path*, not the full string
-            # so query strings like .js?ver=3.0 are still caught
+            # Skip javascript: pseudo-protocol URLs (https://javascript:...)
             try:
-                url_path = urlparse(url).path.lower()
+                parsed = urlparse(url)
+                if parsed.hostname and parsed.hostname.lower() == "javascript":
+                    continue
+                url_path = parsed.path.lower()
             except Exception:
                 url_path = url_lower
+
+            # Skip URLs with base64 blobs as the hostname/path
+            # (e.g. https://www.YXNkYXNkQGdtYWlsLmNvbQ==)
+            if "==" in url_lower or "==" in (parsed.hostname or ""):
+                continue
+
+            # Skip static asset URLs — check the URL *path*, not the full string
+            # so query strings like .js?ver=3.0 are still caught
             if any(url_path.endswith(ext) for ext in BENIGN_URL_EXTENSIONS):
                 continue
 
@@ -402,6 +418,11 @@ class IOCExtractor:
                 continue
             if domain in JS_FALSE_DOMAINS:
                 continue
+
+            # Skip JS object property access patterns (this.br, caller.name, etc.)
+            if any(domain.startswith(prefix) for prefix in _JS_OBJECT_PREFIXES):
+                continue
+
             # Skip very short domains (likely false positives)
             if len(domain) < 5:
                 continue
@@ -427,6 +448,18 @@ class IOCExtractor:
                 tld == "is" and "-" in labels[0] and len(labels) == 2
             ):
                 continue
+
+            # Skip JS-prone TLDs when the SLD looks like a variable name
+            # (single label, no hyphens, not a known registrar pattern)
+            if tld in _JS_PRONE_TLDS and len(labels) == 2:
+                sld = labels[0]
+                # Real domains usually aren't camelCase or pure lowercase
+                # JS vars like "rootdiv", "errgroupobj", "functioncaller"
+                if any(c.isupper() for c in sld[1:]):  # camelCase
+                    continue
+                # Very long single-word SLD + JS-prone TLD = likely JS var
+                if len(sld) > 12 and "-" not in sld:
+                    continue
 
             confidence = 60
             line_lower = line.lower()
