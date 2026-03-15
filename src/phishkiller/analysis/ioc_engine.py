@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # that took 7,794 seconds was a multi-MB minified HTML blob).
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB — skip files larger than this
 MAX_SCAN_SECONDS = 120  # 2 minutes per file — abort and return partial IOCs
+MAX_LINE_LENGTH = 100_000  # 100 KB — truncate longer lines before regex (minified JS/HTML)
 
 from phishkiller.analysis.patterns import (
     BASE64_BLOCK_PATTERN,
@@ -100,14 +101,23 @@ class IOCExtractor:
         deadline = time.monotonic() + MAX_SCAN_SECONDS
 
         for line_num, line in enumerate(lines, start=1):
-            # Check timeout every 1000 lines to avoid syscall overhead
-            if line_num % 1000 == 0 and time.monotonic() > deadline:
+            # Check timeout every 500 lines
+            if line_num % 500 == 0 and time.monotonic() > deadline:
                 logger.warning(
                     "IOC extraction timed out after %ds on %s at line %d/%d, "
                     "returning %d partial IOCs",
                     MAX_SCAN_SECONDS, source_file, line_num, len(lines), len(iocs),
                 )
                 break
+
+            # Truncate mega-lines (minified JS/HTML) to prevent catastrophic
+            # regex backtracking on a single line that never hits the timeout
+            if len(line) > MAX_LINE_LENGTH:
+                logger.debug(
+                    "Truncating %d-char line at %s:%d to %d chars",
+                    len(line), source_file, line_num, MAX_LINE_LENGTH,
+                )
+                line = line[:MAX_LINE_LENGTH]
 
             iocs.extend(self._extract_emails(line, source_file, line_num))
             iocs.extend(self._extract_telegram_tokens(line, source_file, line_num))
