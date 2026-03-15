@@ -183,3 +183,35 @@ class YaraScanner:
             return True
         except ImportError:
             return False
+
+
+# Module-level cached scanner — compiled rules persist across tasks within
+# each prefork worker process.  Saves ~0.75s per task (892 rule files).
+_cached_scanner: YaraScanner | None = None
+_cached_rules_dir: str | None = None
+
+
+def get_cached_scanner(rules_dir: str | None) -> YaraScanner:
+    """Return a YaraScanner with pre-compiled rules, cached per worker process.
+
+    Rules are compiled once on first call and reused for all subsequent tasks
+    in the same worker process.  A new rules_dir invalidates the cache.
+    """
+    global _cached_scanner, _cached_rules_dir
+
+    if (
+        _cached_scanner is not None
+        and _cached_rules_dir == rules_dir
+        and _cached_scanner._compiled_rules is not None
+    ):
+        return _cached_scanner
+
+    scanner = YaraScanner(rules_dir=rules_dir)
+    scanner.load_rules()
+    _cached_scanner = scanner
+    _cached_rules_dir = rules_dir
+    logger.info(
+        "Cached YARA scanner for worker process (pid=%d, rules=%d)",
+        os.getpid(), scanner.rules_loaded,
+    )
+    return scanner

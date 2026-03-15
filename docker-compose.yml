@@ -80,7 +80,7 @@ services:
     container_name: phishkiller-worker-downloads
     command: >
       celery -A phishkiller.celery_app worker
-      -l info -P prefork -c 8
+      -l info -P prefork -c 1
       -Q downloads
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://phishkiller:phishkiller@postgres:5432/phishkiller
@@ -109,7 +109,7 @@ services:
     container_name: phishkiller-worker-analysis
     command: >
       celery -A phishkiller.celery_app worker
-      -l info -P prefork -c 8
+      -l info -P prefork -c 12
       -Q analysis
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://phishkiller:phishkiller@postgres:5432/phishkiller

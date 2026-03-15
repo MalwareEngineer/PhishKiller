@@ -1,9 +1,18 @@
 """IOC extraction engine for phishing kit source files."""
 
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+
+# Guard rails for pathological files (the P99 file is ~50 KB; the outlier
+# that took 7,794 seconds was a multi-MB minified HTML blob).
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB — skip files larger than this
+MAX_SCAN_SECONDS = 120  # 2 minutes per file — abort and return partial IOCs
 
 from phishkiller.analysis.patterns import (
     BASE64_BLOCK_PATTERN,
@@ -86,8 +95,18 @@ class IOCExtractor:
         """Scan a string for IOCs (useful for testing or one-off analysis)."""
         iocs: list[ExtractedIOC] = []
         lines = content.split("\n")
+        deadline = time.monotonic() + MAX_SCAN_SECONDS
 
         for line_num, line in enumerate(lines, start=1):
+            # Check timeout every 1000 lines to avoid syscall overhead
+            if line_num % 1000 == 0 and time.monotonic() > deadline:
+                logger.warning(
+                    "IOC extraction timed out after %ds on %s at line %d/%d, "
+                    "returning %d partial IOCs",
+                    MAX_SCAN_SECONDS, source_file, line_num, len(lines), len(iocs),
+                )
+                break
+
             iocs.extend(self._extract_emails(line, source_file, line_num))
             iocs.extend(self._extract_telegram_tokens(line, source_file, line_num))
             iocs.extend(self._extract_telegram_chat_ids(line, source_file, line_num))
@@ -131,6 +150,19 @@ class IOCExtractor:
 
     def _scan_file(self, filepath: str, base_dir: str) -> list[ExtractedIOC]:
         relative_path = os.path.relpath(filepath, base_dir)
+
+        # Skip oversized files — they cause multi-hour regex stalls
+        try:
+            file_size = os.path.getsize(filepath)
+        except OSError:
+            return []
+        if file_size > MAX_FILE_SIZE_BYTES:
+            logger.warning(
+                "Skipping IOC extraction for %s (%d bytes > %d byte limit)",
+                relative_path, file_size, MAX_FILE_SIZE_BYTES,
+            )
+            return []
+
         try:
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
