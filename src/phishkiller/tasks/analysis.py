@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 from celery import chain
+from celery.exceptions import SoftTimeLimitExceeded
 
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
@@ -303,6 +304,8 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
     name="phishkiller.tasks.analysis.extract_iocs",
     bind=True,
     queue="analysis",
+    soft_time_limit=300,   # 5 min — raises SoftTimeLimitExceeded
+    time_limit=330,        # 5.5 min — SIGKILL if soft limit is caught/ignored
 )
 def extract_iocs(self, prev_result: dict) -> dict:
     """Extract IOCs from kit files (extracted archive or single downloaded file)."""
@@ -378,6 +381,43 @@ def extract_iocs(self, prev_result: dict) -> dict:
             "status": "analyzed",
             "iocs_extracted": len(result.iocs),
             "ioc_summary": ioc_summary,
+        }
+
+    except SoftTimeLimitExceeded:
+        duration = time.time() - start
+        logger.warning(
+            "IOC extraction for kit %s hit time limit after %.0fs, "
+            "saving partial results",
+            kit_id, duration,
+        )
+        try:
+            kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+            if kit:
+                kit.status = KitStatus.ANALYZED
+                analysis = AnalysisResult(
+                    kit_id=kit.id,
+                    analysis_type=AnalysisType.IOC_EXTRACTION,
+                    result_data={
+                        "step": "ioc_extraction",
+                        "total_iocs": 0,
+                        "by_type": {},
+                        "files_processed": 0,
+                        "errors": [f"Time limit exceeded after {duration:.0f}s"],
+                        "timed_out": True,
+                    },
+                    duration_seconds=round(duration, 3),
+                    files_processed=0,
+                )
+                db.add(analysis)
+                db.commit()
+        except Exception:
+            pass
+        return {
+            "kit_id": kit_id,
+            "status": "analyzed",
+            "iocs_extracted": 0,
+            "ioc_summary": {},
+            "timed_out": True,
         }
 
     except Exception as e:
