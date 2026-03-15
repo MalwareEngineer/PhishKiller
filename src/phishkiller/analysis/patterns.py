@@ -268,25 +268,29 @@ IPV4_PATTERN = re.compile(
 PRIVATE_IP_PREFIXES = ("10.", "127.", "192.168.", "0.", "169.254.")
 
 # ---------- SMTP Credentials ----------
+# Require PHP variable assignment ($var = "val") or array/config key syntax
+# ("key" => "val" / "key": "val").  Values must be quoted and ≥3 chars to
+# filter HTML attribute junk (name=, class=, placeholder=) and short English
+# words (is, to, was) that the old broad pattern captured.
 SMTP_HOST_PATTERN = re.compile(
-    r"(?:\$?(?:smtp_?host|smtp_?server|mail_?host|Host))"
-    r'["\s:=\']+([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
+    r"""\$(?:smtp_?host|smtp_?server|mail_?host)\s*=\s*["']([a-zA-Z0-9.\-]{3,}\.[a-zA-Z]{2,})["']"""
+    r"""|["'](?:smtp_?host|smtp_?server|mail_?host)["']\s*(?:=>|:)\s*["']([a-zA-Z0-9.\-]{3,}\.[a-zA-Z]{2,})["']""",
     re.IGNORECASE,
 )
 SMTP_USER_PATTERN = re.compile(
-    r"(?:\$?(?:smtp_?user(?:name)?|mail_?user|Username))"
-    r'["\s:=\']+([^\s"\';<>]+)',
+    r"""\$(?:smtp_?user(?:name)?|mail_?user)\s*=\s*["']([^"']{3,})["']"""
+    r"""|["'](?:smtp_?user(?:name)?|mail_?user)["']\s*(?:=>|:)\s*["']([^"']{3,})["']""",
     re.IGNORECASE,
 )
 SMTP_PASS_PATTERN = re.compile(
-    r"(?:\$?(?:smtp_?pass(?:word)?|mail_?pass|Password))"
-    r'["\s:=\']+([^\s"\';<>]+)',
+    r"""\$(?:smtp_?pass(?:word)?|mail_?pass(?:word)?)\s*=\s*["']([^"']{3,})["']"""
+    r"""|["'](?:smtp_?pass(?:word)?|mail_?pass(?:word)?)["']\s*(?:=>|:)\s*["']([^"']{3,})["']""",
     re.IGNORECASE,
 )
 
 # ---------- Base64 Encoded Blocks ----------
 BASE64_BLOCK_PATTERN = re.compile(
-    r"[A-Za-z0-9+/]{100,}={0,2}",
+    r"[A-Za-z0-9+/]{200,}={0,2}",
 )
 
 # ---------- Cryptocurrency Wallets ----------
@@ -388,11 +392,29 @@ PHONE_PATTERN = re.compile(
 TELEGRAM_HANDLE_PATTERN = re.compile(
     r"(?<![a-zA-Z0-9])@([a-zA-Z][a-zA-Z0-9_]{4,31})(?![a-zA-Z0-9_])"
 )
-# Common false positives for @handles (CSS/JS/email conventions)
+# Common false positives for @handles (CSS/JS/email/JSON-LD/npm conventions)
 TELEGRAM_HANDLE_EXCLUSIONS = {
-    "media", "keyframes", "import", "charset", "font-face",
-    "supports", "layer", "scope", "container", "property",
+    # CSS at-rules
+    "media", "keyframes", "import", "charset", "supports",
+    "layer", "scope", "container", "property",
+    # JSDoc / Java annotations
     "param", "return", "throws", "override", "deprecated",
     "author", "version", "license", "copyright", "since",
+    # Email providers
     "gmail", "yahoo", "outlook", "hotmail",
+    # JSON-LD keywords
+    "context", "graph", "type", "value", "vocab", "reverse", "language",
+    # npm scopes / JS frameworks
+    "formatjs", "babel", "types", "angular", "react", "emotion",
+    # JS builtins
+    "iterator", "generator", "asynciterator", "tostringtag",
+    # SaaS / brand names (observed in production)
+    "flowcode", "getflowcode", "newrelic", "fontawesome", "roblox",
+    "prezoai", "glimitedaccount", "typedreamhq", "cakeresume",
+    "aboutdotme", "ghost",
+    # Generic UI / platform terms
+    "overview", "conference", "widget", "forms", "formsapp",
+    "everyone", "channel", "here",
+    # Font-face descriptor
+    "font-face",
 }
