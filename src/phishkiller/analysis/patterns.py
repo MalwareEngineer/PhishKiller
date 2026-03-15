@@ -1,6 +1,7 @@
 """Pre-compiled regex patterns for IOC extraction from phishing kit source files."""
 
 import re
+from html import unescape as html_unescape
 from urllib.parse import urlparse
 
 # ---------- Email addresses ----------
@@ -74,11 +75,11 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "reactjs.org", "vuejs.org", "angular.io",
     # Site builders / hosting platforms
     "weebly.com", "weeblysite.com", "editmysite.com",
-    "wix.com", "wixsite.com", "parastorage.com", "wixmp.com",
+    "wix.com", "wixsite.com", "parastorage.com", "wixmp.com", "wixpress.com",
     "strikingly.com", "mystrikingly.com",
     "squarespace.com", "sqspcdn.com",
     "wordpress.com", "wordpress.org", "wp.com", "wpcomstaging.com",
-    "shopify.com", "shopifycdn.com",
+    "shopify.com", "shopifycdn.com", "shopifyanalytics.com",
     "webflow.com", "webflow.io",
     "godaddy.com", "secureserver.net",
     "hostinger.com", "bluehost.com",
@@ -91,6 +92,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     # Social media
     "facebook.com", "fbcdn.net", "fbsbx.com",
     "twitter.com", "x.com", "twimg.com",
+    "twitch.tv", "twitchcdn.net",
     "instagram.com", "cdninstagram.com",
     "linkedin.com", "licdn.com",
     "youtube.com", "youtu.be", "ytimg.com",
@@ -128,17 +130,18 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "stripe.com", "stripe.network",
     "venmo.com",
     # Cloud storage (targets, not actor infra)
-    "dropbox.com", "dropboxusercontent.com",
+    "dropbox.com", "dropboxusercontent.com", "dropboxstatic.com",
     "box.com",
     "onedrive.com",
     # Apple
     "apple.com", "icloud.com", "mzstatic.com", "cdn-apple.com",
     # Standards / reference
     "w3.org", "w3schools.com",
-    "schema.org",
+    "schema.org", "json-schema.org",
     "php.net", "apache.org", "mozilla.org", "mozilla.net",
     "stackoverflow.com", "stackexchange.com",
     "npmjs.com", "yarnpkg.com",
+    "quirksmode.org",
     # Captcha / anti-bot
     "recaptcha.net", "hcaptcha.com",
     "gstatic.com",
@@ -147,6 +150,24 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "mixpanel.com",
     "amplitude.com",
     "newrelic.com",
+    # Blogging / CMS
+    "blogger.com", "blogspot.com",
+    # Travel / booking (targets, not actor infra)
+    "booking.com", "bstatic.com",
+    # URL shorteners / link management
+    "bitly.com", "bit.ly",
+    "ead.me",  # l.ead.me link shortener
+    # Security vendors
+    "fortinet.com",
+    # Consent / cookie management
+    "cookielaw.org", "onetrust.com",
+    # Monitoring / observability
+    "datadoghq.com", "datadoghq-browser-agent.com",
+    "newrelic.com",
+    # SaaS link pages
+    "flowcode.com", "campsite.bio", "campsite.to",
+    # Website builders (additional)
+    "webador.com",
     # Other benign
     "archive.org", "pearltrees.com",
     "gravatar.com", "wp.com",
@@ -159,6 +180,10 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "tistory.com",  # Korean blogging platform
     "qr-code-generator.com",
     "n9.cl",  # URL shortener
+    "offset.com",
+    "edgecastcdn.net",
+    "vk-portal.net",  # VK CDN
+    "latofonts.com",
 })
 
 # Two-part country-code SLDs (e.g. .co.uk, .com.br) — need 3 labels for root domain
@@ -190,10 +215,15 @@ def extract_root_domain(hostname: str) -> str:
     return hostname
 
 
+_HTML_ENTITY_RE = re.compile(r"&[a-zA-Z]+;?|&#[0-9]+;?|&#x[0-9a-fA-F]+;?")
+
+
 def is_benign_url(url: str) -> bool:
     """Check if a URL belongs to a known benign service."""
     try:
-        hostname = urlparse(url).hostname
+        # Strip HTML entities that corrupt urlparse (e.g. &quot; &amp;)
+        clean_url = _HTML_ENTITY_RE.sub("", url)
+        hostname = urlparse(clean_url).hostname
         if not hostname:
             return False
         root = extract_root_domain(hostname)
@@ -319,7 +349,31 @@ JS_FALSE_DOMAINS = {
     "object.is", "x22object.is", "link.click",
     "el-descriptions--mini.is",
     "locale-dataset.countries.com",
+    # Observed from production data — JS property access + ccTLD
+    "window.ga", "window.console.info",
+    "window.analytics.page", "window.shopifyanalytics.lib.page",
+    "window.langconfig.id", "window.vk.id",
+    "thirdparty.is",
+    "linkel.media",
 }
+# JS object prefixes — any domain starting with these followed by a dot
+# is almost certainly a property access, not a real domain
+_JS_OBJECT_PREFIXES = (
+    "this.", "self.", "window.", "document.", "navigator.",
+    "element.", "event.", "error.", "screen.", "history.",
+    "location.", "parent.", "caller.", "button.", "input.",
+    "form.", "link.", "file.", "cookie.", "entry.",
+    "source.", "asset.", "media.", "place.", "attr.",
+    "attribute.", "item.", "data.", "browser.",
+)
+# TLDs that are overwhelmingly JS false positives when paired with
+# single-word object names (e.g. this.br, caller.name, rootdiv.id)
+_JS_PRONE_TLDS = frozenset({
+    "name", "id", "is", "at", "br", "ml", "lt", "es", "ee",
+    "no", "me", "to", "au", "in", "my", "qa", "ph", "pt",
+    "ga", "info", "page", "host", "click", "link", "top",
+    "center", "media",
+})
 # Benign domains to skip in standalone domain extraction.
 # Uses root-domain matching via extract_root_domain() — so adding "google.com"
 # covers docs.google.com, meet.google.com, etc.
