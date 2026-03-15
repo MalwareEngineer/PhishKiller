@@ -425,10 +425,10 @@ def yara_scan(self, prev_result: dict) -> dict:
             return {**prev_result, "yara_matches": []}
 
         settings = get_settings()
-        from phishkiller.analysis.yara_scanner import YaraScanner
+        from phishkiller.analysis.yara_scanner import get_cached_scanner
 
-        scanner = YaraScanner(rules_dir=settings.yara_rules_dir)
-        rules_count = scanner.load_rules()
+        scanner = get_cached_scanner(settings.yara_rules_dir)
+        rules_count = scanner.rules_loaded
 
         if rules_count == 0:
             logger.debug("No YARA rules loaded, skipping scan for kit %s", kit_id)
