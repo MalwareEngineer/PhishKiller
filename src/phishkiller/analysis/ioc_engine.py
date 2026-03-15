@@ -1,5 +1,6 @@
 """IOC extraction engine for phishing kit source files."""
 
+import base64
 import logging
 import os
 import time
@@ -367,9 +368,13 @@ class IOCExtractor:
             (SMTP_PASS_PATTERN, "pass"),
         ]:
             for match in pattern.finditer(line):
+                # Each pattern has two alternations capturing in group(1) or group(2)
+                value = match.group(1) or match.group(2)
+                if not value:
+                    continue
                 results.append(ExtractedIOC(
                     type=IndicatorType.SMTP_CREDENTIAL,
-                    value=f"smtp_{label}={match.group(1)}",
+                    value=f"smtp_{label}={value}",
                     source_file=source_file,
                     line_number=line_num,
                     context=line[:200],
@@ -525,21 +530,58 @@ class IOCExtractor:
             ))
         return results
 
+    @staticmethod
+    def _is_config_blob(block: str) -> bool:
+        """Check if a base64 block decodes to plaintext config/protobuf junk.
+
+        Google feature flag protobufs, i18n locale lists, and similar SaaS
+        config blobs are cloned from legitimate sites and are not attacker
+        IOCs.  They decode to mostly-printable ASCII with telltale keywords.
+        """
+        try:
+            padded = block + "=" * (-len(block) % 4)
+            decoded = base64.b64decode(padded, validate=True)
+        except Exception:
+            return False  # can't decode — keep it (could be truncated payload)
+
+        # Check printable-ASCII ratio on first 512 bytes
+        sample = decoded[:512]
+        if not sample:
+            return True
+        printable = sum(1 for b in sample if 0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D))
+        ratio = printable / len(sample)
+
+        # >70% printable + contains known config keywords → junk
+        if ratio > 0.70:
+            text = sample.decode("utf-8", errors="replace").lower()
+            config_keywords = (
+                "selector", "missing", "feature", "license",  # Google protobuf
+                "locale", "language", "english", "deutsch", "bahasa",  # i18n
+                "usercontentcom", "googl",  # Google service blobs
+            )
+            if any(kw in text for kw in config_keywords):
+                return True
+        return False
+
     def _extract_base64_blocks(
         self, content: str, source_file: str
     ) -> list[ExtractedIOC]:
         results = []
         for match in BASE64_BLOCK_PATTERN.finditer(content):
             block = match.group(0)
-            if len(block) >= 100:
-                results.append(ExtractedIOC(
-                    type=IndicatorType.BASE64_BLOCK,
-                    value=block[:500],
-                    source_file=source_file,
-                    line_number=0,
-                    context=f"Base64 block, {len(block)} chars",
-                    confidence=40,
-                ))
+            if len(block) < 200:
+                continue
+            # Skip config/protobuf blobs (Google feature flags, i18n, etc.)
+            if self._is_config_blob(block):
+                continue
+            results.append(ExtractedIOC(
+                type=IndicatorType.BASE64_BLOCK,
+                value=block[:500],
+                source_file=source_file,
+                line_number=0,
+                context=f"Base64 block, {len(block)} chars",
+                confidence=40,
+            ))
         return results
 
     def _deduplicate(self, iocs: list[ExtractedIOC]) -> list[ExtractedIOC]:
