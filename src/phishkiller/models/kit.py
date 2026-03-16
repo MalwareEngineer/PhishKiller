@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from phishkiller.models.campaign import Campaign
     from phishkiller.models.feed_entry import FeedEntry
     from phishkiller.models.indicator import Indicator
+    from phishkiller.models.investigation import Investigation
 
 
 class KitStatus(str, enum.Enum):
@@ -58,10 +59,31 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Pattern versioning — NULL means pre-versioning (stale)
     pattern_version: Mapped[int | None] = mapped_column(Integer, index=True)
 
+    # Chain/investigation tracking
+    parent_kit_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("kits.id"), index=True
+    )
+    investigation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("investigations.id"), index=True
+    )
+    chain_depth: Mapped[int] = mapped_column(Integer, default=0)
+    discovery_method: Mapped[str | None] = mapped_column(String(50))
+
     # Storage
     local_path: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
+    parent_kit: Mapped[Kit | None] = relationship(
+        "Kit", remote_side="Kit.id", back_populates="child_kits",
+        foreign_keys=[parent_kit_id],
+    )
+    child_kits: Mapped[list[Kit]] = relationship(
+        "Kit", back_populates="parent_kit",
+        foreign_keys=[parent_kit_id],
+    )
+    investigation: Mapped[Investigation | None] = relationship(
+        back_populates="kits", foreign_keys=[investigation_id]
+    )
     indicators: Mapped[list[Indicator]] = relationship(
         back_populates="kit", cascade="all, delete-orphan"
     )

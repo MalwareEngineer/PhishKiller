@@ -86,6 +86,14 @@ async def upload_kit(
         kit_id=kit_id,
     )
 
+    # Auto-create investigation for .eml uploads
+    filename_lower = (file.filename or "").lower()
+    if filename_lower.endswith(".eml"):
+        from phishkiller.services.investigation_service import InvestigationService
+
+        inv_service = InvestigationService(db)
+        await inv_service.create_from_file(kit)
+
     return KitSubmitResponse(kit_id=kit.id, task_id=task_id)
 
 

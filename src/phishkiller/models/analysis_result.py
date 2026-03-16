@@ -22,6 +22,10 @@ class AnalysisType(str, enum.Enum):
     DEOBFUSCATION = "deobfuscation"
     YARA_SCAN = "yara_scan"
     SIMILARITY = "similarity"
+    EML_PARSE = "eml_parse"
+    QR_DECODE = "qr_decode"
+    LINK_SCORE = "link_score"
+    REDIRECT_CHAIN = "redirect_chain"
 
 
 class AnalysisResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):

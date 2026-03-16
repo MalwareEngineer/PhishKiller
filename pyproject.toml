@@ -44,6 +44,10 @@ tlsh = [
 yara = [
     "yara-python>=4.5.1",
 ]
+qr = [
+    "pyzbar>=0.1.9",
+    "Pillow>=10.0.0",
+]
 
 [project.scripts]
 phishkiller = "phishkiller.cli:app"
