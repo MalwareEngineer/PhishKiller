@@ -379,8 +379,14 @@ _JS_PRONE_TLDS = frozenset({
 BENIGN_DOMAINS = BENIGN_URL_ROOT_DOMAINS | EMAIL_EXCLUSIONS
 
 # ---------- Phone Numbers ----------
+# Matches international format: +CC (optional area) subscriber
+# Requires balanced parens; digit count validated in extractor (7-13).
 PHONE_PATTERN = re.compile(
-    r"(?<![0-9a-zA-Z])\+\d{1,3}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}(?![0-9a-zA-Z])"
+    r"(?<![0-9a-zA-Z])"
+    r"\+\d{1,3}"                      # country code
+    r"(?:[\s\-]?\(\d{1,4}\))??"       # optional (area) — balanced parens
+    r"(?:[\s\-]?\d{1,5}){1,4}"        # subscriber groups
+    r"(?![0-9a-zA-Z).])"
 )
 
 # ---------- Telegram Handles ----------

@@ -497,6 +497,12 @@ class IOCExtractor:
         results = []
         for match in PHONE_PATTERN.finditer(line):
             phone = match.group(0).strip()
+            # Real international numbers are 9-13 digits (country + subscriber).
+            # E.164 allows up to 15 but >13 is almost always JS/CSS garbage.
+            # <9 is too short to be meaningful (most countries need 7+ subscriber).
+            digit_count = sum(1 for c in phone if c.isdigit())
+            if digit_count < 9 or digit_count > 13:
+                continue
             results.append(ExtractedIOC(
                 type=IndicatorType.PHONE_NUMBER,
                 value=phone,
