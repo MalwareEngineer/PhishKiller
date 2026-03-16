@@ -1,5 +1,6 @@
 """Alembic environment configuration for migrations."""
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -10,6 +11,10 @@ from phishkiller.models import Base
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Prefer PK_SYNC_DATABASE_URL env var over alembic.ini (for Docker)
+if db_url := os.environ.get("PK_SYNC_DATABASE_URL"):
+    config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata
 
