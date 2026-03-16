@@ -4,9 +4,11 @@ import logging
 import uuid
 from pathlib import Path
 
+from phishkiller.analysis.redirect_tracker import RedirectTracker
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
+from phishkiller.models.analysis_result import AnalysisResult, AnalysisType
 from phishkiller.models.kit import Kit, KitStatus
 from phishkiller.utils.http_client import download_file
 
@@ -67,17 +69,40 @@ def download_kit(self, kit_id: str) -> dict:
         download_dir = Path(settings.kit_download_dir) / kit_id
         download_dir.mkdir(parents=True, exist_ok=True)
 
-        filepath, reason = download_file(
-            kit.source_url,
-            str(download_dir),
-            max_size_mb=settings.max_kit_size_mb,
-        )
+        redirect_chain_data = None
+
+        # Investigation-mode kits use redirect tracking to capture the full chain
+        if kit.investigation_id:
+            tracker = RedirectTracker()
+            filepath, reason, redirect_chain = tracker.download_with_redirects(
+                kit.source_url,
+                str(download_dir),
+                max_size_mb=settings.max_kit_size_mb,
+            )
+            if redirect_chain.total_redirects > 0:
+                redirect_chain_data = redirect_chain.to_dict()
+                # Store redirect chain as an analysis result
+                result = AnalysisResult(
+                    kit_id=kit.id,
+                    analysis_type=AnalysisType.REDIRECT_CHAIN,
+                    result_data=redirect_chain_data,
+                )
+                db.add(result)
+        else:
+            filepath, reason = download_file(
+                kit.source_url,
+                str(download_dir),
+                max_size_mb=settings.max_kit_size_mb,
+            )
 
         if not filepath:
             kit.status = KitStatus.FAILED
             kit.error_message = reason
             db.commit()
-            return {"kit_id": kit_id, "status": "failed", "error": reason}
+            result = {"kit_id": kit_id, "status": "failed", "error": reason}
+            if redirect_chain_data:
+                result["redirect_chain"] = redirect_chain_data
+            return result
 
         # Update kit metadata
         kit.local_path = str(filepath)
@@ -93,6 +118,7 @@ def download_kit(self, kit_id: str) -> dict:
             ".tar": "application/x-tar",
             ".rar": "application/x-rar-compressed",
             ".php": "application/x-php",
+            ".eml": "message/rfc822",
         }
         kit.mime_type = mime_map.get(suffix, "application/octet-stream")
         db.commit()
@@ -101,12 +127,19 @@ def download_kit(self, kit_id: str) -> dict:
             "Kit %s downloaded: %s (%d bytes)",
             kit_id, filepath.name, kit.file_size,
         )
-        return {
+        result = {
             "kit_id": kit_id,
             "status": "downloaded",
             "filepath": str(filepath),
             "file_size": kit.file_size,
         }
+        if redirect_chain_data:
+            result["redirect_chain"] = redirect_chain_data
+            result["redirect_urls"] = [
+                h["location"] for h in redirect_chain_data["hops"]
+                if h.get("location")
+            ]
+        return result
 
     except Exception as e:
         logger.exception("Error downloading kit %s: %s", kit_id, e)

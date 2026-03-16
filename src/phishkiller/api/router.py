@@ -2,12 +2,15 @@
 
 from fastapi import APIRouter
 
-from phishkiller.api import actors, analysis, campaigns, feeds, health, indicators, kits
+from phishkiller.api import (
+    actors, analysis, campaigns, feeds, health, indicators, investigations, kits,
+)
 
 api_router = APIRouter()
 
 api_router.include_router(health.router, prefix="/health", tags=["health"])
 api_router.include_router(kits.router, prefix="/kits", tags=["kits"])
+api_router.include_router(investigations.router, prefix="/investigations", tags=["investigations"])
 api_router.include_router(indicators.router, prefix="/indicators", tags=["indicators"])
 api_router.include_router(actors.router, prefix="/actors", tags=["actors"])
 api_router.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])

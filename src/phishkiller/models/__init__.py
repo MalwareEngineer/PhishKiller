@@ -7,6 +7,7 @@ from phishkiller.models.base import Base
 from phishkiller.models.campaign import Campaign
 from phishkiller.models.feed_entry import FeedEntry, FeedSource
 from phishkiller.models.indicator import Indicator, IndicatorType
+from phishkiller.models.investigation import Investigation, InvestigationStatus
 from phishkiller.models.kit import Kit, KitStatus
 
 __all__ = [
@@ -19,6 +20,8 @@ __all__ = [
     "FeedSource",
     "Indicator",
     "IndicatorType",
+    "Investigation",
+    "InvestigationStatus",
     "Kit",
     "KitStatus",
     "campaign_actors",

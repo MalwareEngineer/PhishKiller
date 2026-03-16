@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     tlsh_min_size: int = 50
     yara_rules_dir: str = "./rules"
 
+    # Chain crawling
+    chain_max_depth: int = 3
+    chain_max_children_per_kit: int = 10
+    chain_link_score_threshold: float = 0.5
+    chain_enabled: bool = True
+
     # CertStream
     certstream_url: str = "wss://certstream.calidog.io"
     certstream_score_threshold: int = 75

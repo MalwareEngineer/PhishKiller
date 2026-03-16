@@ -21,18 +21,21 @@ logger = logging.getLogger(__name__)
 def build_analysis_chain(kit_id: str) -> chain:
     """Build the full analysis Celery chain for a kit."""
     from phishkiller.tasks.download import download_kit
-
     from phishkiller.tasks.correlation import correlate_kit_actors
+    from phishkiller.tasks.chain import crawl_chain, decode_qr_codes, parse_eml
 
     return chain(
         download_kit.s(kit_id),
         compute_hashes.s(),
         extract_archive.s(),
+        parse_eml.s(),
         deobfuscate_files.s(),
         yara_scan.s(),
         extract_iocs.s(),
+        decode_qr_codes.s(),
         compute_similarity.s(),
         correlate_kit_actors.s(),
+        crawl_chain.s(),
     )
 
 
