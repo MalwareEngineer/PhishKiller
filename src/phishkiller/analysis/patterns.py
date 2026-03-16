@@ -19,6 +19,8 @@ EMAIL_EXCLUSIONS = {
     "bootstrap.com", "getbootstrap.com",
     "yahoo.com", "hotmail.com", "outlook.com", "live.com",
     "aol.com", "protonmail.com", "zoho.com",
+    # Placeholder / template domains
+    "mysite.com", "abc.com", "domain.com", "yoursite.com", "site.com",
 }
 
 # ---------- Telegram Bot Tokens ----------
@@ -75,14 +77,17 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "reactjs.org", "vuejs.org", "angular.io",
     # Site builders / hosting platforms
     "weebly.com", "weeblysite.com", "editmysite.com",
-    "wix.com", "wixsite.com", "parastorage.com", "wixmp.com", "wixpress.com",
+    "wix.com", "wixsite.com", "wixstatic.com", "wixapps.net",
+    "parastorage.com", "wixmp.com", "wixpress.com", "wl.co",
     "strikingly.com", "mystrikingly.com",
     "squarespace.com", "sqspcdn.com",
-    "wordpress.com", "wordpress.org", "wp.com", "wpcomstaging.com",
+    "square.online", "squareup.com",
+    "wordpress.com", "wordpress.org", "wp.com", "wpcomstaging.com", "w.org",
     "shopify.com", "shopifycdn.com", "shopifyanalytics.com",
-    "webflow.com", "webflow.io",
+    "webflow.com", "webflow.io", "website-files.com",
     "godaddy.com", "secureserver.net",
     "hostinger.com", "bluehost.com",
+    "framer.com", "framerusercontent.com",
     # Code hosting / docs
     "github.com", "github.io", "githubusercontent.com", "githubassets.com",
     "gitlab.com", "gitlab.io",
@@ -101,6 +106,8 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "reddit.com", "redditmedia.com", "redditstatic.com",
     "pinterest.com", "pinimg.com",
     "tumblr.com",
+    "discord.com", "discord.gg", "discordapp.com",
+    "whatsapp.com",
     # SaaS / productivity
     "zoom.us", "zoomcdn.com",
     "calendly.com",
@@ -121,7 +128,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "epicgames.com",
     "ea.com",
     # Email providers
-    "yahoo.com", "yimg.com",
+    "yahoo.com", "yahoo.co.jp", "yahoo.co.kr", "yimg.com",
     "protonmail.com", "proton.me",
     "zoho.com",
     "mail.ru",
@@ -129,6 +136,8 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "paypal.com", "paypalobjects.com",
     "stripe.com", "stripe.network",
     "venmo.com",
+    # E-commerce (cloned targets)
+    "ebay.com", "ebay.co.uk", "ebay.de", "ebay.fr",
     # Cloud storage (targets, not actor infra)
     "dropbox.com", "dropboxusercontent.com", "dropboxstatic.com",
     "box.com",
@@ -157,6 +166,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     # URL shorteners / link management
     "bitly.com", "bit.ly",
     "ead.me",  # l.ead.me link shortener
+    "goo.gl", "linktr.ee",
     # Security vendors
     "fortinet.com",
     # Consent / cookie management
@@ -164,10 +174,16 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     # Monitoring / observability
     "datadoghq.com", "datadoghq-browser-agent.com",
     "newrelic.com",
+    "heapanalytics.com",
     # SaaS link pages
     "flowcode.com", "campsite.bio", "campsite.to",
     # Website builders (additional)
     "webador.com",
+    # Standards / specifications
+    "sil.org",  # Open Font License
+    "gmpg.org",  # GMPG (XFN spec)
+    "ogp.me",  # Open Graph Protocol
+    "example.com",  # RFC 2606 reserved
     # Other benign
     "archive.org", "pearltrees.com",
     "gravatar.com", "wp.com",
@@ -176,6 +192,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "intercom.io", "intercomcdn.com",
     "zendesk.com", "zdassets.com",
     "hubspot.com", "hsforms.com", "hubspotusercontent.com",
+    "activecampaign.com",
     "pxf.io", "shareasale.com", "impact.com",  # affiliate networks
     "tistory.com",  # Korean blogging platform
     "qr-code-generator.com",
@@ -288,6 +305,12 @@ SMTP_PASS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# SMTP host values that are SaaS platforms or JS variables, not real SMTP hosts
+SMTP_HOST_EXCLUSIONS = frozenset({
+    "app.jotform.com", "jotform.com",
+    "t.host", "this.host", "e.host", "a.host",  # JS variable access
+})
+
 # ---------- Cryptocurrency Wallets ----------
 BITCOIN_PATTERN = re.compile(
     r"(?<![a-zA-Z0-9])[13][a-km-zA-HJ-NP-Z1-9]{25,34}(?![a-zA-Z0-9])"
@@ -354,6 +377,8 @@ JS_FALSE_DOMAINS = {
     "window.langconfig.id", "window.vk.id",
     "thirdparty.is",
     "linkel.media",
+    # JS builtins that look like domains
+    "console.info", "console.log", "console.error",
 }
 # JS object prefixes — any domain starting with these followed by a dot
 # is almost certainly a property access, not a real domain

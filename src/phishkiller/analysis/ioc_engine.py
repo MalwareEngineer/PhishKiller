@@ -35,6 +35,7 @@ from phishkiller.analysis.patterns import (
     PHP_MAIL_TO_PATTERN,
     PHONE_PATTERN,
     PRIVATE_IP_PREFIXES,
+    SMTP_HOST_EXCLUSIONS,
     SMTP_HOST_PATTERN,
     SMTP_PASS_PATTERN,
     SMTP_USER_PATTERN,
@@ -205,6 +206,11 @@ class IOCExtractor:
         # Standard email extraction
         for match in EMAIL_PATTERN.finditer(line):
             email = match.group(0)
+            # Skip retina image references (logo@2x.png, icon@3x.jpg)
+            if "@" in email:
+                after_at = email.split("@", 1)[1]
+                if after_at and after_at[0].isdigit():
+                    continue
             domain = email.split("@")[1].lower()
             if domain in EMAIL_EXCLUSIONS:
                 continue
@@ -299,6 +305,14 @@ class IOCExtractor:
             if is_benign_url(url):
                 continue
 
+            # Skip localhost URLs
+            try:
+                _host = urlparse(url).hostname
+                if _host and _host.lower() in ("localhost", "127.0.0.1"):
+                    continue
+            except Exception:
+                pass
+
             # Skip javascript: pseudo-protocol URLs (https://javascript:...)
             try:
                 parsed = urlparse(url)
@@ -342,9 +356,12 @@ class IOCExtractor:
             ip = match.group(0)
             if any(ip.startswith(prefix) for prefix in PRIVATE_IP_PREFIXES):
                 continue
-            # Also skip 172.16-31.x.x
             parts = ip.split(".")
+            # Skip 172.16-31.x.x (private)
             if parts[0] == "172" and 16 <= int(parts[1]) <= 31:
+                continue
+            # Skip network/CIDR addresses (x.x.0.0 or x.0.0.0) — not host IPs
+            if parts[3] == "0" and parts[2] == "0":
                 continue
             results.append(ExtractedIOC(
                 type=IndicatorType.IP_ADDRESS,
@@ -370,6 +387,9 @@ class IOCExtractor:
                 value = match.group(1) or match.group(2)
                 if not value:
                     continue
+                # Skip known SaaS/JS false positive hosts
+                if label == "host" and value.lower() in SMTP_HOST_EXCLUSIONS:
+                    continue
                 results.append(ExtractedIOC(
                     type=IndicatorType.SMTP_CREDENTIAL,
                     value=f"smtp_{label}={value}",
@@ -380,14 +400,24 @@ class IOCExtractor:
                 ))
         return results
 
+    @staticmethod
+    def _is_hex_hash(value: str) -> bool:
+        """Check if a value is a hex hash (MD5/SHA) misidentified as a wallet."""
+        # MD5 hashes are 32 lowercase hex chars; real Bitcoin uses Base58Check
+        # (mixed case, no 0/O/I/l). All-lowercase-hex = almost certainly a hash.
+        return len(value) == 32 and all(c in "0123456789abcdef" for c in value)
+
     def _extract_crypto_wallets(
         self, line: str, source_file: str, line_num: int
     ) -> list[ExtractedIOC]:
         results = []
         for match in BITCOIN_PATTERN.finditer(line):
+            wallet = match.group(0)
+            if self._is_hex_hash(wallet):
+                continue
             results.append(ExtractedIOC(
                 type=IndicatorType.CRYPTOCURRENCY_WALLET,
-                value=match.group(0),
+                value=wallet,
                 source_file=source_file,
                 line_number=line_num,
                 context=line[:200],
@@ -432,6 +462,15 @@ class IOCExtractor:
             if domain in JS_FALSE_DOMAINS:
                 continue
 
+            # Skip i18n / validation key patterns (vat-id.input.error.message.format-error.il)
+            # These have 4+ labels and contain error/message/input segments
+            labels = domain.split(".")
+            if len(labels) >= 4 and any(
+                seg in ("error", "message", "input", "required", "format")
+                for seg in labels
+            ):
+                continue
+
             # Skip JS object property access patterns (this.br, caller.name, etc.)
             if any(domain.startswith(prefix) for prefix in _JS_OBJECT_PREFIXES):
                 continue
@@ -472,6 +511,11 @@ class IOCExtractor:
                     continue
                 # Very long single-word SLD + JS-prone TLD = likely JS var
                 if len(sld) > 12 and "-" not in sld:
+                    continue
+                # .id TLD: single unhyphenated word is almost always a JS
+                # property access (rootdiv.id, overlay.id, enduser.id).
+                # Real Indonesian domains use hyphens or multi-label names.
+                if tld == "id" and "-" not in sld:
                     continue
 
             confidence = 60
