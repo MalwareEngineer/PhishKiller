@@ -1,4 +1,4 @@
-"""Feed ingestion Celery tasks — PhishTank, URLhaus, OpenPhish, PhishStats, Phishing.Database."""
+"""Feed ingestion Celery tasks — PhishTank, OpenPhish, PhishStats."""
 
 import hashlib
 import logging
@@ -103,79 +103,6 @@ def ingest_phishtank(self) -> dict:
     except Exception as e:
         db.rollback()
         logger.exception("PhishTank ingestion error: %s", e)
-        raise self.retry(exc=e)
-    finally:
-        db.close()
-
-
-@celery_app.task(
-    name="phishkiller.tasks.feeds.ingest_urlhaus",
-    bind=True,
-    queue="feeds",
-    max_retries=3,
-    default_retry_delay=300,
-)
-def ingest_urlhaus(self) -> dict:
-    """Ingest malware/phishing URLs from URLhaus (abuse.ch).
-
-    URLhaus API: https://urlhaus-api.abuse.ch/v1/urls/recent/
-    """
-    db = get_sync_db()
-
-    try:
-        settings = get_settings()
-        if not settings.urlhaus_auth_key:
-            logger.warning(
-                "PK_URLHAUS_AUTH_KEY not set — URLhaus API requires auth. "
-                "Get a key at https://auth.abuse.ch/"
-            )
-
-        logger.info("Ingesting URLhaus feed...")
-
-        req_headers = {"Accept": "application/json"}
-        if settings.urlhaus_auth_key:
-            req_headers["Auth-Key"] = settings.urlhaus_auth_key
-
-        response = fetch_with_cache(
-            "https://urlhaus-api.abuse.ch/v1/urls/recent/",
-            timeout=60,
-            headers=req_headers,
-        )
-        if response is None:
-            return {"source": "urlhaus", "new_entries": 0, "cached": True}
-
-        data = response.json()
-
-        query_status = data.get("query_status", "")
-        if query_status != "ok":
-            raise ValueError(f"URLhaus API query_status: {query_status}")
-
-        raw_entries = data.get("urls", [])
-        entries = []
-        for entry in raw_entries:
-            entry_url = entry.get("url", "")
-            entry_id = str(entry.get("id", ""))
-            threat = entry.get("threat", "")
-            entries.append({
-                "id": uuid.uuid4(),
-                "source": FeedSource.URLHAUS,
-                "url": entry_url,
-                "external_id": entry_id,
-                "raw_data": entry,
-                "target_brand": threat if threat else None,
-            })
-
-        new_count = _bulk_upsert_feed_entries(db, entries)
-        logger.info("URLhaus: %d new / %d total entries", new_count, len(entries))
-        return {
-            "source": "urlhaus",
-            "new_entries": new_count,
-            "total_fetched": len(entries),
-        }
-
-    except Exception as e:
-        db.rollback()
-        logger.exception("URLhaus ingestion error: %s", e)
         raise self.retry(exc=e)
     finally:
         db.close()
@@ -302,65 +229,6 @@ def ingest_phishstats(self) -> dict:
     except Exception as e:
         db.rollback()
         logger.exception("PhishStats ingestion error: %s", e)
-        raise self.retry(exc=e)
-    finally:
-        db.close()
-
-
-@celery_app.task(
-    name="phishkiller.tasks.feeds.ingest_phishing_database",
-    bind=True,
-    queue="feeds",
-    max_retries=3,
-    default_retry_delay=600,
-)
-def ingest_phishing_database(self) -> dict:
-    """Ingest phishing URLs from Phishing.Database (GitHub).
-
-    Feed: https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-links-ACTIVE.txt
-    Plain text, one URL per line.
-    """
-    db = get_sync_db()
-
-    try:
-        logger.info("Ingesting Phishing.Database feed...")
-
-        response = fetch_with_cache(
-            "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database"
-            "/master/phishing-links-ACTIVE.txt",
-            timeout=120,
-        )
-        if response is None:
-            return {"source": "phishing_database", "new_entries": 0, "cached": True}
-
-        text = response.text
-        entries = []
-        for line in text.strip().splitlines():
-            url = line.strip()
-            if not url or not url.startswith("http"):
-                continue
-
-            external_id = hashlib.sha256(url.encode()).hexdigest()
-            entries.append({
-                "id": uuid.uuid4(),
-                "source": FeedSource.PHISHING_DATABASE,
-                "url": url,
-                "external_id": external_id,
-            })
-
-        new_count = _bulk_upsert_feed_entries(db, entries)
-        logger.info(
-            "Phishing.Database: %d new / %d total entries", new_count, len(entries),
-        )
-        return {
-            "source": "phishing_database",
-            "new_entries": new_count,
-            "total_fetched": len(entries),
-        }
-
-    except Exception as e:
-        db.rollback()
-        logger.exception("Phishing.Database ingestion error: %s", e)
         raise self.retry(exc=e)
     finally:
         db.close()

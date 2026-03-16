@@ -54,7 +54,6 @@ class FeedService:
         from phishkiller.tasks.feeds import (
             ingest_openphish,
             ingest_phishtank,
-            ingest_urlhaus,
         )
 
         task_ids = []
@@ -66,7 +65,6 @@ class FeedService:
 
         task_map = {
             "phishtank": ingest_phishtank,
-            "urlhaus": ingest_urlhaus,
             "openphish": ingest_openphish,
         }
 
