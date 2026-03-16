@@ -573,13 +573,13 @@ def compute_similarity(self, prev_result: dict) -> dict:
         from phishkiller.analysis.hasher import compute_tlsh_distance
         from sqlalchemy import select
 
-        # Compare against recent analyzed kits with TLSH (limit 500 for perf)
+        # Compare against all analyzed kits with TLSH hashes
         candidates = db.scalars(
             select(Kit).where(
                 Kit.tlsh.isnot(None),
                 Kit.id != kit.id,
                 Kit.status == KitStatus.ANALYZED,
-            ).order_by(Kit.created_at.desc()).limit(500)
+            )
         ).all()
 
         threshold = 100
