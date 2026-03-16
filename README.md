@@ -45,10 +45,8 @@ download → hash → extract → deobfuscate → yara_scan → extract_iocs →
 | Source | Interval | Notes |
 |--------|----------|-------|
 | PhishTank | 3h | JSON API, optional API key |
-| URLhaus | 1h | abuse.ch, optional auth key |
 | OpenPhish | 6h | Plain text URL list |
 | PhishStats | 6h | CSV, score ≥ 5 filter |
-| Phishing.Database | 12h | GitHub, ~800K URLs |
 | Feed entry processing | 2min | Batch 2000 → download queue |
 | Stuck kit recovery | 15min | Re-queues hung kits |
 

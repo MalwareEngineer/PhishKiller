@@ -39,7 +39,6 @@ class Settings(BaseSettings):
 
     # Feed API keys
     phishtank_api_key: str = ""
-    urlhaus_auth_key: str = ""
 
     # Analysis
     kit_download_dir: str = "./downloads"

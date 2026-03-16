@@ -11,11 +11,6 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=0, hour="*/3"),
         "options": {"queue": "feeds"},
     },
-    "ingest-urlhaus-hourly": {
-        "task": "phishkiller.tasks.feeds.ingest_urlhaus",
-        "schedule": crontab(minute=15),
-        "options": {"queue": "feeds"},
-    },
     "ingest-openphish-every-6h": {
         "task": "phishkiller.tasks.feeds.ingest_openphish",
         "schedule": crontab(minute=30, hour="*/6"),
@@ -24,11 +19,6 @@ celery_app.conf.beat_schedule = {
     "ingest-phishstats-every-6h": {
         "task": "phishkiller.tasks.feeds.ingest_phishstats",
         "schedule": crontab(minute=45, hour="*/6"),
-        "options": {"queue": "feeds"},
-    },
-    "ingest-phishing-database-every-12h": {
-        "task": "phishkiller.tasks.feeds.ingest_phishing_database",
-        "schedule": crontab(minute=0, hour="*/12"),
         "options": {"queue": "feeds"},
     },
     "process-feed-entries-every-2m": {

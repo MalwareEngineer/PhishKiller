@@ -437,7 +437,7 @@ def iocs_stats():
 def feeds_ingest(
     source: str = typer.Option(
         "all", "--source", "-s",
-        help="Feed source (phishtank, urlhaus, openphish, all)",
+        help="Feed source (phishtank, openphish, phishstats, all)",
     ),
 ):
     """Trigger feed ingestion manually."""
@@ -510,10 +510,8 @@ def feeds_health():
 
     expected_intervals = {
         FeedSource.PHISHTANK: timedelta(hours=4),
-        FeedSource.URLHAUS: timedelta(hours=2),
         FeedSource.OPENPHISH: timedelta(hours=8),
         FeedSource.PHISHSTATS: timedelta(hours=8),
-        FeedSource.PHISHING_DATABASE: timedelta(hours=14),
     }
 
     db = get_sync_db()
