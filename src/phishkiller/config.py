@@ -10,6 +10,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_prefix="PK_",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # Application
