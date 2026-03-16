@@ -347,7 +347,10 @@ def extract_iocs(self, prev_result: dict) -> dict:
             )
             db.add(indicator)
 
+        from phishkiller.analysis.patterns import PATTERN_VERSION
+
         kit.status = KitStatus.ANALYZED
+        kit.pattern_version = PATTERN_VERSION
 
         duration = time.time() - start
 
@@ -365,6 +368,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
                 "by_type": ioc_summary,
                 "files_processed": result.files_processed,
                 "errors": result.errors[:20],
+                "pattern_version": PATTERN_VERSION,
             },
             duration_seconds=round(duration, 3),
             files_processed=result.files_processed,

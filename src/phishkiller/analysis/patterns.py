@@ -4,6 +4,10 @@ import re
 from html import unescape as html_unescape
 from urllib.parse import urlparse
 
+# Increment when patterns, allowlists, or extraction logic change.
+# Used to identify kits that need re-analysis after updates.
+PATTERN_VERSION = 1
+
 # ---------- Email addresses ----------
 EMAIL_PATTERN = re.compile(
     r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",

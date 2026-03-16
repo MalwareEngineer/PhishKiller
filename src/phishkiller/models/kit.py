@@ -6,7 +6,7 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import BigInteger, Enum, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -54,6 +54,9 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Enum(KitStatus), default=KitStatus.PENDING, index=True
     )
     error_message: Mapped[str | None] = mapped_column(Text)
+
+    # Pattern versioning — NULL means pre-versioning (stale)
+    pattern_version: Mapped[int | None] = mapped_column(Integer, index=True)
 
     # Storage
     local_path: Mapped[str | None] = mapped_column(Text)
