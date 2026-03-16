@@ -288,11 +288,6 @@ SMTP_PASS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# ---------- Base64 Encoded Blocks ----------
-BASE64_BLOCK_PATTERN = re.compile(
-    r"[A-Za-z0-9+/]{200,}={0,2}",
-)
-
 # ---------- Cryptocurrency Wallets ----------
 BITCOIN_PATTERN = re.compile(
     r"(?<![a-zA-Z0-9])[13][a-km-zA-HJ-NP-Z1-9]{25,34}(?![a-zA-Z0-9])"
