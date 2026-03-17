@@ -22,9 +22,12 @@ from phishkiller.analysis.patterns import (
     BITCOIN_PATTERN,
     C2_KEYWORDS,
     C2_URL_PATTERN,
+    CSS_JUNK_IN_URL,
+    JS_CONCAT_BOUNDARY,
     DOMAIN_PATTERN,
     EMAIL_EXCLUSIONS,
     EMAIL_PATTERN,
+    EMAIL_PLACEHOLDER_LOCALS,
     ETHEREUM_PATTERN,
     FALSE_DOMAIN_EXTENSIONS,
     IPV4_PATTERN,
@@ -211,8 +214,12 @@ class IOCExtractor:
                 after_at = email.split("@", 1)[1]
                 if after_at and after_at[0].isdigit():
                     continue
+            local_part = email.split("@")[0].lower()
             domain = email.split("@")[1].lower()
             if domain in EMAIL_EXCLUSIONS:
+                continue
+            # Skip placeholder emails (your@, user@, test@, etc.)
+            if local_part in EMAIL_PLACEHOLDER_LOCALS:
                 continue
             # Also check root domain (catches uuid@o293668.ingest.sentry.io etc.)
             root = extract_root_domain(domain)
@@ -293,6 +300,19 @@ class IOCExtractor:
             # Strip trailing syntax junk (quotes, semicolons, commas, etc.)
             url = URL_TRAILING_JUNK.sub("", url)
 
+            # Truncate at JS string concatenation boundaries
+            # (e.g. "http://evil.com/'+window.location.href" → "http://evil.com/")
+            js_break = JS_CONCAT_BOUNDARY.search(url)
+            if js_break:
+                url = url[:js_break.start()]
+                # After truncation, must still be a valid URL with a real hostname
+                try:
+                    _trunc_host = urlparse(url).hostname
+                    if not _trunc_host or "." not in _trunc_host or len(url) < 12:
+                        continue
+                except Exception:
+                    continue
+
             url_lower = url.lower()
 
             # Skip if already captured as Telegram API URL
@@ -301,15 +321,26 @@ class IOCExtractor:
             if "api.telegram.org" in url_lower:
                 continue
 
+            # Skip URLs with CSS selector fragments (e.g. tailwindcss.com*/*,:after)
+            if CSS_JUNK_IN_URL.search(url):
+                continue
+
             # Skip benign domains using root-domain matching
             if is_benign_url(url):
                 continue
 
-            # Skip localhost URLs
+            # Skip localhost and non-domain hostnames (no TLD)
             try:
                 _host = urlparse(url).hostname
-                if _host and _host.lower() in ("localhost", "127.0.0.1"):
-                    continue
+                if _host:
+                    _host_lower = _host.lower()
+                    if _host_lower in ("localhost", "127.0.0.1"):
+                        continue
+                    # Skip internal/fake hostnames without a real TLD (http://go/..., http://custom.transaction)
+                    if "." not in _host_lower or _host_lower.endswith(
+                        (".transaction", ".internal", ".local", ".invalid", ".test")
+                    ):
+                        continue
             except Exception:
                 pass
 
@@ -471,6 +502,18 @@ class IOCExtractor:
             ):
                 continue
 
+            # Skip CSS class/state patterns (tbody.collapse.in, tr.show.no)
+            _CSS_STATE_LABELS = {
+                "collapse", "toggle", "show", "hide", "fade", "active",
+                "disabled", "visible", "invisible", "open", "closed",
+                "expanded", "collapsed", "selected", "checked",
+                "country-selector-dropdown",
+            }
+            if len(labels) >= 3 and any(
+                seg in _CSS_STATE_LABELS for seg in labels
+            ):
+                continue
+
             # Skip JS object property access patterns (this.br, caller.name, etc.)
             if any(domain.startswith(prefix) for prefix in _JS_OBJECT_PREFIXES):
                 continue
@@ -535,6 +578,26 @@ class IOCExtractor:
             ))
         return results
 
+    @staticmethod
+    def _is_placeholder_phone(phone: str) -> bool:
+        """Detect placeholder/test phone numbers."""
+        digits = "".join(c for c in phone if c.isdigit())
+        # Sequential digits (1234567890)
+        if "1234567890" in digits or "0123456789" in digits:
+            return True
+        # US 555 numbers (reserved for fiction)
+        if digits.startswith("1") and "555" in digits[1:5]:
+            return True
+        # All-same digit patterns (8888800000, 9999999999)
+        unique_digits = set(digits[len(digits)//3:])  # check subscriber portion
+        if len(unique_digits) <= 1:
+            return True
+        # Repeated zeros in subscriber (00 00 00, 000000)
+        subscriber = digits[3:]  # skip country code
+        if subscriber and subscriber.replace("0", "") == "":
+            return True
+        return False
+
     def _extract_phone_numbers(
         self, line: str, source_file: str, line_num: int
     ) -> list[ExtractedIOC]:
@@ -546,6 +609,8 @@ class IOCExtractor:
             # <9 is too short to be meaningful (most countries need 7+ subscriber).
             digit_count = sum(1 for c in phone if c.isdigit())
             if digit_count < 9 or digit_count > 13:
+                continue
+            if self._is_placeholder_phone(phone):
                 continue
             results.append(ExtractedIOC(
                 type=IndicatorType.PHONE_NUMBER,

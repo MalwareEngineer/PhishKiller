@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 # Increment when patterns, allowlists, or extraction logic change.
 # Used to identify kits that need re-analysis after updates.
-PATTERN_VERSION = 1
+PATTERN_VERSION = 2
 
 # ---------- Email addresses ----------
 EMAIL_PATTERN = re.compile(
@@ -25,6 +25,14 @@ EMAIL_EXCLUSIONS = {
     "aol.com", "protonmail.com", "zoho.com",
     # Placeholder / template domains
     "mysite.com", "abc.com", "domain.com", "yoursite.com", "site.com",
+    "email.com", "yourdomain.com", "company.com", "sampleemail.com",
+}
+
+# Placeholder email local parts — these are never real exfil targets
+EMAIL_PLACEHOLDER_LOCALS = {
+    "your", "user", "username", "name", "email", "test", "admin",
+    "info", "support", "contact", "hello", "example", "sample",
+    "your.email", "your.name", "youremail", "eg.user",
 }
 
 # ---------- Telegram Bot Tokens ----------
@@ -46,6 +54,13 @@ C2_URL_PATTERN = re.compile(
 )
 # Strip trailing syntax junk that the broad regex consumes
 URL_TRAILING_JUNK = re.compile(r"['\";,)\]}>\\]+$")
+
+# CSS selector fragments that leak into URL matches (e.g. "tailwindcss.com*/*,:after,:before")
+CSS_JUNK_IN_URL = re.compile(r"[*{}<>]|::?(?:before|after|hover|focus|active|visited|placeholder|root)")
+
+# JS string concatenation boundary — URL should be truncated here
+# Matches '+, "+, `,  which indicate the URL literal has ended and JS code follows
+JS_CONCAT_BOUNDARY = re.compile(r"""['"]\s*\+|['"]\s*,\s*['"]""")
 
 TELEGRAM_API_PATTERN = re.compile(
     r"https?://api\.telegram\.org/bot[0-9A-Za-z_\-:/]+",
@@ -83,6 +98,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "weebly.com", "weeblysite.com", "editmysite.com",
     "wix.com", "wixsite.com", "wixstatic.com", "wixapps.net",
     "parastorage.com", "wixmp.com", "wixpress.com", "wl.co",
+    "wix-code.com", "wixstudio.com", "filesusr.com",
     "strikingly.com", "mystrikingly.com",
     "squarespace.com", "sqspcdn.com",
     "square.online", "squareup.com",
@@ -113,7 +129,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "discord.com", "discord.gg", "discordapp.com",
     "whatsapp.com",
     # SaaS / productivity
-    "zoom.us", "zoomcdn.com",
+    "zoom.us", "zoom.com", "zoomcdn.com",
     "calendly.com",
     "jotform.com", "jotfor.ms",
     "typeform.com",
@@ -189,7 +205,12 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "ogp.me",  # Open Graph Protocol
     "example.com",  # RFC 2606 reserved
     # Other benign
-    "archive.org", "pearltrees.com",
+    "archive.org", "pearltrees.com", "metamask.io",
+    "clearbit.com", "forms.app", "cpanel.net", "crazydomains.com",
+    "nflxext.com", "fontsquirrel.com", "prismic.io", "opengraph.org",
+    "ipify.org", "editor.website",
+    "nr-data.net",  # New Relic beacon
+    "gsap.to",  # GreenSock animation library
     "gravatar.com", "wp.com",
     "cloudinary.com",
     "sentry.io",
@@ -383,6 +404,10 @@ JS_FALSE_DOMAINS = {
     "linkel.media",
     # JS builtins that look like domains
     "console.info", "console.log", "console.error",
+    # HTML elements parsed as domains
+    "td.info", "th.info", "tr.info", "tr.in", "td.in", "th.in",
+    "tbody.in", "thead.in", "tfoot.in",
+    "loc.host", "custom.host",
 }
 # JS object prefixes — any domain starting with these followed by a dot
 # is almost certainly a property access, not a real domain
@@ -393,6 +418,8 @@ _JS_OBJECT_PREFIXES = (
     "form.", "link.", "file.", "cookie.", "entry.",
     "source.", "asset.", "media.", "place.", "attr.",
     "attribute.", "item.", "data.", "browser.",
+    # HTML elements that get parsed as domain prefixes
+    "tbody.", "thead.", "tfoot.", "field.",
 )
 # TLDs that are overwhelmingly JS false positives when paired with
 # single-word object names (e.g. this.br, caller.name, rootdiv.id)
@@ -424,24 +451,36 @@ TELEGRAM_HANDLE_PATTERN = re.compile(
 )
 # Common false positives for @handles (CSS/JS/email/JSON-LD/npm conventions)
 TELEGRAM_HANDLE_EXCLUSIONS = {
-    # CSS at-rules
+    # CSS at-rules / directives
     "media", "keyframes", "import", "charset", "supports",
     "layer", "scope", "container", "property",
+    "apply", "screen", "tailwind", "responsive",
+    # CSS/JS event/action keywords
+    "click", "start", "input", "change", "focus", "submit",
+    "scroll", "resize", "error", "reset", "select", "toggle",
+    "ended", "abort",
     # JSDoc / Java annotations
     "param", "return", "throws", "override", "deprecated",
     "author", "version", "license", "copyright", "since",
+    # License comment markers
+    "licstart", "licend",
     # Email providers
     "gmail", "yahoo", "outlook", "hotmail",
     # JSON-LD keywords
     "context", "graph", "type", "value", "vocab", "reverse", "language",
     # npm scopes / JS frameworks
     "formatjs", "babel", "types", "angular", "react", "emotion",
-    # JS builtins
+    "popperjs", "floating-ui",
+    # JS builtins / methods
     "iterator", "generator", "asynciterator", "tostringtag",
+    "toprimitive", "tostring", "valueof", "hasinstance",
     # SaaS / brand names (observed in production)
     "flowcode", "getflowcode", "newrelic", "fontawesome", "roblox",
     "prezoai", "glimitedaccount", "typedreamhq", "cakeresume",
-    "aboutdotme", "ghost",
+    "aboutdotme", "ghost", "dropbox", "miricanvas", "lottiefiles",
+    "activecampaign", "lemonde", "lemonde_en", "yahoo_japan_pr",
+    "plesk", "wordpress", "squarespace", "hubspot", "mailchimp",
+    "sendgrid", "intercom", "zendesk",
     # Generic UI / platform terms
     "overview", "conference", "widget", "forms", "formsapp",
     "everyone", "channel", "here",
