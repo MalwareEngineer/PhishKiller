@@ -20,11 +20,11 @@ class Settings(BaseSettings):
 
     # Database (async for FastAPI)
     database_url: str = (
-        "postgresql+asyncpg://phishkiller:phishkiller@localhost:5432/phishkiller"
+        "postgresql+asyncpg://localhost:5432/phishkiller"
     )
     # Sync database URL for Celery workers
     sync_database_url: str = (
-        "postgresql+psycopg2://phishkiller:phishkiller@localhost:5432/phishkiller"
+        "postgresql+psycopg2://localhost:5432/phishkiller"
     )
     database_pool_size: int = 20
     database_max_overflow: int = 10
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     redis_cache_ttl: int = 300
 
     # Celery
-    celery_broker_url: str = "amqp://guest:guest@localhost:5672//"
+    celery_broker_url: str = "amqp://localhost:5672//"
     celery_result_backend: str = "redis://localhost:6379/1"
 
     # Feed API keys
@@ -60,11 +60,6 @@ class Settings(BaseSettings):
     # CertStream
     certstream_url: str = "wss://certstream.calidog.io"
     certstream_score_threshold: int = 75
-    certstream_suspicious_keywords: list[str] = [
-        "login", "signin", "verify", "secure", "account",
-        "update", "confirm", "banking", "paypal", "microsoft",
-        "apple", "google", "amazon", "netflix",
-    ]
 
 
 @lru_cache

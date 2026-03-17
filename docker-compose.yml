@@ -67,6 +67,9 @@ services:
       - .env
     ports:
       - "8000:8000"
+    volumes:
+      - ./rules:/app/rules:ro
+      - ./private:/app/private:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,6 +97,8 @@ services:
     volumes:
       - downloads:/app/downloads
       - extracted:/app/extracted
+      - ./rules:/app/rules:ro
+      - ./private:/app/private:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,6 +128,8 @@ services:
     volumes:
       - downloads:/app/downloads
       - extracted:/app/extracted
+      - ./rules:/app/rules:ro
+      - ./private:/app/private:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -152,6 +159,8 @@ services:
     volumes:
       - downloads:/app/downloads
       - extracted:/app/extracted
+      - ./rules:/app/rules:ro
+      - ./private:/app/private:ro
     depends_on:
       postgres:
         condition: service_healthy

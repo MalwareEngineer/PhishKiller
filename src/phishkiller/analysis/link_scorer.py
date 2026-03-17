@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from phishkiller.analysis.patterns import BENIGN_URL_ROOT_DOMAINS, extract_root_domain
+from phishkiller.private_config import (
+    load_link_score_weights,
+    load_link_scorer_lists,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,26 +24,6 @@ class ScoredLink:
     reasons: list[str] = field(default_factory=list)
     source: str = "unknown"  # eml_link, qr_code, html_link, form_action, redirect
 
-
-# URL shortener domains — these redirect to the real payload
-URL_SHORTENERS = frozenset({
-    "bit.ly", "t.co", "goo.gl", "tinyurl.com", "is.gd", "v.gd",
-    "ow.ly", "buff.ly", "rb.gy", "short.io", "cutt.ly", "lnk.to",
-    "rebrand.ly", "bl.ink", "clck.ru", "n9.cl", "s.id",
-})
-
-# Keywords in URL path/query that suggest phishing
-PHISH_KEYWORDS = frozenset({
-    "login", "signin", "sign-in", "log-in", "verify", "verification",
-    "secure", "security", "account", "update", "confirm", "authenticate",
-    "password", "credential", "validate", "suspend", "unlock", "restore",
-    "webmail", "portal", "banking", "wallet",
-})
-
-# Known phishing infrastructure domains
-PHISH_INFRA_DOMAINS = frozenset({
-    "qr-codes.io", "qr-code-generator.com",
-})
 
 # Static asset extensions — never follow these
 STATIC_EXTENSIONS = frozenset({
@@ -96,31 +80,27 @@ class LinkScorer:
             link.reasons.append("benign_domain")
             return link
 
-        # Base score by source type
-        base_scores = {
-            "form_action": 0.9,
-            "qr_code": 0.85,
-            "eml_link": 0.6,
-            "redirect": 0.7,
-            "html_link": 0.4,
-            "eml_attachment": 0.5,
-        }
-        link.score = base_scores.get(source, 0.3)
+        # Base score by source type (loaded from private config)
+        weights = load_link_score_weights()
+        link.score = weights.get(source, weights.get("default", 0.3))
         link.reasons.append(f"source:{source}")
 
+        # Loaded scorer lists (phishing keywords, shorteners, infra domains)
+        phish_keywords, url_shorteners, phish_infra_domains = load_link_scorer_lists()
+
         # Known phishing infrastructure
-        if root_domain in PHISH_INFRA_DOMAINS or domain in PHISH_INFRA_DOMAINS:
+        if root_domain in phish_infra_domains or domain in phish_infra_domains:
             link.score += 0.3
             link.reasons.append("known_phish_infra")
 
         # URL shortener — likely hiding the real destination
-        if root_domain in URL_SHORTENERS or domain in URL_SHORTENERS:
+        if root_domain in url_shorteners or domain in url_shorteners:
             link.score += 0.2
             link.reasons.append("url_shortener")
 
         # Phishing keywords in path
         path_parts = set(path_lower.replace("/", " ").replace("-", " ").replace("_", " ").split())
-        keyword_hits = path_parts & PHISH_KEYWORDS
+        keyword_hits = path_parts & phish_keywords
         if keyword_hits:
             link.score += 0.2
             link.reasons.append(f"keywords:{','.join(keyword_hits)}")

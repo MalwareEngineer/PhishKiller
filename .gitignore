@@ -52,5 +52,12 @@ rabbitmqdata/
 # MyPy
 .mypy_cache/
 
+# Private operational data — loaded at runtime, never committed
+private/
+
+# YARA signatures — loaded from private/ or PK_YARA_RULES_DIR
+rules/
+!rules/.gitkeep
+
 # Claude Code
 .claude/

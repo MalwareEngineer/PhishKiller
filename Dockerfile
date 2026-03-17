@@ -11,9 +11,8 @@ COPY pyproject.toml .
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
-COPY rules/ rules/
 
 RUN pip install --no-cache-dir ".[tlsh,yara,qr]"
 
-# Dirs for kit downloads and extraction (volume-mounted in compose)
-RUN mkdir -p /app/downloads /app/extracted
+# Dirs for kit downloads, extraction, and private config (volume-mounted in compose)
+RUN mkdir -p /app/downloads /app/extracted /app/rules /app/private
