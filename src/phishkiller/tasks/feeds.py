@@ -1,4 +1,4 @@
-"""Feed ingestion Celery tasks — PhishTank, OpenPhish, PhishStats."""
+"""Feed ingestion Celery tasks — PhishTank, OpenPhish."""
 
 import hashlib
 import logging
@@ -156,79 +156,6 @@ def ingest_openphish(self) -> dict:
     except Exception as e:
         db.rollback()
         logger.exception("OpenPhish ingestion error: %s", e)
-        raise self.retry(exc=e)
-    finally:
-        db.close()
-
-
-@celery_app.task(
-    name="phishkiller.tasks.feeds.ingest_phishstats",
-    bind=True,
-    queue="feeds",
-    max_retries=3,
-    default_retry_delay=600,
-)
-def ingest_phishstats(self) -> dict:
-    """Ingest phishing URLs from PhishStats CSV feed.
-
-    PhishStats: https://phishstats.info/phish_score.csv
-    CSV columns: date, score, url, ip
-    Filters for score >= 5 (high confidence).
-    """
-    import csv
-    import io
-
-    db = get_sync_db()
-
-    try:
-        logger.info("Ingesting PhishStats feed...")
-
-        response = fetch_with_cache(
-            "https://phishstats.info/phish_score.csv", timeout=120,
-        )
-        if response is None:
-            return {"source": "phishstats", "new_entries": 0, "cached": True}
-
-        text = response.text
-        entries = []
-        reader = csv.reader(io.StringIO(text))
-        for row in reader:
-            if not row or row[0].startswith("#") or row[0] == "date":
-                continue
-            if len(row) < 3:
-                continue
-
-            try:
-                score = float(row[1])
-            except (ValueError, IndexError):
-                continue
-
-            if score < 5:
-                continue
-
-            url = row[2].strip()
-            if not url or not url.startswith("http"):
-                continue
-
-            external_id = hashlib.sha256(url.encode()).hexdigest()
-            entries.append({
-                "id": uuid.uuid4(),
-                "source": FeedSource.PHISHSTATS,
-                "url": url,
-                "external_id": external_id,
-            })
-
-        new_count = _bulk_upsert_feed_entries(db, entries)
-        logger.info("PhishStats: %d new / %d total entries", new_count, len(entries))
-        return {
-            "source": "phishstats",
-            "new_entries": new_count,
-            "total_fetched": len(entries),
-        }
-
-    except Exception as e:
-        db.rollback()
-        logger.exception("PhishStats ingestion error: %s", e)
         raise self.retry(exc=e)
     finally:
         db.close()
