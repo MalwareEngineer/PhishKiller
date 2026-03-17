@@ -4,8 +4,6 @@ import re
 from html import unescape as html_unescape
 from urllib.parse import urlparse
 
-from phishkiller.private_config import load_benign_domains
-
 # Increment when patterns, allowlists, or extraction logic change.
 # Used to identify kits that need re-analysis after updates.
 PATTERN_VERSION = 2
@@ -69,9 +67,162 @@ TELEGRAM_API_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Benign root domains — loaded from private/benign_domains.txt at runtime.
-# Uses root-domain matching (e.g. "docs.google.com" → "google.com").
-BENIGN_URL_ROOT_DOMAINS = load_benign_domains()
+# Benign root domains — extract the registrable domain from a URL and check
+# membership. Uses root-domain matching (e.g. "docs.google.com" → "google.com").
+BENIGN_URL_ROOT_DOMAINS = frozenset({
+    # Google ecosystem
+    "google.com", "google.co.uk", "google.co.jp", "google.de", "google.fr",
+    "google.co.in", "google.com.br", "google.com.au",
+    "googleapis.com", "gstatic.com", "googleusercontent.com",
+    "googlesyndication.com", "googletagmanager.com", "google-analytics.com",
+    "doubleclick.net", "withgoogle.com", "ggpht.com", "gvt1.com",
+    "gvt2.com", "googlevideo.com", "googleadservices.com",
+    # Microsoft ecosystem
+    "microsoft.com", "microsoftonline.com", "windows.net", "azure.com",
+    "azureedge.net", "office.com", "office365.com", "live.com",
+    "outlook.com", "bing.com", "msn.com", "hotmail.com",
+    "windowsupdate.com", "visualstudio.com",
+    # Amazon / AWS
+    "amazon.com", "amazonaws.com", "amazontrust.com", "cloudfront.net",
+    "awsstatic.com",
+    # CDNs
+    "cloudflare.com", "cloudflare-dns.com",
+    "jsdelivr.net", "unpkg.com", "cdnjs.com",
+    "akamaized.net", "akamai.net", "akamaihd.net", "akamaitechnologies.com",
+    "fastly.net", "fastlycdn.com",
+    "bootstrapcdn.com", "stackpath.com", "stackpathcdn.com",
+    # Libraries / frameworks
+    "jquery.com", "getbootstrap.com", "tailwindcss.com", "fontawesome.com",
+    "reactjs.org", "vuejs.org", "angular.io",
+    # Site builders / hosting platforms
+    "weebly.com", "weeblysite.com", "editmysite.com",
+    "wix.com", "wixsite.com", "wixstatic.com", "wixapps.net",
+    "parastorage.com", "wixmp.com", "wixpress.com", "wl.co",
+    "wix-code.com", "wixstudio.com", "filesusr.com",
+    "strikingly.com", "mystrikingly.com",
+    "squarespace.com", "sqspcdn.com",
+    "square.online", "squareup.com",
+    "wordpress.com", "wordpress.org", "wp.com", "wpcomstaging.com", "w.org",
+    "shopify.com", "shopifycdn.com", "shopifyanalytics.com",
+    "webflow.com", "webflow.io", "website-files.com",
+    "godaddy.com", "secureserver.net",
+    "hostinger.com", "bluehost.com",
+    "framer.com", "framerusercontent.com",
+    # Code hosting / docs
+    "github.com", "github.io", "githubusercontent.com", "githubassets.com",
+    "gitlab.com", "gitlab.io",
+    "gitbook.io", "gitbook.com",
+    "bitbucket.org",
+    "readthedocs.io", "readthedocs.org",
+    # Social media
+    "facebook.com", "fbcdn.net", "fbsbx.com",
+    "twitter.com", "x.com", "twimg.com",
+    "twitch.tv", "twitchcdn.net",
+    "instagram.com", "cdninstagram.com",
+    "linkedin.com", "licdn.com",
+    "youtube.com", "youtu.be", "ytimg.com",
+    "vimeo.com", "vimeocdn.com",
+    "tiktok.com", "tiktokcdn.com",
+    "reddit.com", "redditmedia.com", "redditstatic.com",
+    "pinterest.com", "pinimg.com",
+    "tumblr.com",
+    "discord.com", "discord.gg", "discordapp.com",
+    "whatsapp.com",
+    # SaaS / productivity
+    "zoom.us", "zoom.com", "zoomcdn.com",
+    "calendly.com",
+    "jotform.com", "jotfor.ms",
+    "typeform.com",
+    "mailchimp.com",
+    "slack.com", "slack-imgs.com",
+    "notion.so", "notion.site",
+    "canva.com",
+    "figma.com",
+    "atlassian.com", "atlassian.net",
+    # Form / survey platforms
+    "surveymonkey.com", "surveygizmo.com",
+    "qualtrics.com",
+    # Gaming platforms (phishing targets — their own assets aren't IOCs)
+    "roblox.com", "rbxcdn.com",
+    "steampowered.com", "steamcommunity.com", "steamstatic.com",
+    "epicgames.com",
+    "ea.com",
+    # Email providers
+    "yahoo.com", "yahoo.co.jp", "yahoo.co.kr", "yimg.com",
+    "protonmail.com", "proton.me",
+    "zoho.com",
+    "mail.ru",
+    # Payment / finance (targets, not actor infra)
+    "paypal.com", "paypalobjects.com",
+    "stripe.com", "stripe.network",
+    "venmo.com",
+    # E-commerce (cloned targets)
+    "ebay.com", "ebay.co.uk", "ebay.de", "ebay.fr",
+    # Cloud storage (targets, not actor infra)
+    "dropbox.com", "dropboxusercontent.com", "dropboxstatic.com",
+    "box.com",
+    "onedrive.com",
+    # Apple
+    "apple.com", "icloud.com", "mzstatic.com", "cdn-apple.com",
+    # Standards / reference
+    "w3.org", "w3schools.com",
+    "schema.org", "json-schema.org",
+    "php.net", "apache.org", "mozilla.org", "mozilla.net",
+    "stackoverflow.com", "stackexchange.com",
+    "npmjs.com", "yarnpkg.com",
+    "quirksmode.org",
+    # Captcha / anti-bot
+    "recaptcha.net", "hcaptcha.com",
+    "gstatic.com",
+    # Analytics
+    "segment.io", "segment.com",
+    "mixpanel.com",
+    "amplitude.com",
+    "newrelic.com",
+    # Blogging / CMS
+    "blogger.com", "blogspot.com",
+    # Travel / booking (targets, not actor infra)
+    "booking.com", "bstatic.com",
+    # URL shorteners / link management
+    "bitly.com", "bit.ly",
+    "ead.me",
+    "goo.gl", "linktr.ee",
+    # Security vendors
+    "fortinet.com",
+    # Consent / cookie management
+    "cookielaw.org", "onetrust.com",
+    # Monitoring / observability
+    "datadoghq.com", "datadoghq-browser-agent.com",
+    "heapanalytics.com",
+    # SaaS link pages
+    "flowcode.com", "campsite.bio", "campsite.to",
+    # Website builders (additional)
+    "webador.com",
+    # Standards / specifications
+    "sil.org", "gmpg.org", "ogp.me",
+    "example.com",
+    # Other benign
+    "archive.org", "pearltrees.com", "metamask.io",
+    "clearbit.com", "forms.app", "cpanel.net", "crazydomains.com",
+    "nflxext.com", "fontsquirrel.com", "prismic.io", "opengraph.org",
+    "ipify.org", "editor.website",
+    "nr-data.net", "gsap.to",
+    "gravatar.com",
+    "cloudinary.com",
+    "sentry.io",
+    "intercom.io", "intercomcdn.com",
+    "zendesk.com", "zdassets.com",
+    "hubspot.com", "hsforms.com", "hubspotusercontent.com",
+    "activecampaign.com",
+    "pxf.io", "shareasale.com", "impact.com",
+    "tistory.com",
+    "qr-code-generator.com",
+    "n9.cl",
+    "offset.com",
+    "edgecastcdn.net",
+    "vk-portal.net",
+    "latofonts.com",
+})
 
 # Two-part country-code SLDs (e.g. .co.uk, .com.br) — need 3 labels for root domain
 _TWO_PART_TLDS = frozenset({
