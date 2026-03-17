@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 class FeedSource(str, enum.Enum):
     PHISHTANK = "phishtank"
     OPENPHISH = "openphish"
-    PHISHSTATS = "phishstats"
     CERTSTREAM = "certstream"
     MANUAL = "manual"
 

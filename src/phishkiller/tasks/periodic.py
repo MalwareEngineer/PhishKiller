@@ -16,11 +16,6 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=30, hour="*/6"),
         "options": {"queue": "feeds"},
     },
-    "ingest-phishstats-every-6h": {
-        "task": "phishkiller.tasks.feeds.ingest_phishstats",
-        "schedule": crontab(minute=45, hour="*/6"),
-        "options": {"queue": "feeds"},
-    },
     "process-feed-entries-every-2m": {
         "task": "phishkiller.tasks.feeds.process_feed_entries",
         "schedule": crontab(minute="*/2"),
