@@ -185,7 +185,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "booking.com", "bstatic.com",
     # URL shorteners / link management
     "bitly.com", "bit.ly",
-    "ead.me",  # l.ead.me link shortener
+    "ead.me",
     "goo.gl", "linktr.ee",
     # Security vendors
     "fortinet.com",
@@ -193,38 +193,34 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "cookielaw.org", "onetrust.com",
     # Monitoring / observability
     "datadoghq.com", "datadoghq-browser-agent.com",
-    "newrelic.com",
     "heapanalytics.com",
     # SaaS link pages
     "flowcode.com", "campsite.bio", "campsite.to",
     # Website builders (additional)
     "webador.com",
     # Standards / specifications
-    "sil.org",  # Open Font License
-    "gmpg.org",  # GMPG (XFN spec)
-    "ogp.me",  # Open Graph Protocol
-    "example.com",  # RFC 2606 reserved
+    "sil.org", "gmpg.org", "ogp.me",
+    "example.com",
     # Other benign
     "archive.org", "pearltrees.com", "metamask.io",
     "clearbit.com", "forms.app", "cpanel.net", "crazydomains.com",
     "nflxext.com", "fontsquirrel.com", "prismic.io", "opengraph.org",
     "ipify.org", "editor.website",
-    "nr-data.net",  # New Relic beacon
-    "gsap.to",  # GreenSock animation library
-    "gravatar.com", "wp.com",
+    "nr-data.net", "gsap.to",
+    "gravatar.com",
     "cloudinary.com",
     "sentry.io",
     "intercom.io", "intercomcdn.com",
     "zendesk.com", "zdassets.com",
     "hubspot.com", "hsforms.com", "hubspotusercontent.com",
     "activecampaign.com",
-    "pxf.io", "shareasale.com", "impact.com",  # affiliate networks
-    "tistory.com",  # Korean blogging platform
+    "pxf.io", "shareasale.com", "impact.com",
+    "tistory.com",
     "qr-code-generator.com",
-    "n9.cl",  # URL shortener
+    "n9.cl",
     "offset.com",
     "edgecastcdn.net",
-    "vk-portal.net",  # VK CDN
+    "vk-portal.net",
     "latofonts.com",
 })
 

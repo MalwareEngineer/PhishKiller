@@ -14,17 +14,9 @@ from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
 from phishkiller.models.feed_entry import FeedEntry, FeedSource
+from phishkiller.private_config import load_certstream_brands, load_certstream_keywords
 
 logger = logging.getLogger(__name__)
-
-# Known brand domains to compare against
-TARGET_BRANDS = [
-    "paypal", "microsoft", "apple", "google", "amazon",
-    "netflix", "facebook", "instagram", "twitter", "linkedin",
-    "chase", "wellsfargo", "bankofamerica", "citibank",
-    "dropbox", "icloud", "outlook", "office365",
-    "coinbase", "binance", "blockchain",
-]
 
 # Patterns that indicate suspicious certificate registrations
 SUSPICIOUS_PATTERNS = [
@@ -50,10 +42,11 @@ def score_domain(domain: str) -> int:
     parts = domain_lower.split(".")
     base_domain = parts[0] if parts else domain_lower
 
-    # Check Levenshtein distance to known brands
+    # Check Levenshtein distance to known brands (loaded from private config)
+    target_brands = load_certstream_brands()
     min_distance = float("inf")
     closest_brand = ""
-    for brand in TARGET_BRANDS:
+    for brand in target_brands:
         dist = levenshtein_distance(base_domain, brand)
         if dist < min_distance:
             min_distance = dist
@@ -70,14 +63,13 @@ def score_domain(domain: str) -> int:
         score += 15
 
     # Check brand name as substring
-    for brand in TARGET_BRANDS:
+    for brand in target_brands:
         if brand in base_domain and base_domain != brand:
             score += 25
             break
 
-    settings = get_settings()
-    # Check suspicious keywords
-    for keyword in settings.certstream_suspicious_keywords:
+    # Check suspicious keywords (loaded from private config)
+    for keyword in load_certstream_keywords():
         if keyword in domain_lower:
             score += 15
             break
