@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     chain_link_score_threshold: float = 0.5
     chain_enabled: bool = True
 
+    # Campaign auto-creation
+    campaign_tlsh_threshold: int = 30
+
     # CertStream
     certstream_url: str = "wss://certstream.calidog.io"
     certstream_score_threshold: int = 75

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Text
+from sqlalchemy import Boolean, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from phishkiller.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -22,6 +22,9 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     target_brand: Mapped[str | None] = mapped_column(String(255), index=True)
     start_date: Mapped[str | None] = mapped_column(String(32))
     end_date: Mapped[str | None] = mapped_column(String(32))
+    auto_generated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # Relationships
     kits: Mapped[list[Kit]] = relationship(
