@@ -22,6 +22,7 @@ def build_analysis_chain(kit_id: str) -> chain:
     """Build the full analysis Celery chain for a kit."""
     from phishkiller.tasks.download import download_kit
     from phishkiller.tasks.correlation import correlate_kit_actors
+    from phishkiller.tasks.campaigns import auto_assign_campaign
     from phishkiller.tasks.chain import crawl_chain, decode_qr_codes, parse_eml
 
     return chain(
@@ -35,6 +36,7 @@ def build_analysis_chain(kit_id: str) -> chain:
         decode_qr_codes.s(),
         compute_similarity.s(),
         correlate_kit_actors.s(),
+        auto_assign_campaign.s(),
         crawl_chain.s(),
         finalize_kit.s(),
     )
