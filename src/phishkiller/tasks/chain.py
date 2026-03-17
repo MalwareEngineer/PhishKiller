@@ -192,7 +192,7 @@ def decode_qr_codes(self, prev_result: dict) -> dict:
 @celery_app.task(
     name="phishkiller.tasks.chain.crawl_chain",
     bind=True,
-    queue="downloads",
+    queue="analysis",
     soft_time_limit=300,
     time_limit=330,
 )
