@@ -20,25 +20,43 @@ alembic upgrade head         # run migrations
 Optional for local API/CLI development:
 
 ```bash
-pip install -e ".[tlsh]"
+pip install -e ".[tlsh,yara,qr]"
 uvicorn phishkiller.main:app --reload
 ```
 
 ## Analysis Pipeline
 
-Each kit runs through an 8-step Celery chain:
+Each kit runs through an 11-step Celery chain:
 
 ```
-download → hash → extract → deobfuscate → yara_scan → extract_iocs → compute_similarity → correlate_actors
+download → hash → extract → parse_eml → deobfuscate → yara_scan → extract_iocs → decode_qr → compute_similarity → correlate_actors → crawl_chain
 ```
 
 - **Hash**: SHA256, MD5, SHA1, TLSH (fuzzy)
 - **Extract**: ZIP/TAR/RAR, skips non-archives
+- **EML Parse**: MIME walking, link extraction, attachment saving, inline image extraction
 - **Deobfuscate**: PHP `eval(base64_decode(...))` unwrapping
 - **YARA**: 892 rules — 890 t4d ZIP-level kit signatures + custom content rules
 - **IOCs**: emails, URLs, domains, IPs, crypto wallets, Telegram tokens/handles, SMTP creds, PHP mailers
+- **QR Decode**: Scans extracted images for QR codes containing phishing URLs (pyzbar + Pillow)
 - **Similarity**: TLSH distance clustering (threshold ≤100)
 - **Actors**: Auto-correlates kits sharing exfil infrastructure
+- **Chain Crawl**: Scores discovered links and spawns child kits for multi-step phish tracking
+
+### Multi-Step Chain Crawling
+
+Phishing campaigns often use multiple redirects, QR codes, and intermediary pages. PhishKiller follows these chains automatically:
+
+1. **Link discovery** — EML links, QR code URLs, redirect hops, and HTML form actions
+2. **Smart scoring** — each link scored 0–1 based on source type, domain reputation, phish keywords, and URL shortener detection
+3. **Child kit submission** — links above threshold (default 0.5) spawn new kits with full pipeline analysis
+4. **Depth limiting** — configurable max depth (default 3) prevents runaway crawling
+
+Chains are grouped into **Investigations** — submit a URL or `.eml` file to start one. Each investigation tracks the full parent→child tree, total depth reached, and per-kit discovery method.
+
+### Pattern Versioning
+
+IOC extraction rules (regex, filters, allowlists) are versioned via `PATTERN_VERSION`. When patterns change, kits with a stale version can be selectively re-analyzed without reprocessing the entire database.
 
 ## Feeds
 
@@ -61,6 +79,18 @@ Feeds use HTTP conditional requests (ETag/If-Modified-Since) cached in Redis —
 | worker-analysis | prefork | 10 | analysis | CPU-bound YARA, hashing, IOC extraction |
 
 Total: ~16 OS processes (beat 2, downloads 3, analysis 11).
+
+## API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/kits` | GET | List kits with filtering |
+| `/api/v1/kits/upload` | POST | Upload `.eml` or kit archive (auto-creates investigation for `.eml`) |
+| `/api/v1/investigations` | GET | List investigations |
+| `/api/v1/investigations` | POST | Start investigation from URL or file upload |
+| `/api/v1/investigations/{id}` | GET | Investigation details |
+| `/api/v1/investigations/{id}/tree` | GET | Parent→child kit tree |
+| `/api/v1/investigations/{id}/kits` | GET | Flat kit list for investigation |
 
 ## CLI
 
