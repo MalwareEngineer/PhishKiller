@@ -36,6 +36,7 @@ def build_analysis_chain(kit_id: str) -> chain:
         compute_similarity.s(),
         correlate_kit_actors.s(),
         crawl_chain.s(),
+        finalize_kit.s(),
     )
 
 
@@ -223,10 +224,6 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
     if prev_result.get("status") == "failed":
         return prev_result
 
-    # Skip if extraction was skipped (non-archive file)
-    if prev_result.get("skipped_extraction"):
-        return {**prev_result, "deobfuscated": False}
-
     extract_dir = prev_result.get("extract_dir")
     if not extract_dir:
         return {**prev_result, "deobfuscated": False}
@@ -352,7 +349,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
 
         from phishkiller.analysis.patterns import PATTERN_VERSION
 
-        kit.status = KitStatus.ANALYZED
         kit.pattern_version = PATTERN_VERSION
 
         duration = time.time() - start
@@ -384,8 +380,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
             kit_id, len(result.iocs), result.files_processed,
         )
         return {
-            "kit_id": kit_id,
-            "status": "analyzed",
+            **prev_result,
             "iocs_extracted": len(result.iocs),
             "ioc_summary": ioc_summary,
         }
@@ -400,7 +395,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
         try:
             kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
             if kit:
-                kit.status = KitStatus.ANALYZED
                 analysis = AnalysisResult(
                     kit_id=kit.id,
                     analysis_type=AnalysisType.IOC_EXTRACTION,
@@ -420,8 +414,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
         except Exception:
             pass
         return {
-            "kit_id": kit_id,
-            "status": "analyzed",
+            **prev_result,
             "iocs_extracted": 0,
             "ioc_summary": {},
             "timed_out": True,
@@ -631,5 +624,54 @@ def compute_similarity(self, prev_result: dict) -> dict:
         logger.exception("Error computing similarity for kit %s: %s", kit_id, e)
         # Similarity failure is non-fatal
         return {**prev_result, "similar_kits": []}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Finalize Kit
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    name="phishkiller.tasks.analysis.finalize_kit",
+    bind=True,
+    queue="analysis",
+)
+def finalize_kit(self, prev_result: dict) -> dict:
+    """Mark kit as ANALYZED after the entire chain completes.
+
+    This is the terminal task — sets the final status so the kit isn't
+    marked done before QR decode, similarity, correlation, and chain
+    crawl have run.
+    """
+    kit_id = prev_result["kit_id"]
+    if prev_result.get("status") == "failed":
+        return prev_result
+
+    db = get_sync_db()
+
+    try:
+        kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+        if not kit:
+            return prev_result
+
+        kit.status = KitStatus.ANALYZED
+        db.commit()
+
+        logger.info("Kit %s finalized as ANALYZED", kit_id)
+        return {**prev_result, "status": "analyzed"}
+
+    except Exception as e:
+        logger.exception("Error finalizing kit %s: %s", kit_id, e)
+        try:
+            db.rollback()
+            kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+            if kit:
+                kit.status = KitStatus.FAILED
+                kit.error_message = f"Finalization error: {str(e)[:450]}"
+                db.commit()
+        except Exception:
+            pass
+        return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
