@@ -116,12 +116,12 @@ def submit(
             f"[yellow]{data['skipped_duplicate']}[/yellow] duplicates skipped"
         )
         table = Table(title="Results")
-        table.add_column("URL", max_width=60)
-        table.add_column("Kit ID", max_width=12)
+        table.add_column("URL", max_width=255)
+        table.add_column("Kit ID", max_width=255)
         table.add_column("Status")
         for r in data["results"]:
             status_str = "[yellow]duplicate[/yellow]" if r["duplicate"] else "[green]queued[/green]"
-            table.add_row(r["url"][:60], str(r["kit_id"])[:12] + "…", status_str)
+            table.add_row(r["url"], str(r["kit_id"]), status_str)
         console.print(table)
         return
 
@@ -177,7 +177,7 @@ def status(
     table.add_column("Value")
 
     table.add_row("Status", _status_badge(data["status"]))
-    table.add_row("URL", data["source_url"][:80])
+    table.add_row("URL", data["source_url"])
     table.add_row("SHA256", data.get("sha256") or "—")
     table.add_row("TLSH", data.get("tlsh") or "—")
     table.add_row("File Size", f"{data.get('file_size') or 0:,} bytes")
@@ -291,19 +291,19 @@ def kits_list(
     data = _api("get", "/kits", params=params)
 
     table = Table(title=f"Phishing Kits ({data['total']} total)")
-    table.add_column("ID", style="dim", max_width=12)
+    table.add_column("ID", style="dim", max_width=255)
     table.add_column("Status")
-    table.add_column("SHA256", max_width=20)
+    table.add_column("SHA256", max_width=255)
     table.add_column("Size")
-    table.add_column("Source URL", max_width=50)
+    table.add_column("Source URL", max_width=255)
 
     for kit in data["items"]:
         table.add_row(
-            str(kit["id"])[:12] + "…",
+            str(kit["id"]),
             _status_badge(kit["status"]),
-            (kit.get("sha256") or "—")[:20],
+            kit.get("sha256") or "—",
             f"{kit.get('file_size') or 0:,}",
-            kit["source_url"][:50],
+            kit["source_url"],
         )
     console.print(table)
 
@@ -327,17 +327,17 @@ def kits_similar(
         return
 
     table = Table(title=f"Similar Kits (threshold={threshold})")
-    table.add_column("ID", max_width=12)
+    table.add_column("ID", max_width=255)
     table.add_column("Distance", justify="right")
-    table.add_column("SHA256", max_width=20)
-    table.add_column("URL", max_width=50)
+    table.add_column("SHA256", max_width=255)
+    table.add_column("URL", max_width=255)
 
     for item in data:
         table.add_row(
-            str(item["id"])[:12] + "…",
+            str(item["id"]),
             str(item["distance"]),
-            (item.get("sha256") or "—")[:20],
-            item["source_url"][:50],
+            item.get("sha256") or "—",
+            item["source_url"],
         )
     console.print(table)
 
@@ -370,16 +370,16 @@ def iocs_list(
 
     table = Table(title=f"Indicators ({data['total']} total)")
     table.add_column("Type", style="bold")
-    table.add_column("Value", max_width=60)
+    table.add_column("Value", max_width=255)
     table.add_column("Conf", justify="right")
-    table.add_column("Kit", max_width=12)
+    table.add_column("Kit", max_width=255)
 
     for ioc in data["items"]:
         table.add_row(
             ioc["type"],
-            ioc["value"][:60],
+            ioc["value"],
             str(ioc["confidence"]),
-            str(ioc["kit_id"])[:12] + "…",
+            str(ioc["kit_id"]),
         )
     console.print(table)
 
@@ -398,16 +398,16 @@ def iocs_search(
 
     table = Table(title=f"Search: '{query}' ({data['total']} results)")
     table.add_column("Type", style="bold")
-    table.add_column("Value", max_width=60)
+    table.add_column("Value", max_width=255)
     table.add_column("Conf", justify="right")
-    table.add_column("Kit", max_width=12)
+    table.add_column("Kit", max_width=255)
 
     for ioc in data["items"]:
         table.add_row(
             ioc["type"],
-            ioc["value"][:60],
+            ioc["value"],
             str(ioc["confidence"]),
-            str(ioc["kit_id"])[:12] + "…",
+            str(ioc["kit_id"]),
         )
     console.print(table)
 
@@ -483,17 +483,17 @@ def feeds_entries(
     data = _api("get", "/feeds/entries", params=params)
 
     table = Table(title=f"Feed Entries ({data['total']} total)")
-    table.add_column("Source", style="bold", max_width=12)
-    table.add_column("URL", max_width=60)
+    table.add_column("Source", style="bold")
+    table.add_column("URL", max_width=255)
     table.add_column("Processed")
     table.add_column("Created")
 
     for entry in data["items"]:
         table.add_row(
             entry["source"],
-            entry["url"][:60],
+            entry["url"],
             "Y" if entry["is_processed"] else "N",
-            entry["created_at"][:19],
+            entry["created_at"],
         )
     console.print(table)
 
@@ -633,20 +633,18 @@ def actors_list(
             return
 
         table = Table(title=f"Threat Actors ({len(actors)} shown)")
-        table.add_column("ID", style="dim", max_width=12)
+        table.add_column("ID", style="dim", max_width=255)
         table.add_column("Name", style="bold")
         table.add_column("Kits", justify="right")
         table.add_column("IOCs", justify="right")
-        table.add_column("Emails", max_width=40)
+        table.add_column("Emails", max_width=255)
         table.add_column("First Seen")
         table.add_column("Last Seen")
 
         for actor, kit_count, ioc_count in actors:
-            emails = ", ".join(actor.email_addresses[:3]) if actor.email_addresses else "—"
-            if actor.email_addresses and len(actor.email_addresses) > 3:
-                emails += f" (+{len(actor.email_addresses) - 3})"
+            emails = ", ".join(actor.email_addresses) if actor.email_addresses else "—"
             table.add_row(
-                str(actor.id)[:12] + "…",
+                str(actor.id),
                 actor.name,
                 str(kit_count),
                 str(ioc_count),
@@ -703,12 +701,12 @@ def actors_get(
         if linked_kits:
             console.print(f"\n[bold]Linked Kits ({len(linked_kits)}):[/bold]")
             kit_table = Table()
-            kit_table.add_column("Kit ID", max_width=12)
+            kit_table.add_column("Kit ID", max_width=255)
             kit_table.add_column("Status")
-            kit_table.add_column("SHA256", max_width=20)
-            kit_table.add_column("URL", max_width=50)
+            kit_table.add_column("SHA256", max_width=255)
+            kit_table.add_column("URL", max_width=255)
             for kid, url, st, sha in linked_kits:
-                kit_table.add_row(str(kid)[:12] + "…", _status_badge(st.value), (sha or "—")[:20], url[:50])
+                kit_table.add_row(str(kid), _status_badge(st.value), sha or "—", url)
             console.print(kit_table)
 
         # Show linked IOCs
@@ -722,10 +720,10 @@ def actors_get(
             console.print(f"\n[bold]Linked IOCs ({len(linked_iocs)}):[/bold]")
             ioc_table = Table()
             ioc_table.add_column("Type", style="bold")
-            ioc_table.add_column("Value", max_width=60)
+            ioc_table.add_column("Value", max_width=255)
             ioc_table.add_column("Conf", justify="right")
             for ioc in linked_iocs:
-                ioc_table.add_row(ioc.type.value, ioc.value[:60], str(ioc.confidence))
+                ioc_table.add_row(ioc.type.value, ioc.value, str(ioc.confidence))
             console.print(ioc_table)
 
     finally:
@@ -757,15 +755,15 @@ def actors_search(
             return
 
         table = Table(title=f"Actor Search: '{query}' ({len(actors)} results)")
-        table.add_column("ID", style="dim", max_width=12)
+        table.add_column("ID", style="dim", max_width=255)
         table.add_column("Name", style="bold")
-        table.add_column("Emails", max_width=40)
+        table.add_column("Emails", max_width=255)
         table.add_column("First Seen")
 
         for actor in actors:
-            emails = ", ".join(actor.email_addresses[:2]) if actor.email_addresses else "—"
+            emails = ", ".join(actor.email_addresses) if actor.email_addresses else "—"
             table.add_row(
-                str(actor.id)[:12] + "…",
+                str(actor.id),
                 actor.name,
                 emails,
                 actor.first_seen or "—",
