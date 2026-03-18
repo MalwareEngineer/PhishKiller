@@ -27,6 +27,8 @@ dependencies = [
     "python-multipart>=0.0.18",
     "rarfile>=4.2",
     "python-Levenshtein>=0.26.0",
+    "cryptography>=43.0.0",
+    "brotli>=1.1.0",
 ]
 
 [project.optional-dependencies]

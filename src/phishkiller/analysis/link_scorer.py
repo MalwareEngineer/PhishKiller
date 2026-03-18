@@ -99,11 +99,12 @@ class LinkScorer:
         # Base score by source type
         base_scores = {
             "form_action": 0.9,
+            "c2_url": 0.9,
             "qr_code": 0.85,
-            "eml_link": 0.6,
             "redirect": 0.7,
-            "html_link": 0.4,
+            "eml_link": 0.6,
             "eml_attachment": 0.5,
+            "html_link": 0.4,
         }
         link.score = base_scores.get(source, 0.3)
         link.reasons.append(f"source:{source}")

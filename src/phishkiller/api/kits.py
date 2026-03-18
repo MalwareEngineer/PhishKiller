@@ -11,6 +11,8 @@ from phishkiller.schemas.kit import (
     KitBulkCreate,
     KitBulkResponse,
     KitBulkResult,
+    KitBulkUploadResponse,
+    KitBulkUploadResult,
     KitCreate,
     KitDetail,
     KitListResponse,
@@ -45,6 +47,14 @@ async def create_kit(payload: KitCreate, db: DbSession) -> KitSubmitResponse:
     kit, task_id, duplicate = await service.submit_kit(
         str(payload.url), payload.source_feed
     )
+
+    # Auto-create investigation for manual submissions so crawl_chain fires
+    if not duplicate and (payload.source_feed or "manual") == "manual":
+        from phishkiller.services.investigation_service import InvestigationService
+
+        inv_service = InvestigationService(db)
+        await inv_service.create_from_file(kit)
+
     return KitSubmitResponse(
         kit_id=kit.id,
         task_id=task_id or "",
@@ -97,6 +107,76 @@ async def upload_kit(
     return KitSubmitResponse(kit_id=kit.id, task_id=task_id)
 
 
+@router.post(
+    "/upload/bulk",
+    response_model=KitBulkUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def bulk_upload_kits(
+    db: DbSession,
+    files: list[UploadFile],
+) -> KitBulkUploadResponse:
+    """Upload multiple phishing kit files for analysis (max 50)."""
+    if len(files) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 50 files per bulk upload",
+        )
+
+    settings = get_settings()
+    max_bytes = settings.max_kit_size_mb * 1024 * 1024
+    file_entries: list[dict] = []
+
+    for file in files:
+        content = await file.read()
+        if len(content) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File '{file.filename}' exceeds {settings.max_kit_size_mb}MB limit",
+            )
+
+        kit_id = uuid.uuid4()
+        download_dir = Path(settings.kit_download_dir) / str(kit_id)
+        download_dir.mkdir(parents=True, exist_ok=True)
+        filepath = download_dir / (file.filename or "upload.bin")
+        filepath.write_bytes(content)
+
+        file_entries.append({
+            "kit_id": kit_id,
+            "filename": file.filename or "upload.bin",
+            "local_path": str(filepath),
+        })
+
+    service = KitService(db)
+    results = await service.submit_bulk_files(file_entries)
+
+    # Auto-create investigations for .eml uploads
+    from phishkiller.services.investigation_service import InvestigationService
+
+    inv_service = InvestigationService(db)
+    final_results: list[KitBulkUploadResult] = []
+
+    for entry, result in zip(file_entries, results):
+        investigation_id = None
+        if entry["filename"].lower().endswith(".eml"):
+            kit = await service.get_kit(result["kit_id"])
+            if kit:
+                inv = await inv_service.create_from_file(kit)
+                investigation_id = inv.id if inv else None
+
+        final_results.append(KitBulkUploadResult(
+            filename=result["filename"],
+            kit_id=result["kit_id"],
+            task_id=result["task_id"],
+            investigation_id=investigation_id,
+        ))
+
+    return KitBulkUploadResponse(
+        submitted=len(final_results),
+        results=final_results,
+    )
+
+
 @router.post("/bulk", response_model=KitBulkResponse, status_code=status.HTTP_202_ACCEPTED)
 async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
     """Submit multiple URLs for download and analysis."""
@@ -110,6 +190,17 @@ async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
     results, submitted, skipped = await service.submit_bulk(
         [str(u) for u in payload.urls], payload.source_feed
     )
+
+    # Auto-create investigations for manual bulk submissions
+    if (payload.source_feed or "manual") == "manual":
+        from phishkiller.services.investigation_service import InvestigationService
+
+        inv_service = InvestigationService(db)
+        for r in results:
+            if not r["duplicate"]:
+                kit = await service.get_kit(r["kit_id"])
+                if kit:
+                    await inv_service.create_from_file(kit)
 
     return KitBulkResponse(
         submitted=submitted,

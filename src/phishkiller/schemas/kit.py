@@ -87,6 +87,18 @@ class KitBulkResponse(BaseModel):
     results: list[KitBulkResult]
 
 
+class KitBulkUploadResult(BaseModel):
+    filename: str
+    kit_id: uuid.UUID
+    task_id: str | None = None
+    investigation_id: uuid.UUID | None = None
+
+
+class KitBulkUploadResponse(BaseModel):
+    submitted: int
+    results: list[KitBulkUploadResult]
+
+
 class SimilarKit(BaseModel):
     id: uuid.UUID
     sha256: str | None
