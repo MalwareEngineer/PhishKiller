@@ -1,6 +1,5 @@
 """Archive extraction with security protections."""
 
-import os
 import tarfile
 import zipfile
 from dataclasses import dataclass, field

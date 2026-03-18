@@ -151,7 +151,7 @@ def download_kit(self, kit_id: str) -> dict:
                 db.commit()
         except Exception:
             pass
-        raise self.retry(exc=e)
+        raise self.retry(exc=e) from e
 
     finally:
         db.close()

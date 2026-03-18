@@ -1,7 +1,6 @@
 """Pre-compiled regex patterns for IOC extraction from phishing kit source files."""
 
 import re
-from html import unescape as html_unescape
 from urllib.parse import urlparse
 
 # Increment when patterns, allowlists, or extraction logic change.
@@ -56,7 +55,9 @@ C2_URL_PATTERN = re.compile(
 URL_TRAILING_JUNK = re.compile(r"['\";,)\]}>\\]+$")
 
 # CSS selector fragments that leak into URL matches (e.g. "tailwindcss.com*/*,:after,:before")
-CSS_JUNK_IN_URL = re.compile(r"[*{}<>]|::?(?:before|after|hover|focus|active|visited|placeholder|root)")
+CSS_JUNK_IN_URL = re.compile(
+    r"[*{}<>]|::?(?:before|after|hover|focus|active|visited|placeholder|root)"
+)
 
 # JS string concatenation boundary — URL should be truncated here
 # Matches '+, "+, `,  which indicate the URL literal has ended and JS code follows
@@ -173,7 +174,6 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "quirksmode.org",
     # Captcha / anti-bot
     "recaptcha.net", "hcaptcha.com",
-    "gstatic.com",
     # Analytics
     "segment.io", "segment.com",
     "mixpanel.com",
@@ -379,7 +379,7 @@ VALID_TLDS = {
     "tk", "ml", "ga", "cf", "gq", "buzz", "rest", "surf", "icu",
     "cc", "ws", "pw", "to", "ly", "su", "la", "nu",
     # Additional
-    "sbs", "cfd", "icu", "cyou", "best",
+    "sbs", "cfd", "cyou", "best",
 }
 # JS property accesses that happen to have valid TLDs (e.g. navigator.online)
 JS_FALSE_DOMAINS = {

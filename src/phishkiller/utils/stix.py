@@ -4,18 +4,16 @@ Provides utility functions to convert PhishKiller models into
 STIX 2.1 objects for interoperability with threat intelligence platforms.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from stix2 import (
-    URL,
     Bundle,
-    EmailAddress,
     Identity,
-    Indicator as STIXIndicator,
-    IPv4Address,
     Malware,
-    Relationship,
     ThreatActor,
+)
+from stix2 import (
+    Indicator as STIXIndicator,
 )
 
 # PhishKiller identity used as the creator of STIX objects
@@ -56,7 +54,7 @@ def ioc_to_stix_indicator(
         description=description,
         pattern=pattern,
         pattern_type="stix",
-        valid_from=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        valid_from=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         labels=labels,
         confidence=confidence,
         created_by_ref=PHISHKILLER_IDENTITY.id,

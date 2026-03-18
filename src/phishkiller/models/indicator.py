@@ -6,7 +6,7 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Enum, ForeignKey, Index, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from phishkiller.models.kit import Kit
 
 
-class IndicatorType(str, enum.Enum):
+class IndicatorType(enum.StrEnum):
     EMAIL = "email"
     TELEGRAM_BOT_TOKEN = "telegram_bot_token"
     TELEGRAM_CHAT_ID = "telegram_chat_id"

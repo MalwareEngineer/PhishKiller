@@ -7,23 +7,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-logger = logging.getLogger(__name__)
-
-# Guard rails for pathological files (the P99 file is ~50 KB; the outlier
-# that took 7,794 seconds was a multi-MB minified HTML blob).
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB — skip files larger than this
-MAX_SCAN_SECONDS = 120  # 2 minutes per file — abort and return partial IOCs
-MAX_LINE_LENGTH = 100_000  # 100 KB — truncate longer lines before regex (minified JS/HTML)
-
 from phishkiller.analysis.patterns import (
-
+    _JS_OBJECT_PREFIXES,
+    _JS_PRONE_TLDS,
     BENIGN_DOMAINS,
     BENIGN_URL_EXTENSIONS,
     BITCOIN_PATTERN,
     C2_KEYWORDS,
     C2_URL_PATTERN,
     CSS_JUNK_IN_URL,
-    JS_CONCAT_BOUNDARY,
     DOMAIN_PATTERN,
     EMAIL_EXCLUSIONS,
     EMAIL_PATTERN,
@@ -31,12 +23,11 @@ from phishkiller.analysis.patterns import (
     ETHEREUM_PATTERN,
     FALSE_DOMAIN_EXTENSIONS,
     IPV4_PATTERN,
+    JS_CONCAT_BOUNDARY,
     JS_FALSE_DOMAINS,
-    _JS_OBJECT_PREFIXES,
-    _JS_PRONE_TLDS,
+    PHONE_PATTERN,
     PHP_MAIL_PATTERN,
     PHP_MAIL_TO_PATTERN,
-    PHONE_PATTERN,
     PRIVATE_IP_PREFIXES,
     SMTP_HOST_EXCLUSIONS,
     SMTP_HOST_PATTERN,
@@ -53,6 +44,14 @@ from phishkiller.analysis.patterns import (
     is_benign_url,
 )
 from phishkiller.models.indicator import IndicatorType
+
+logger = logging.getLogger(__name__)
+
+# Guard rails for pathological files (the P99 file is ~50 KB; the outlier
+# that took 7,794 seconds was a multi-MB minified HTML blob).
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB — skip files larger than this
+MAX_SCAN_SECONDS = 120  # 2 minutes per file — abort and return partial IOCs
+MAX_LINE_LENGTH = 100_000  # 100 KB — truncate longer lines before regex (minified JS/HTML)
 
 PROCESSABLE_EXTENSIONS = {
     ".php", ".js", ".html", ".htm", ".txt", ".json",
@@ -196,7 +195,8 @@ class IOCExtractor:
             for match in pattern.finditer(line):
                 email = match.group(1)
                 domain = email.split("@")[1].lower()
-                if domain not in EMAIL_EXCLUSIONS and extract_root_domain(domain) not in BENIGN_DOMAINS:
+                root = extract_root_domain(domain)
+                if domain not in EMAIL_EXCLUSIONS and root not in BENIGN_DOMAINS:
                     results.append(ExtractedIOC(
                         type=IndicatorType.EMAIL,
                         value=email,
@@ -503,14 +503,14 @@ class IOCExtractor:
                 continue
 
             # Skip CSS class/state patterns (tbody.collapse.in, tr.show.no)
-            _CSS_STATE_LABELS = {
+            css_state_labels = {
                 "collapse", "toggle", "show", "hide", "fade", "active",
                 "disabled", "visible", "invisible", "open", "closed",
                 "expanded", "collapsed", "selected", "checked",
                 "country-selector-dropdown",
             }
             if len(labels) >= 3 and any(
-                seg in _CSS_STATE_LABELS for seg in labels
+                seg in css_state_labels for seg in labels
             ):
                 continue
 
@@ -594,9 +594,7 @@ class IOCExtractor:
             return True
         # Repeated zeros in subscriber (00 00 00, 000000)
         subscriber = digits[3:]  # skip country code
-        if subscriber and subscriber.replace("0", "") == "":
-            return True
-        return False
+        return bool(subscriber and subscriber.replace("0", "") == "")
 
     def _extract_phone_numbers(
         self, line: str, source_file: str, line_num: int

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from phishkiller.models.kit import Kit
 
 
-class FeedSource(str, enum.Enum):
+class FeedSource(enum.StrEnum):
     PHISHTANK = "phishtank"
     OPENPHISH = "openphish"
     CERTSTREAM = "certstream"

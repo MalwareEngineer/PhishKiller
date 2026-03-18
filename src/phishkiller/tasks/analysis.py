@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 def build_analysis_chain(kit_id: str) -> chain:
     """Build the full analysis Celery chain for a kit."""
-    from phishkiller.tasks.download import download_kit
-    from phishkiller.tasks.correlation import correlate_kit_actors
     from phishkiller.tasks.campaigns import auto_assign_campaign
     from phishkiller.tasks.chain import crawl_chain, decode_qr_codes, parse_eml
+    from phishkiller.tasks.correlation import correlate_kit_actors
+    from phishkiller.tasks.download import download_kit
 
     return chain(
         download_kit.s(kit_id),
@@ -667,8 +667,9 @@ def compute_similarity(self, prev_result: dict) -> dict:
         if not kit or not kit.tlsh:
             return {**prev_result, "similar_kits": []}
 
-        from phishkiller.analysis.hasher import compute_tlsh_distance
         from sqlalchemy import select
+
+        from phishkiller.analysis.hasher import compute_tlsh_distance
 
         # Compare against all analyzed kits with TLSH hashes
         candidates = db.scalars(

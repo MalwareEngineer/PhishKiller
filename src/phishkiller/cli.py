@@ -3,27 +3,37 @@
 Entry point registered in pyproject.toml as `phishkiller` console script.
 
 Commands:
-    phishkiller submit <url|file>      Submit a kit URL or local file for analysis
-    phishkiller submit --batch f.txt   Bulk submit URLs from a file
-    phishkiller watch <kit_id>         Watch analysis progress until completion
-    phishkiller status <kit_id>        Check analysis status
-    phishkiller kits list              List kits with filters
-    phishkiller kits get <kit_id>      Get kit details
-    phishkiller kits similar <kit_id>  Find similar kits by TLSH
-    phishkiller iocs search <query>    Search IOCs
-    phishkiller iocs list              List IOCs with filters
-    phishkiller iocs stats             IOC statistics
-    phishkiller feeds ingest           Trigger feed ingestion
-    phishkiller feeds status           Feed processing status
-    phishkiller analyze <kit_id>       Re-run analysis on a kit
-    phishkiller health                 Check service health
-    phishkiller worker recover         Recover stuck kits
+    phishkiller submit <url|file>            Submit a kit URL or local file for analysis
+    phishkiller submit --batch f.txt         Bulk submit URLs from a file
+    phishkiller watch <kit_id>               Watch analysis progress until completion
+    phishkiller status <kit_id>              Check analysis status
+    phishkiller kits list                    List kits with filters
+    phishkiller kits get <kit_id>            Get kit details
+    phishkiller kits similar <kit_id>        Find similar kits by TLSH
+    phishkiller iocs search <query>          Search IOCs
+    phishkiller iocs list                    List IOCs with filters
+    phishkiller iocs stats                   IOC statistics
+    phishkiller feeds ingest                 Trigger feed ingestion
+    phishkiller feeds status                 Feed processing status
+    phishkiller campaigns list               List campaigns
+    phishkiller campaigns get <id>           Campaign details with linked kits/actors
+    phishkiller campaigns create             Create a campaign
+    phishkiller campaigns add-kits <id>      Add kits to a campaign
+    phishkiller investigations list          List investigations
+    phishkiller investigations get <id>      Investigation details
+    phishkiller investigations tree <id>     Parent-child kit tree view
+    phishkiller investigations create <url>  Start a new investigation
+    phishkiller actors list                  List threat actors
+    phishkiller actors get <id>              Actor details
+    phishkiller actors search <query>        Search actors
+    phishkiller analyze <kit_id>             Re-run analysis on a kit
+    phishkiller health                       Check service health
+    phishkiller worker recover               Recover stuck kits
 """
 
-import json
-import sys
 import time
 from pathlib import Path
+from typing import Annotated
 
 import httpx
 import typer
@@ -31,6 +41,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
+from rich.tree import Tree as RichTree
 
 app = typer.Typer(
     name="phishkiller",
@@ -43,12 +54,16 @@ iocs_app = typer.Typer(help="IOC query commands", no_args_is_help=True)
 feeds_app = typer.Typer(help="Feed management commands", no_args_is_help=True)
 worker_app = typer.Typer(help="Worker management commands", no_args_is_help=True)
 actors_app = typer.Typer(help="Actor/threat group commands", no_args_is_help=True)
+campaigns_app = typer.Typer(help="Campaign management commands", no_args_is_help=True)
+investigations_app = typer.Typer(help="Investigation management commands", no_args_is_help=True)
 
 app.add_typer(kits_app, name="kits")
 app.add_typer(iocs_app, name="iocs")
 app.add_typer(feeds_app, name="feeds")
 app.add_typer(worker_app, name="worker")
 app.add_typer(actors_app, name="actors")
+app.add_typer(campaigns_app, name="campaigns")
+app.add_typer(investigations_app, name="investigations")
 
 console = Console()
 
@@ -67,10 +82,10 @@ def _api(method: str, path: str, **kwargs) -> dict | list | None:
     except httpx.ConnectError:
         console.print("[red]Error: Cannot connect to API at {API_BASE}[/red]")
         console.print("Is the server running? Start with: uvicorn phishkiller.main:app")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     except httpx.HTTPStatusError as e:
         console.print(f"[red]API Error {e.response.status_code}:[/red] {e.response.text}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 # ─── Top-Level Commands ──────────────────────────────────────────────
@@ -80,7 +95,9 @@ def _api(method: str, path: str, **kwargs) -> dict | list | None:
 def submit(
     target: str = typer.Argument(None, help="URL or local file path of phishing kit"),
     source: str = typer.Option("manual", "--source", "-s", help="Source feed name"),
-    batch: str = typer.Option(None, "--batch", "-b", help="File containing one URL per line (bulk submit)"),
+    batch: str = typer.Option(
+        None, "--batch", "-b", help="File containing one URL per line (bulk submit)"
+    ),
 ):
     """Submit a phishing kit for analysis.
 
@@ -145,10 +162,12 @@ def submit(
                     data = response.json()
             except httpx.ConnectError:
                 console.print(f"[red]Error: Cannot connect to API at {API_BASE}[/red]")
-                raise typer.Exit(1)
+                raise typer.Exit(1) from None
             except httpx.HTTPStatusError as e:
-                console.print(f"[red]API Error {e.response.status_code}:[/red] {e.response.text}")
-                raise typer.Exit(1)
+                console.print(
+                    f"[red]API Error {e.response.status_code}:[/red] {e.response.text}"
+                )
+                raise typer.Exit(1) from None
         console.print(f"[green]+[/green] File uploaded: [bold]{data['kit_id']}[/bold]")
         console.print(f"  Task ID: {data['task_id']}")
         console.print(f"  Watch progress: phishkiller watch {data['kit_id']}")
@@ -183,10 +202,51 @@ def status(
     table.add_row("File Size", f"{data.get('file_size') or 0:,} bytes")
     table.add_row("Created", data["created_at"])
 
+    if data.get("parent_kit_id"):
+        table.add_row("Parent Kit", str(data["parent_kit_id"]))
+    if data.get("investigation_id"):
+        table.add_row("Investigation", str(data["investigation_id"]))
+    if data.get("chain_depth"):
+        table.add_row("Chain Depth", str(data["chain_depth"]))
+    if data.get("discovery_method"):
+        table.add_row("Discovery", data["discovery_method"])
+
     if data.get("error_message"):
         table.add_row("Error", f"[red]{data['error_message']}[/red]")
 
     console.print(table)
+
+    # Show child kits
+    child_kits = data.get("child_kits", [])
+    if child_kits:
+        console.print(f"\n[bold]Child Kits ({len(child_kits)}):[/bold]")
+        child_table = Table()
+        child_table.add_column("ID", style="dim", max_width=255)
+        child_table.add_column("Status")
+        child_table.add_column("URL", max_width=255)
+        for child in child_kits:
+            child_table.add_row(
+                str(child["id"]),
+                _status_badge(child["status"]),
+                child["source_url"],
+            )
+        console.print(child_table)
+
+    # Show campaigns
+    campaigns = data.get("campaigns", [])
+    if campaigns:
+        console.print(f"\n[bold]Campaigns ({len(campaigns)}):[/bold]")
+        camp_table = Table()
+        camp_table.add_column("ID", style="dim", max_width=255)
+        camp_table.add_column("Name", style="bold")
+        camp_table.add_column("Brand")
+        for camp in campaigns:
+            camp_table.add_row(
+                str(camp["id"]),
+                camp["name"],
+                camp.get("target_brand") or "—",
+            )
+        console.print(camp_table)
 
     # Show indicators summary
     indicators = data.get("indicators", [])
@@ -471,7 +531,9 @@ def feeds_status():
 @feeds_app.command("entries")
 def feeds_entries(
     source: str = typer.Option(None, "--source", "-s", help="Filter by source"),
-    processed: bool = typer.Option(None, "--processed/--unprocessed", help="Filter by processed state"),
+    processed: bool = typer.Option(
+        None, "--processed/--unprocessed", help="Filter by processed state"
+    ),
     limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
 ):
     """List feed entries."""
@@ -501,7 +563,7 @@ def feeds_entries(
 @feeds_app.command("health")
 def feeds_health():
     """Check feed health — flag sources with no recent ingestion."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import func, select
 
@@ -515,7 +577,7 @@ def feeds_health():
 
     db = get_sync_db()
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         table = Table(title="Feed Health")
         table.add_column("Source", style="bold")
@@ -542,7 +604,7 @@ def feeds_health():
                 any_unhealthy = True
                 continue
 
-            age = now - last_entry.replace(tzinfo=timezone.utc)
+            age = now - last_entry.replace(tzinfo=UTC)
             hours = int(age.total_seconds() // 3600)
             minutes = int((age.total_seconds() % 3600) // 60)
             healthy = age <= max_interval
@@ -574,7 +636,9 @@ def feeds_health():
 
 @worker_app.command("recover")
 def worker_recover(
-    timeout: int = typer.Option(30, "--timeout", "-t", help="Minutes a kit must be stuck before recovery"),
+    timeout: int = typer.Option(
+        30, "--timeout", "-t", help="Minutes a kit must be stuck before recovery"
+    ),
 ):
     """Recover kits stuck in transient states (DOWNLOADING/ANALYZING/DOWNLOADED)."""
     from phishkiller.tasks.recovery import recover_stuck_kits
@@ -587,7 +651,7 @@ def worker_recover(
 
 @worker_app.command("reset")
 def worker_reset():
-    """Purge all queues, clean DB analysis data, and re-dispatch all non-failed kits on the new chain."""
+    """Purge all queues, clean DB analysis data, and re-dispatch all non-failed kits."""
     typer.confirm(
         "This will purge ALL queued messages, delete all indicators/analysis_results, "
         "and re-run every non-failed kit through the full analysis chain. Continue?",
@@ -608,10 +672,11 @@ def actors_list(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
 ):
     """List auto-correlated threat actors."""
+    from sqlalchemy import func, select
+
     from phishkiller.database import get_sync_db
     from phishkiller.models.actor import Actor
     from phishkiller.models.indicator import Indicator
-    from sqlalchemy import func, select
 
     db = get_sync_db()
     try:
@@ -629,7 +694,9 @@ def actors_list(
         ).all()
 
         if not actors:
-            console.print("[yellow]No actors found yet. Actors are auto-created during analysis.[/yellow]")
+            console.print(
+                "[yellow]No actors found yet. Actors are auto-created during analysis.[/yellow]"
+            )
             return
 
         table = Table(title=f"Threat Actors ({len(actors)} shown)")
@@ -662,12 +729,14 @@ def actors_get(
     actor_id: str = typer.Argument(..., help="Actor UUID"),
 ):
     """Show detailed actor information with linked kits and IOCs."""
+    import uuid as uuid_mod
+
+    from sqlalchemy import select
+
     from phishkiller.database import get_sync_db
     from phishkiller.models.actor import Actor
     from phishkiller.models.indicator import Indicator
     from phishkiller.models.kit import Kit
-    from sqlalchemy import select, func
-    import uuid as uuid_mod
 
     db = get_sync_db()
     try:
@@ -686,7 +755,8 @@ def actors_get(
         table.add_row("First Seen", actor.first_seen or "—")
         table.add_row("Last Seen", actor.last_seen or "—")
         table.add_row("Emails", ", ".join(actor.email_addresses) if actor.email_addresses else "—")
-        table.add_row("Telegram", ", ".join(actor.telegram_handles) if actor.telegram_handles else "—")
+        tg = ", ".join(actor.telegram_handles) if actor.telegram_handles else "—"
+        table.add_row("Telegram", tg)
         console.print(table)
 
         # Show linked kits
@@ -736,9 +806,10 @@ def actors_search(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
 ):
     """Search actors by name, email address, or Telegram handle."""
+    from sqlalchemy import or_
+
     from phishkiller.database import get_sync_db
     from phishkiller.models.actor import Actor
-    from sqlalchemy import or_, func
 
     db = get_sync_db()
     try:
@@ -771,6 +842,218 @@ def actors_search(
         console.print(table)
     finally:
         db.close()
+
+
+# ─── Campaign Commands ────────────────────────────────────────────────
+
+
+@campaigns_app.command("list")
+def campaigns_list(
+    brand: str = typer.Option(None, "--brand", "-b", help="Filter by target brand"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
+):
+    """List campaigns."""
+    params = {"limit": limit}
+    if brand:
+        params["target_brand"] = brand
+    data = _api("get", "/campaigns", params=params)
+
+    table = Table(title=f"Campaigns ({data['total']} total)")
+    table.add_column("ID", style="dim", max_width=255)
+    table.add_column("Name", style="bold")
+    table.add_column("Brand")
+    table.add_column("Start")
+    table.add_column("End")
+    table.add_column("Created")
+
+    for camp in data["items"]:
+        table.add_row(
+            str(camp["id"]),
+            camp["name"],
+            camp.get("target_brand") or "—",
+            camp.get("start_date") or "—",
+            camp.get("end_date") or "—",
+            camp["created_at"],
+        )
+    console.print(table)
+
+
+@campaigns_app.command("get")
+def campaigns_get(
+    campaign_id: str = typer.Argument(..., help="Campaign UUID"),
+):
+    """Show campaign details with linked kits and actors."""
+    data = _api("get", f"/campaigns/{campaign_id}")
+
+    table = Table(title=f"Campaign: {data['name']}", show_header=False, padding=(0, 2))
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value")
+
+    table.add_row("ID", str(data["id"]))
+    table.add_row("Name", data["name"])
+    table.add_row("Brand", data.get("target_brand") or "—")
+    table.add_row("Description", data.get("description") or "—")
+    table.add_row("Start", data.get("start_date") or "—")
+    table.add_row("End", data.get("end_date") or "—")
+    table.add_row("Created", data["created_at"])
+    console.print(table)
+
+    kits = data.get("kits", [])
+    if kits:
+        console.print(f"\n[bold]Linked Kits ({len(kits)}):[/bold]")
+        kit_table = Table()
+        kit_table.add_column("ID", style="dim", max_width=255)
+        kit_table.add_column("Status")
+        kit_table.add_column("SHA256", max_width=255)
+        kit_table.add_column("URL", max_width=255)
+        for kit in kits:
+            kit_table.add_row(
+                str(kit["id"]),
+                _status_badge(kit["status"]),
+                kit.get("sha256") or "—",
+                kit["source_url"],
+            )
+        console.print(kit_table)
+
+    actors = data.get("actors", [])
+    if actors:
+        console.print(f"\n[bold]Linked Actors ({len(actors)}):[/bold]")
+        actor_table = Table()
+        actor_table.add_column("ID", style="dim", max_width=255)
+        actor_table.add_column("Name", style="bold")
+        for actor in actors:
+            actor_table.add_row(str(actor["id"]), actor["name"])
+        console.print(actor_table)
+
+
+@campaigns_app.command("create")
+def campaigns_create(
+    name: str = typer.Option(..., "--name", help="Campaign name"),
+    brand: str = typer.Option(None, "--brand", "-b", help="Target brand"),
+    description: str = typer.Option(None, "--desc", "-d", help="Description"),
+):
+    """Create a new campaign."""
+    payload = {"name": name}
+    if brand:
+        payload["target_brand"] = brand
+    if description:
+        payload["description"] = description
+    data = _api("post", "/campaigns", json=payload)
+    console.print(f"[green]+[/green] Campaign created: [bold]{data['id']}[/bold]")
+    console.print(f"  Name: {data['name']}")
+
+
+@campaigns_app.command("add-kits")
+def campaigns_add_kits(
+    campaign_id: str = typer.Argument(..., help="Campaign UUID"),
+    kit_ids: Annotated[list[str], typer.Argument(help="Kit UUIDs to add")] = ...,
+):
+    """Add kits to a campaign."""
+    data = _api("post", f"/campaigns/{campaign_id}/kits", json={"kit_ids": kit_ids})
+    console.print(f"[green]+[/green] Added {data['added']} kit(s) to campaign {campaign_id}")
+
+
+# ─── Investigation Commands ───────────────────────────────────────────
+
+
+@investigations_app.command("list")
+def investigations_list(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
+):
+    """List investigations."""
+    data = _api("get", "/investigations", params={"limit": limit})
+
+    table = Table(title=f"Investigations ({data['total']} total)")
+    table.add_column("ID", style="dim", max_width=255)
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("Max Depth", justify="right")
+    table.add_column("Kits", justify="right")
+    table.add_column("Depth Reached", justify="right")
+    table.add_column("Created")
+
+    for inv in data["items"]:
+        table.add_row(
+            str(inv["id"]),
+            inv.get("name") or "—",
+            _status_badge(inv["status"]),
+            str(inv["max_depth"]),
+            str(inv["total_kits"]),
+            str(inv["total_depth_reached"]),
+            inv["created_at"],
+        )
+    console.print(table)
+
+
+@investigations_app.command("get")
+def investigations_get(
+    investigation_id: str = typer.Argument(..., help="Investigation UUID"),
+):
+    """Show investigation details."""
+    data = _api("get", f"/investigations/{investigation_id}")
+
+    table = Table(
+        title=f"Investigation: {data.get('name') or investigation_id}",
+        show_header=False,
+        padding=(0, 2),
+    )
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value")
+
+    table.add_row("ID", str(data["id"]))
+    table.add_row("Name", data.get("name") or "—")
+    table.add_row("Status", _status_badge(data["status"]))
+    table.add_row("Max Depth", str(data["max_depth"]))
+    table.add_row("Total Kits", str(data["total_kits"]))
+    table.add_row("Depth Reached", str(data["total_depth_reached"]))
+    table.add_row("Created", data["created_at"])
+
+    root_kit = data.get("root_kit")
+    if root_kit:
+        table.add_row("Root Kit", f"{root_kit['id']}  {root_kit['source_url']}")
+    console.print(table)
+
+
+@investigations_app.command("tree")
+def investigations_tree(
+    investigation_id: str = typer.Argument(..., help="Investigation UUID"),
+):
+    """Show the kit parent-child tree for an investigation."""
+    nodes = _api("get", f"/investigations/{investigation_id}/tree")
+    if not nodes:
+        console.print("[yellow]No kits in this investigation[/yellow]")
+        return
+
+    tree = RichTree(f"[bold]Investigation {investigation_id}[/bold]")
+    for node in nodes:
+        _render_tree_node(tree, node)
+    console.print(tree)
+
+
+def _render_tree_node(parent: RichTree, node: dict):
+    """Recursively render an investigation tree node."""
+    kit = node["kit"]
+    label = f"{kit['id']}  {_status_badge(kit['status'])}  {kit['source_url']}"
+    discovery = node.get("discovery_method")
+    if discovery:
+        label += f"  [dim]({discovery})[/dim]"
+    branch = parent.add(label)
+    for child in node.get("children", []):
+        _render_tree_node(branch, child)
+
+
+@investigations_app.command("create")
+def investigations_create(
+    url: str = typer.Argument(..., help="URL to investigate"),
+    max_depth: int = typer.Option(3, "--depth", "-d", help="Max crawl depth"),
+):
+    """Start a new investigation from a URL."""
+    data = _api("post", "/investigations", json={"url": url, "max_depth": max_depth})
+    inv_id = data["investigation_id"]
+    console.print(f"[green]+[/green] Investigation started: [bold]{inv_id}[/bold]")
+    console.print(f"  Root Kit: {data['kit_id']}")
+    console.print(f"  Task ID: {data['task_id']}")
+    console.print(f"  Watch progress: phishkiller watch {data['kit_id']}")
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────

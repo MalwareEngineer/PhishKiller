@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from phishkiller.models.investigation import Investigation
 
 
-class KitStatus(str, enum.Enum):
+class KitStatus(enum.StrEnum):
     PENDING = "pending"
     DOWNLOADING = "downloading"
     DOWNLOADED = "downloaded"

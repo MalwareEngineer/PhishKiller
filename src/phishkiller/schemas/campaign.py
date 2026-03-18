@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from phishkiller.schemas.kit import KitSummary
+
 
 class CampaignCreate(BaseModel):
     name: str
@@ -33,8 +35,17 @@ class CampaignSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ActorBrief(BaseModel):
+    id: uuid.UUID
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
 class CampaignDetail(CampaignSummary):
     description: str | None
+    kits: list[KitSummary] = []
+    actors: list[ActorBrief] = []
 
     model_config = {"from_attributes": True}
 

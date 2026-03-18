@@ -117,31 +117,30 @@ def download_file(
     max_bytes = max_size_mb * 1024 * 1024
 
     try:
-        with get_sync_client() as client:
-            with client.stream("GET", url) as response:
-                response.raise_for_status()
+        with get_sync_client() as client, client.stream("GET", url) as response:
+            response.raise_for_status()
 
-                # Determine filename from URL or Content-Disposition
-                filename = _extract_filename(url, response)
-                filepath = dest_path / filename
+            # Determine filename from URL or Content-Disposition
+            filename = _extract_filename(url, response)
+            filepath = dest_path / filename
 
-                total = 0
-                with open(filepath, "wb") as f:
-                    for chunk in response.iter_bytes(chunk_size=8192):
-                        total += len(chunk)
-                        if total > max_bytes:
-                            logger.warning(
-                                "Download exceeded size limit (%d MB): %s",
-                                max_size_mb,
-                                url,
-                            )
-                            filepath.unlink(missing_ok=True)
-                            return None, f"Exceeded size limit ({max_size_mb} MB)"
+            total = 0
+            with open(filepath, "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        logger.warning(
+                            "Download exceeded size limit (%d MB): %s",
+                            max_size_mb,
+                            url,
+                        )
+                        filepath.unlink(missing_ok=True)
+                        return None, f"Exceeded size limit ({max_size_mb} MB)"
 
-                        f.write(chunk)
+                    f.write(chunk)
 
-                logger.info("Downloaded %s (%d bytes) to %s", url, total, filepath)
-                return filepath, "ok"
+            logger.info("Downloaded %s (%d bytes) to %s", url, total, filepath)
+            return filepath, "ok"
 
     except httpx.HTTPStatusError as e:
         logger.error("HTTP error downloading %s: %s", url, e.response.status_code)

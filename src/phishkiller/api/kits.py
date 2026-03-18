@@ -156,7 +156,7 @@ async def bulk_upload_kits(
     inv_service = InvestigationService(db)
     final_results: list[KitBulkUploadResult] = []
 
-    for entry, result in zip(file_entries, results):
+    for entry, result in zip(file_entries, results, strict=False):
         investigation_id = None
         if entry["filename"].lower().endswith(".eml"):
             kit = await service.get_kit(result["kit_id"])
@@ -254,6 +254,6 @@ async def reanalyze_kit(kit_id: uuid.UUID, db: DbSession):
     service = KitService(db)
     try:
         task_id = await service.reanalyze(kit_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Kit not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Kit not found") from exc
     return {"kit_id": str(kit_id), "task_id": task_id}

@@ -1,8 +1,8 @@
 """Actor correlation task — auto-clusters kits by shared high-confidence IOCs."""
 
+import contextlib
 import logging
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -136,10 +136,8 @@ def correlate_kit_actors(self, prev_result: dict) -> dict:
 
     except Exception as e:
         logger.exception("Error correlating actors for kit %s: %s", kit_id, e)
-        try:
+        with contextlib.suppress(Exception):
             db.rollback()
-        except Exception:
-            pass
         # Correlation failure is non-fatal
         return {**prev_result, "actors_linked": 0}
     finally:

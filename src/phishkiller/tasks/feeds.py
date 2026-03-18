@@ -11,7 +11,7 @@ from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
 from phishkiller.models.feed_entry import FeedEntry, FeedSource
 from phishkiller.models.kit import Kit, KitStatus
-from phishkiller.utils.http_client import fetch_with_cache, get_sync_client
+from phishkiller.utils.http_client import fetch_with_cache
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def ingest_phishtank(self) -> dict:
     except Exception as e:
         db.rollback()
         logger.exception("PhishTank ingestion error: %s", e)
-        raise self.retry(exc=e)
+        raise self.retry(exc=e) from e
     finally:
         db.close()
 
@@ -156,7 +156,7 @@ def ingest_openphish(self) -> dict:
     except Exception as e:
         db.rollback()
         logger.exception("OpenPhish ingestion error: %s", e)
-        raise self.retry(exc=e)
+        raise self.retry(exc=e) from e
     finally:
         db.close()
 
