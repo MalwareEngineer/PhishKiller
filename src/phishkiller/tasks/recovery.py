@@ -1,7 +1,7 @@
 """Recovery task — detect and re-queue stuck kits on startup and periodically."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from celery.signals import worker_ready
 from sqlalchemy import select, text
@@ -32,7 +32,7 @@ def recover_stuck_kits(self, timeout_minutes: int = 30) -> dict:
 
     db = get_sync_db()
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+        cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
 
         stuck_kits = db.scalars(
             select(Kit).where(
@@ -137,8 +137,16 @@ def full_reset_and_redispatch(self) -> dict:
             if dispatched % 1000 == 0:
                 logger.info("[reset] Dispatched %d / %d kits", dispatched, len(non_failed))
 
-        logger.info("[reset] Complete — reset %d kits, dispatched %d chains", len(non_failed), dispatched)
-        return {"reset": len(non_failed), "dispatched": dispatched, "indicators_deleted": ind_count, "results_deleted": ar_count}
+        logger.info(
+            "[reset] Complete — reset %d kits, dispatched %d chains",
+            len(non_failed), dispatched,
+        )
+        return {
+            "reset": len(non_failed),
+            "dispatched": dispatched,
+            "indicators_deleted": ind_count,
+            "results_deleted": ar_count,
+        }
 
     except Exception:
         db.rollback()

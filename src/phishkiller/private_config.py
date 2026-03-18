@@ -66,7 +66,10 @@ def load_user_agents() -> list[str]:
         except Exception:
             logger.exception("Failed to parse %s, using fallback UAs", path)
     else:
-        logger.warning("No %s found, using %d fallback UAs. Run scripts/setup_private.py to generate.", path, len(_FALLBACK_USER_AGENTS))
+        logger.warning(
+            "No %s found, using %d fallback UAs. Run scripts/setup_private.py to generate.",
+            path, len(_FALLBACK_USER_AGENTS),
+        )
     return list(_FALLBACK_USER_AGENTS)
 
 
@@ -95,7 +98,10 @@ def load_certstream_brands() -> list[str]:
         except Exception:
             logger.exception("Failed to parse %s, using fallback brands", path)
     else:
-        logger.warning("No %s found, using %d fallback brands. Run scripts/setup_private.py to generate.", path, len(_FALLBACK_CERTSTREAM_BRANDS))
+        logger.warning(
+            "No %s found, using %d fallback brands. Run scripts/setup_private.py to generate.",
+            path, len(_FALLBACK_CERTSTREAM_BRANDS),
+        )
     return list(_FALLBACK_CERTSTREAM_BRANDS)
 
 
@@ -123,5 +129,8 @@ def load_certstream_keywords() -> list[str]:
         except Exception:
             logger.exception("Failed to parse %s, using fallback keywords", path)
     else:
-        logger.warning("No %s found, using %d fallback keywords. Run scripts/setup_private.py to generate.", path, len(_FALLBACK_CERTSTREAM_KEYWORDS))
+        logger.warning(
+            "No %s found, using %d fallback keywords. Run scripts/setup_private.py to generate.",
+            path, len(_FALLBACK_CERTSTREAM_KEYWORDS),
+        )
     return list(_FALLBACK_CERTSTREAM_KEYWORDS)

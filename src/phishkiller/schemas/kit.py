@@ -45,14 +45,28 @@ class AnalysisResultBrief(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CampaignBrief(BaseModel):
+    id: uuid.UUID
+    name: str
+    target_brand: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class KitDetail(KitSummary):
     md5: str | None
     sha1: str | None
     filename: str | None
     mime_type: str | None
     error_message: str | None
+    parent_kit_id: uuid.UUID | None = None
+    investigation_id: uuid.UUID | None = None
+    chain_depth: int = 0
+    discovery_method: str | None = None
     indicators: list[IndicatorBrief] = []
     analysis_results: list[AnalysisResultBrief] = []
+    campaigns: list[CampaignBrief] = []
+    child_kits: list[KitSummary] = []
 
     model_config = {"from_attributes": True}
 

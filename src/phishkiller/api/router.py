@@ -3,7 +3,14 @@
 from fastapi import APIRouter
 
 from phishkiller.api import (
-    actors, analysis, campaigns, feeds, health, indicators, investigations, kits,
+    actors,
+    analysis,
+    campaigns,
+    feeds,
+    health,
+    indicators,
+    investigations,
+    kits,
 )
 
 api_router = APIRouter()

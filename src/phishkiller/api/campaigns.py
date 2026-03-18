@@ -66,6 +66,6 @@ async def add_kits_to_campaign(
     service = CampaignService(db)
     try:
         count = await service.add_kits(campaign_id, payload.kit_ids)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Campaign not found") from exc
     return {"added": count}

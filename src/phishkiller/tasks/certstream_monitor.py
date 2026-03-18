@@ -4,6 +4,7 @@ Scores newly registered domains against a keyword list using Levenshtein distanc
 and dispatches feed entries when the score exceeds a configurable threshold.
 """
 
+import contextlib
 import hashlib
 import logging
 import re
@@ -45,12 +46,10 @@ def score_domain(domain: str) -> int:
     # Check Levenshtein distance to known brands (loaded from private config)
     target_brands = load_certstream_brands()
     min_distance = float("inf")
-    closest_brand = ""
     for brand in target_brands:
         dist = levenshtein_distance(base_domain, brand)
         if dist < min_distance:
             min_distance = dist
-            closest_brand = brand
 
     if min_distance == 0:
         # Exact match — could be a subdomain of the real brand, low score
@@ -171,10 +170,8 @@ def monitor_certstream(self) -> dict:
     except Exception as e:
         logger.exception("CertStream error: %s", e)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.commit()
-        except Exception:
-            pass
         db.close()
 
     return {"processed": processed, "flagged": flagged}

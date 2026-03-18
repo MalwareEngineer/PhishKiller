@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from phishkiller.models.kit import Kit
 
 
-class AnalysisType(str, enum.Enum):
+class AnalysisType(enum.StrEnum):
     HASH = "hash"
     IOC_EXTRACTION = "ioc_extraction"
     DEOBFUSCATION = "deobfuscation"

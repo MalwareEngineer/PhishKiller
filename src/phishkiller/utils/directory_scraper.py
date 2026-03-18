@@ -5,7 +5,6 @@ looking for downloadable kit archives and open directory listings.
 """
 
 import logging
-import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 

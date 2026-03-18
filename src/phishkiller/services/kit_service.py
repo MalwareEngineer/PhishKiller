@@ -41,6 +41,8 @@ class KitService:
             .options(
                 selectinload(Kit.indicators),
                 selectinload(Kit.analysis_results),
+                selectinload(Kit.campaigns),
+                selectinload(Kit.child_kits),
             )
         )
         result = await self.db.execute(query)

@@ -1,8 +1,9 @@
 """Auto-campaign assignment task — groups kits by shared actor + tight TLSH similarity."""
 
+import contextlib
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -108,7 +109,7 @@ def auto_assign_campaign(self, prev_result: dict) -> dict:
             .limit(1)
         ).scalar_one_or_none()
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
 
         if existing_campaign:
             campaign = existing_campaign
@@ -192,10 +193,8 @@ def auto_assign_campaign(self, prev_result: dict) -> dict:
 
     except Exception as e:
         logger.exception("Error auto-assigning campaign for kit %s: %s", kit_id, e)
-        try:
+        with contextlib.suppress(Exception):
             db.rollback()
-        except Exception:
-            pass
         # Campaign failure is non-fatal
         return {**prev_result, "campaign_id": None}
     finally:
