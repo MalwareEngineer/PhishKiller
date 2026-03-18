@@ -243,6 +243,8 @@ def crawl_chain(self, prev_result: dict) -> dict:
             all_links.append((url, "qr_code"))
         for url in prev_result.get("redirect_urls", []):
             all_links.append((url, "redirect"))
+        for url in prev_result.get("c2_urls", []):
+            all_links.append((url, "c2_url"))
 
         if not all_links:
             return {**prev_result, "children_spawned": 0}

@@ -1,6 +1,7 @@
 """Analysis pipeline Celery tasks — hash, extract, deobfuscate, extract IOCs."""
 
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -31,6 +32,7 @@ def build_analysis_chain(kit_id: str) -> chain:
         extract_archive.s(),
         parse_eml.s(),
         deobfuscate_files.s(),
+        decrypt_html_payloads.s(),
         yara_scan.s(),
         extract_iocs.s(),
         decode_qr_codes.s(),
@@ -303,6 +305,90 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
 
 
 @celery_app.task(
+    name="phishkiller.tasks.analysis.decrypt_html_payloads",
+    bind=True,
+    queue="analysis",
+)
+def decrypt_html_payloads(self, prev_result: dict) -> dict:
+    """Detect and decrypt AES-GCM encrypted HTML phishing pages."""
+    kit_id = prev_result["kit_id"]
+    if prev_result.get("status") == "failed":
+        return prev_result
+
+    extract_dir = prev_result.get("extract_dir")
+    filepath = prev_result.get("filepath")
+
+    if not extract_dir and not filepath:
+        return {**prev_result, "html_decrypted": False}
+
+    from phishkiller.analysis.html_decryptor import HTMLDecryptor
+
+    decryptor = HTMLDecryptor()
+    decrypted_count = 0
+    results_detail = []
+
+    try:
+        if extract_dir:
+            # Scan all files in extract directory — encrypted pages may lack
+            # .html extension (e.g. Cloudflare Workers session-ID filenames)
+            for candidate in Path(extract_dir).rglob("*"):
+                if not candidate.is_file():
+                    continue
+                # Skip known non-HTML (images, archives, etc.)
+                skip_ext = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+                            ".zip", ".gz", ".tar", ".rar", ".pdf", ".woff",
+                            ".woff2", ".ttf", ".eot", ".css", ".map"}
+                if candidate.suffix.lower() in skip_ext:
+                    continue
+                result = decryptor.detect_and_decrypt(str(candidate))
+                if result.success:
+                    decrypted_count += 1
+                    results_detail.append({
+                        "file": str(candidate.relative_to(extract_dir)),
+                        "type": result.encryption_type,
+                    })
+        else:
+            # Single file — scan it directly regardless of extension
+            # (downloads are often saved as download.bin)
+            result = decryptor.detect_and_decrypt(filepath)
+            if result.success:
+                decrypted_count += 1
+                # Create an extract_dir so downstream tasks scan both files
+                kit_dir = str(Path(filepath).parent)
+                new_extract_dir = os.path.join(kit_dir, "extracted")
+                os.makedirs(new_extract_dir, exist_ok=True)
+                # Copy original into extract_dir
+                import shutil
+                shutil.copy2(filepath, new_extract_dir)
+                # Move decrypted file into extract_dir
+                decrypted_path = Path(result.decrypted_file)
+                shutil.move(str(decrypted_path), new_extract_dir)
+                extract_dir = new_extract_dir
+                results_detail.append({
+                    "file": Path(filepath).name,
+                    "type": result.encryption_type,
+                })
+
+        if decrypted_count > 0:
+            logger.info(
+                "Decrypted %d HTML payload(s) in kit %s",
+                decrypted_count, kit_id,
+            )
+
+        return {
+            **prev_result,
+            "html_decrypted": decrypted_count > 0,
+            "files_decrypted": decrypted_count,
+            "extract_dir": extract_dir or prev_result.get("extract_dir"),
+        }
+
+    except Exception as e:
+        logger.warning("HTML decryption error for kit %s: %s", kit_id, e)
+        # Non-fatal — continue pipeline with original files
+        return {**prev_result, "html_decrypted": False}
+
+
+@celery_app.task(
     name="phishkiller.tasks.analysis.extract_iocs",
     bind=True,
     queue="analysis",
@@ -377,6 +463,14 @@ def extract_iocs(self, prev_result: dict) -> dict:
         db.add(analysis)
         db.commit()
 
+        # Collect C2 URLs for crawl_chain to follow as child kits
+        from phishkiller.models.indicator import IndicatorType
+
+        c2_urls = [
+            ioc.value for ioc in result.iocs
+            if ioc.type == IndicatorType.C2_URL
+        ]
+
         logger.info(
             "IOC extraction for kit %s: %d IOCs from %d files",
             kit_id, len(result.iocs), result.files_processed,
@@ -385,6 +479,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
             **prev_result,
             "iocs_extracted": len(result.iocs),
             "ioc_summary": ioc_summary,
+            "c2_urls": c2_urls,
         }
 
     except SoftTimeLimitExceeded:

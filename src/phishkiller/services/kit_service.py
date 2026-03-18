@@ -149,6 +149,39 @@ class KitService:
 
         return results, submitted, skipped
 
+    async def submit_bulk_files(
+        self, files: list[dict],
+    ) -> list[dict]:
+        """Submit multiple locally-stored files for analysis.
+
+        Each entry in *files* must have: filename, local_path, kit_id.
+        Returns a list of result dicts with kit_id and task_id.
+        """
+        from phishkiller.tasks.analysis import build_analysis_chain
+
+        results: list[dict] = []
+        for f in files:
+            kit = Kit(
+                id=f["kit_id"],
+                source_url=f"file://{f['filename']}",
+                source_feed="manual",
+                local_path=f["local_path"],
+                filename=f["filename"],
+                status=KitStatus.PENDING,
+            )
+            self.db.add(kit)
+            await self.db.flush()
+
+            chain = build_analysis_chain(str(kit.id))
+            task_result = chain.apply_async()
+            results.append({
+                "filename": f["filename"],
+                "kit_id": kit.id,
+                "task_id": task_result.id,
+            })
+
+        return results
+
     async def find_similar(
         self, kit_id: uuid.UUID, threshold: int = 100
     ) -> list[dict]:
