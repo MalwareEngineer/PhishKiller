@@ -839,6 +839,40 @@ def finalize_kit(self, prev_result: dict) -> dict:
         if not kit:
             return prev_result
 
+        # Tier B: thin-results browser render safety net
+        settings = get_settings()
+        if (
+            settings.browser_download_enabled
+            and settings.browser_render_on_thin_results
+            and not prev_result.get("browser_render_dispatched")
+        ):
+            iocs_extracted = prev_result.get("iocs_extracted", 0)
+            yara_count = len(prev_result.get("yara_matches", []))
+            is_thin = iocs_extracted <= 1 and yara_count == 0
+
+            mime = kit.mime_type or ""
+            is_html_like = mime in (
+                "text/html", "application/octet-stream",
+            ) or (
+                kit.filename
+                and kit.filename.endswith((".html", ".htm", ".bin"))
+            )
+
+            has_browser_child = db.query(Kit).filter(
+                Kit.parent_kit_id == kit.id,
+                Kit.discovery_method == "browser_render",
+            ).first() is not None
+
+            if is_thin and is_html_like and not has_browser_child:
+                logger.info(
+                    "Kit %s: thin results (iocs=%d, yara=%d), "
+                    "dispatching browser render",
+                    kit_id, iocs_extracted, yara_count,
+                )
+                from phishkiller.tasks.browser import browser_download_kit
+
+                browser_download_kit.apply_async(args=[kit_id])
+
         kit.status = KitStatus.ANALYZED
         db.commit()
 
