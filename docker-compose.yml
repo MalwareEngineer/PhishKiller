@@ -166,41 +166,40 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  # Optional: stealth browser worker for Cloudflare-protected pages
-  # Uncomment and set PK_BROWSER_DOWNLOAD_ENABLED=true to enable
-  # worker-browser:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.browser
-  #   container_name: phishkiller-worker-browser
-  #   command: >
-  #     celery -A phishkiller.celery_app worker
-  #     -l info -P solo
-  #     -Q downloads,discovery
-  #   environment:
-  #     PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-  #     PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-  #     PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
-  #     PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
-  #     PK_REDIS_URL: redis://redis:6379/0
-  #     PK_KIT_DOWNLOAD_DIR: /app/downloads
-  #     PK_KIT_EXTRACT_DIR: /app/extracted
-  #     PK_BROWSER_DOWNLOAD_ENABLED: "true"
-  #     PK_BROWSER_DOWNLOAD_TIMEOUT: "60"
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - downloads:/app/downloads
-  #     - extracted:/app/extracted
-  #     - ./rules:/app/rules:ro
-  #     - ./private:/app/private:ro
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_healthy
-  #     rabbitmq:
-  #       condition: service_healthy
+  # Stealth browser worker for Cloudflare-protected pages
+  worker-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    container_name: phishkiller-worker-browser
+    command: >
+      celery -A phishkiller.celery_app worker
+      -l info -P solo
+      -Q browser
+    environment:
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
+      PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
+      PK_REDIS_URL: redis://redis:6379/0
+      PK_KIT_DOWNLOAD_DIR: /app/downloads
+      PK_KIT_EXTRACT_DIR: /app/extracted
+      PK_BROWSER_DOWNLOAD_ENABLED: "true"
+      PK_BROWSER_DOWNLOAD_TIMEOUT: "60"
+    env_file:
+      - .env
+    volumes:
+      - downloads:/app/downloads
+      - extracted:/app/extracted
+      - ./rules:/app/rules:ro
+      - ./private:/app/private:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   pgdata:

@@ -1,5 +1,6 @@
 """Analysis pipeline Celery tasks — hash, extract, deobfuscate, extract IOCs."""
 
+import contextlib
 import logging
 import os
 import time
@@ -19,15 +20,13 @@ from phishkiller.models.kit import Kit, KitStatus
 logger = logging.getLogger(__name__)
 
 
-def build_analysis_chain(kit_id: str) -> chain:
-    """Build the full analysis Celery chain for a kit."""
+def _post_download_steps() -> list:
+    """Return the analysis chain steps that run after download (steps 2-14)."""
     from phishkiller.tasks.campaigns import auto_assign_campaign
     from phishkiller.tasks.chain import crawl_chain, decode_qr_codes, parse_eml
     from phishkiller.tasks.correlation import correlate_kit_actors
-    from phishkiller.tasks.download import download_kit
 
-    return chain(
-        download_kit.s(kit_id),
+    return [
         compute_hashes.s(),
         extract_archive.s(),
         parse_eml.s(),
@@ -41,7 +40,23 @@ def build_analysis_chain(kit_id: str) -> chain:
         auto_assign_campaign.s(),
         crawl_chain.s(),
         finalize_kit.s(),
-    )
+    ]
+
+
+def build_analysis_chain(kit_id: str) -> chain:
+    """Build the full analysis Celery chain for a kit."""
+    from phishkiller.tasks.download import download_kit
+
+    return chain(download_kit.s(kit_id), *_post_download_steps())
+
+
+def build_post_download_chain(download_result: dict) -> chain:
+    """Build the analysis chain starting after download (steps 2-14).
+
+    Used by browser_download_kit to continue the pipeline after a
+    successful Camoufox download.
+    """
+    return chain(compute_hashes.si(download_result), *_post_download_steps()[1:])
 
 
 @celery_app.task(
@@ -52,8 +67,9 @@ def build_analysis_chain(kit_id: str) -> chain:
 def compute_hashes(self, prev_result: dict) -> dict:
     """Compute SHA256, MD5, SHA1, and TLSH hashes for the kit archive."""
     kit_id = prev_result["kit_id"]
-    if prev_result.get("status") == "failed":
-        return prev_result
+    if prev_result.get("status") in ("failed", "browser_retry"):
+        # browser_retry → browser worker handles the rest via its own chain
+        return {**prev_result, "status": "failed"}
 
     db = get_sync_db()
     start = time.time()
@@ -435,6 +451,20 @@ def extract_iocs(self, prev_result: dict) -> dict:
             )
             db.add(indicator)
 
+        # Add the kit source URL as an automatic IOC
+        from phishkiller.models.indicator import IndicatorType
+
+        if kit.source_url:
+            source_indicator = Indicator(
+                type=IndicatorType.SOURCE_URL,
+                value=kit.source_url,
+                context="kit_source",
+                source_file=None,
+                confidence=100,
+                kit_id=kit.id,
+            )
+            db.add(source_indicator)
+
         from phishkiller.analysis.patterns import PATTERN_VERSION
 
         kit.pattern_version = PATTERN_VERSION
@@ -446,12 +476,17 @@ def extract_iocs(self, prev_result: dict) -> dict:
             ioc_type = ioc.type.value
             ioc_summary[ioc_type] = ioc_summary.get(ioc_type, 0) + 1
 
+        total_iocs = len(result.iocs)
+        if kit.source_url:
+            ioc_summary["source_url"] = ioc_summary.get("source_url", 0) + 1
+            total_iocs += 1
+
         analysis = AnalysisResult(
             kit_id=kit.id,
             analysis_type=AnalysisType.IOC_EXTRACTION,
             result_data={
                 "step": "ioc_extraction",
-                "total_iocs": len(result.iocs),
+                "total_iocs": total_iocs,
                 "by_type": ioc_summary,
                 "files_processed": result.files_processed,
                 "errors": result.errors[:20],
@@ -464,8 +499,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
         db.commit()
 
         # Collect C2 URLs for crawl_chain to follow as child kits
-        from phishkiller.models.indicator import IndicatorType
-
         c2_urls = [
             ioc.value for ioc in result.iocs
             if ioc.type == IndicatorType.C2_URL
@@ -473,11 +506,11 @@ def extract_iocs(self, prev_result: dict) -> dict:
 
         logger.info(
             "IOC extraction for kit %s: %d IOCs from %d files",
-            kit_id, len(result.iocs), result.files_processed,
+            kit_id, total_iocs, result.files_processed,
         )
         return {
             **prev_result,
-            "iocs_extracted": len(result.iocs),
+            "iocs_extracted": total_iocs,
             "ioc_summary": ioc_summary,
             "c2_urls": c2_urls,
         }
@@ -727,6 +760,48 @@ def compute_similarity(self, prev_result: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Investigation Status
+# ---------------------------------------------------------------------------
+
+
+def _try_complete_investigation(db, investigation_id: uuid.UUID) -> None:
+    """Mark investigation COMPLETED if all its kits are terminal."""
+    from phishkiller.models.investigation import Investigation, InvestigationStatus
+
+    try:
+        investigation = db.query(Investigation).filter(
+            Investigation.id == investigation_id
+        ).first()
+        if not investigation:
+            return
+        if investigation.status == InvestigationStatus.COMPLETED:
+            return
+
+        # Count kits still in non-terminal states
+        pending_count = db.query(Kit).filter(
+            Kit.investigation_id == investigation_id,
+            Kit.status.notin_([KitStatus.ANALYZED, KitStatus.FAILED]),
+        ).count()
+
+        if pending_count == 0:
+            investigation.status = InvestigationStatus.COMPLETED
+            db.commit()
+            logger.info(
+                "Investigation %s completed (all %d kits terminal)",
+                investigation_id, investigation.total_kits,
+            )
+        else:
+            # Ensure it's marked IN_PROGRESS
+            if investigation.status == InvestigationStatus.PENDING:
+                investigation.status = InvestigationStatus.IN_PROGRESS
+                db.commit()
+    except Exception as e:
+        logger.warning("Error checking investigation %s status: %s", investigation_id, e)
+        with contextlib.suppress(Exception):
+            db.rollback()
+
+
+# ---------------------------------------------------------------------------
 # Finalize Kit
 # ---------------------------------------------------------------------------
 
@@ -740,7 +815,8 @@ def finalize_kit(self, prev_result: dict) -> dict:
 
     This is the terminal task — sets the final status so the kit isn't
     marked done before QR decode, similarity, correlation, and chain
-    crawl have run.
+    crawl have run.  Also checks if all kits in the investigation are
+    terminal (ANALYZED or FAILED) and updates investigation status.
     """
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
@@ -757,6 +833,11 @@ def finalize_kit(self, prev_result: dict) -> dict:
         db.commit()
 
         logger.info("Kit %s finalized as ANALYZED", kit_id)
+
+        # Check if all kits in the investigation are done
+        if kit.investigation_id:
+            _try_complete_investigation(db, kit.investigation_id)
+
         return {**prev_result, "status": "analyzed"}
 
     except Exception as e:

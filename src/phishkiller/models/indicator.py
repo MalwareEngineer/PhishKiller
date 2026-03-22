@@ -28,6 +28,7 @@ class IndicatorType(enum.StrEnum):
     DOMAIN = "domain"
     PHONE_NUMBER = "phone_number"
     CRYPTOCURRENCY_WALLET = "crypto_wallet"
+    SOURCE_URL = "source_url"
 
 
 class Indicator(UUIDPrimaryKeyMixin, TimestampMixin, Base):

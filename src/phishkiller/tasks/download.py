@@ -96,28 +96,27 @@ def download_kit(self, kit_id: str) -> dict:
             )
 
         if not filepath:
-            # Try stealth browser fallback for Cloudflare-protected pages
+            # Dispatch to browser worker for Cloudflare-protected pages
             if settings.browser_download_enabled:
                 from phishkiller.analysis.browser_downloader import (
-                    browser_download,
                     is_cloudflare_challenge,
                 )
 
                 if is_cloudflare_challenge(reason):
                     logger.info(
-                        "Kit %s: httpx failed (%s), attempting browser fallback",
+                        "Kit %s: httpx failed (%s), dispatching to browser worker",
                         kit_id, reason,
                     )
-                    filepath, browser_reason = browser_download(
-                        kit.source_url,
-                        str(download_dir),
-                        timeout=settings.browser_download_timeout,
-                    )
-                    if filepath:
-                        reason = "ok"
-                        logger.info("Kit %s: browser fallback succeeded", kit_id)
-                    else:
-                        reason = f"{reason} → browser: {browser_reason}"
+                    from phishkiller.tasks.browser import browser_download_kit
+
+                    browser_download_kit.apply_async(args=[kit_id])
+                    result = {
+                        "kit_id": kit_id,
+                        "status": "browser_retry",
+                    }
+                    if redirect_chain_data:
+                        result["redirect_chain"] = redirect_chain_data
+                    return result
 
         if not filepath:
             kit.status = KitStatus.FAILED
