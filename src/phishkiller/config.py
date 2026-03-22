@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # Campaign auto-creation
     campaign_tlsh_threshold: int = 30
 
+    # CORS
+    cors_origins: list[str] = ["http://localhost:5173"]
+
     # CertStream
     certstream_url: str = "wss://certstream.calidog.io"
     certstream_score_threshold: int = 75
