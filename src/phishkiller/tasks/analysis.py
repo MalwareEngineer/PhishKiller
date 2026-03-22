@@ -820,6 +820,16 @@ def finalize_kit(self, prev_result: dict) -> dict:
     """
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
+        # Still check investigation completion for failed kits
+        db = get_sync_db()
+        try:
+            kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+            if kit and kit.investigation_id:
+                _try_complete_investigation(db, kit.investigation_id)
+        except Exception:
+            pass
+        finally:
+            db.close()
         return prev_result
 
     db = get_sync_db()

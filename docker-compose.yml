@@ -121,6 +121,7 @@ services:
       PK_REDIS_URL: redis://redis:6379/0
       PK_KIT_DOWNLOAD_DIR: /app/downloads
       PK_KIT_EXTRACT_DIR: /app/extracted
+      PK_BROWSER_DOWNLOAD_ENABLED: "true"
     env_file:
       - .env
     volumes:
