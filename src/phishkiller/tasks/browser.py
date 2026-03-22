@@ -1,0 +1,166 @@
+"""Browser-based download Celery task for Cloudflare-protected pages.
+
+Runs on the dedicated ``browser`` queue consumed by worker-browser (solo pool).
+Creates a **child kit** linked to the original httpx-downloaded parent, so both
+the raw JS loader and the browser-rendered credential form are preserved as
+separate entities with a parent→child relationship.
+"""
+
+import logging
+import uuid
+from pathlib import Path
+
+from phishkiller.analysis.browser_downloader import browser_download
+from phishkiller.celery_app import celery_app
+from phishkiller.config import get_settings
+from phishkiller.database import get_sync_db
+from phishkiller.models.kit import Kit, KitStatus
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(
+    name="phishkiller.tasks.browser.browser_download_kit",
+    bind=True,
+    max_retries=0,
+    queue="browser",
+)
+def browser_download_kit(self, kit_id: str) -> dict:
+    """Download a kit using the Camoufox stealth browser.
+
+    Called by download_kit when it detects a Cloudflare challenge.
+    Creates a new child kit record linked to the parent (httpx) kit,
+    then dispatches the post-download analysis chain for the child.
+    The parent kit is marked ANALYZED with its original JS loader content
+    preserved — both artifacts exist as separate linked entities.
+    """
+    settings = get_settings()
+    db = get_sync_db()
+
+    try:
+        parent_kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+        if not parent_kit:
+            raise ValueError(f"Kit {kit_id} not found")
+
+        logger.info(
+            "Browser downloading kit %s from %s", kit_id, parent_kit.source_url,
+        )
+
+        # Create the child kit record before downloading
+        child_kit = Kit(
+            source_url=parent_kit.source_url,
+            source_feed=parent_kit.source_feed,
+            status=KitStatus.DOWNLOADING,
+            parent_kit_id=parent_kit.id,
+            investigation_id=parent_kit.investigation_id,
+            chain_depth=parent_kit.chain_depth + 1,
+            discovery_method="browser_render",
+        )
+        db.add(child_kit)
+        db.flush()  # Get child ID
+
+        child_id = str(child_kit.id)
+
+        # Update investigation counters if this kit belongs to one
+        if parent_kit.investigation_id:
+            from phishkiller.models.investigation import Investigation
+
+            investigation = db.query(Investigation).filter(
+                Investigation.id == parent_kit.investigation_id
+            ).first()
+            if investigation:
+                investigation.total_kits += 1
+                new_depth = parent_kit.chain_depth + 1
+                if new_depth > investigation.total_depth_reached:
+                    investigation.total_depth_reached = new_depth
+
+        db.commit()
+
+        # Download into child kit's own directory
+        download_dir = Path(settings.kit_download_dir) / child_id
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath, reason = browser_download(
+            parent_kit.source_url,
+            str(download_dir),
+            timeout=settings.browser_download_timeout,
+        )
+
+        if not filepath:
+            child_kit.status = KitStatus.FAILED
+            child_kit.error_message = f"Browser fallback failed: {reason}"
+            db.commit()
+            logger.warning(
+                "Browser download failed for child kit %s (parent %s): %s",
+                child_id, kit_id, reason,
+            )
+            return {
+                "kit_id": child_id,
+                "parent_kit_id": kit_id,
+                "status": "failed",
+                "error": reason,
+            }
+
+        # Update child kit metadata
+        child_kit.local_path = str(filepath)
+        child_kit.filename = filepath.name
+        child_kit.file_size = filepath.stat().st_size
+        child_kit.status = KitStatus.DOWNLOADED
+
+        suffix = filepath.suffix.lower()
+        mime_map = {
+            ".html": "text/html",
+            ".htm": "text/html",
+            ".zip": "application/zip",
+            ".gz": "application/gzip",
+            ".tar": "application/x-tar",
+            ".rar": "application/x-rar-compressed",
+            ".php": "application/x-php",
+            ".eml": "message/rfc822",
+        }
+        child_kit.mime_type = mime_map.get(suffix, "text/html")
+
+        # Mark parent as ANALYZED — it keeps its httpx-downloaded content
+        # (the raw JS loader / first-stage payload)
+        parent_kit.status = KitStatus.ANALYZED
+        db.commit()
+
+        logger.info(
+            "Browser downloaded child kit %s (parent %s): %s (%d bytes)",
+            child_id, kit_id, filepath.name, child_kit.file_size,
+        )
+
+        # Dispatch post-download analysis chain for the child kit
+        download_result = {
+            "kit_id": child_id,
+            "parent_kit_id": kit_id,
+            "status": "downloaded",
+            "filepath": str(filepath),
+            "file_size": child_kit.file_size,
+        }
+
+        from phishkiller.tasks.analysis import build_post_download_chain
+
+        build_post_download_chain(download_result).apply_async()
+
+        return download_result
+
+    except Exception as e:
+        logger.exception("Browser download error for kit %s: %s", kit_id, e)
+        try:
+            db.rollback()
+            parent_kit = db.query(Kit).filter(
+                Kit.id == uuid.UUID(kit_id)
+            ).first()
+            if parent_kit:
+                parent_kit.status = KitStatus.FAILED
+                parent_kit.error_message = f"Browser error: {e!s}"[:500]
+                db.commit()
+        except Exception as exc:
+            logger.debug(
+                "Failed to mark kit as FAILED during error handling: %s", exc,
+            )
+        return {"kit_id": kit_id, "status": "failed", "error": str(e)}
+
+    finally:
+        db.close()

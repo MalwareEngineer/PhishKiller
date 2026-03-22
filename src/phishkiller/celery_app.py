@@ -24,6 +24,7 @@ celery_app.conf.update(
         "phishkiller.tasks.feeds.*": {"queue": "feeds"},
         "phishkiller.tasks.download.*": {"queue": "downloads"},
         "phishkiller.tasks.discovery.*": {"queue": "discovery"},
+        "phishkiller.tasks.browser.*": {"queue": "browser"},
         "phishkiller.tasks.analysis.*": {"queue": "analysis"},
         "phishkiller.tasks.chain.*": {"queue": "analysis"},
         "phishkiller.tasks.correlation.*": {"queue": "analysis"},
@@ -35,6 +36,7 @@ celery_app.conf.update(
 celery_app.conf.include = [
     "phishkiller.tasks.feeds",
     "phishkiller.tasks.download",
+    "phishkiller.tasks.browser",
     "phishkiller.tasks.discovery",
     "phishkiller.tasks.analysis",
     "phishkiller.tasks.chain",

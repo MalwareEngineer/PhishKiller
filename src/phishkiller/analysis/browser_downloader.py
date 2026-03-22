@@ -71,9 +71,10 @@ async def _async_browser_download(
 
     try:
         async with AsyncCamoufox(
+            headless="virtual",
             humanize=True,
-            block_images=True,
             block_webrtc=True,
+            disable_coop=True,
             geoip=True,
         ) as browser:
             page = await browser.new_page()
@@ -87,6 +88,10 @@ async def _async_browser_download(
 
             if not response:
                 return None, "Browser navigation returned no response"
+
+            # Give JS deobfuscation / eval layers time to execute
+            # Many kits have multi-stage loaders that inject content via eval()
+            await asyncio.sleep(random.uniform(3.0, 5.0))
 
             # Wait for Turnstile widget to auto-resolve if present
             await _wait_for_turnstile(page)
@@ -124,27 +129,108 @@ async def _async_browser_download(
 
 
 async def _wait_for_turnstile(page) -> None:
-    """Wait for Cloudflare Turnstile CAPTCHA to auto-resolve.
+    """Wait for Cloudflare Turnstile CAPTCHA and attempt to solve it.
 
-    Turnstile in 'managed' mode auto-passes for non-suspicious browsers.
-    For 'interactive' mode, we try to click the checkbox.
+    Turnstile renders a checkbox inside a cross-origin iframe from
+    challenges.cloudflare.com.  Playwright's frame_locator fails on
+    Firefox for cross-origin iframes (known bug #26317), so we iterate
+    page.frames to find the challenge frame and click via bounding box.
+
+    The checkbox sits on the left side of the Turnstile widget (~1/9th
+    of the iframe width, vertically centered).
     """
     try:
-        turnstile_frame = page.frame_locator(
-            "iframe[src*='challenges.cloudflare.com']"
-        )
-        # Check if Turnstile iframe exists (short timeout)
-        checkbox = turnstile_frame.locator("input[type='checkbox']")
-        if await checkbox.count() > 0:
-            logger.info("Turnstile checkbox detected, clicking")
-            await checkbox.click()
-            # Wait for verification to complete
-            await asyncio.sleep(random.uniform(3.0, 6.0))
+        # Check if page has a Turnstile widget at all
+        has_turnstile = await page.evaluate("""
+            () => !!document.querySelector('.cf-turnstile, [data-sitekey]')
+        """)
+        if not has_turnstile:
+            return
+
+        logger.info("Turnstile widget found on page")
+
+        # Give managed-mode a few seconds to auto-resolve
+        await asyncio.sleep(random.uniform(2.5, 4.0))
+
+        # Check if already solved (response token populated)
+        if await _turnstile_solved(page):
+            logger.info("Turnstile auto-resolved (managed mode)")
+            await _wait_after_turnstile(page)
+            return
+
+        # Find the Turnstile iframe via page.frames (not frame_locator)
+        frame_element = None
+        for frame in page.frames:
+            if "challenges.cloudflare.com" in frame.url:
+                try:
+                    frame_element = await frame.frame_element()
+                    break
+                except Exception:
+                    continue
+
+        if frame_element:
+            box = await frame_element.bounding_box()
+            if box:
+                # Checkbox is on the left side of the widget
+                click_x = box["x"] + box["width"] / 9
+                click_y = box["y"] + box["height"] / 2
+                logger.info(
+                    "Clicking Turnstile iframe at (%.0f, %.0f)", click_x, click_y,
+                )
+                await page.mouse.click(click_x, click_y)
+                await asyncio.sleep(random.uniform(1.5, 3.0))
         else:
-            # Managed mode — may auto-resolve, give it time
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            # Fallback: click the .cf-turnstile wrapper div
+            widget = await page.query_selector(".cf-turnstile")
+            if widget:
+                box = await widget.bounding_box()
+                if box:
+                    click_x = box["x"] + 25
+                    click_y = box["y"] + box["height"] / 2
+                    logger.info(
+                        "Clicking Turnstile wrapper at (%.0f, %.0f)",
+                        click_x, click_y,
+                    )
+                    await page.mouse.click(click_x, click_y)
+                    await asyncio.sleep(random.uniform(1.5, 3.0))
+            else:
+                logger.warning("Turnstile widget present but no clickable element found")
+                return
+
+        # Poll for the response token
+        for attempt in range(12):
+            if await _turnstile_solved(page):
+                logger.info(
+                    "Turnstile solved after click (attempt %d)", attempt + 1,
+                )
+                await _wait_after_turnstile(page)
+                return
+            await asyncio.sleep(1.0)
+
+        logger.warning("Turnstile not solved after clicking — may need manual review")
+
+    except Exception as e:
+        logger.warning("Turnstile handling error: %s", e)
+
+
+async def _turnstile_solved(page) -> bool:
+    """Check if Turnstile response token has been populated."""
+    return await page.evaluate("""
+        () => {
+            const resp = document.querySelector(
+                'input[name="cf-turnstile-response"]'
+            );
+            return !!(resp && resp.value && resp.value.length > 0);
+        }
+    """)
+
+
+async def _wait_after_turnstile(page) -> None:
+    """Wait for post-Turnstile navigation or content swap."""
+    await asyncio.sleep(random.uniform(2.0, 4.0))
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
-        # No Turnstile present or it already resolved
         pass
 
 
