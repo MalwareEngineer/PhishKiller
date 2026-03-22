@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     tlsh_min_size: int = 50
     yara_rules_dir: str = "./rules"
 
+    # Browser-based downloading (Camoufox stealth browser fallback)
+    browser_download_enabled: bool = False
+    browser_download_timeout: int = 60
+
     # Chain crawling
     chain_max_depth: int = 3
     chain_max_children_per_kit: int = 10

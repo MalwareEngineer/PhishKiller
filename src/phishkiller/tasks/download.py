@@ -96,6 +96,30 @@ def download_kit(self, kit_id: str) -> dict:
             )
 
         if not filepath:
+            # Try stealth browser fallback for Cloudflare-protected pages
+            if settings.browser_download_enabled:
+                from phishkiller.analysis.browser_downloader import (
+                    browser_download,
+                    is_cloudflare_challenge,
+                )
+
+                if is_cloudflare_challenge(reason):
+                    logger.info(
+                        "Kit %s: httpx failed (%s), attempting browser fallback",
+                        kit_id, reason,
+                    )
+                    filepath, browser_reason = browser_download(
+                        kit.source_url,
+                        str(download_dir),
+                        timeout=settings.browser_download_timeout,
+                    )
+                    if filepath:
+                        reason = "ok"
+                        logger.info("Kit %s: browser fallback succeeded", kit_id)
+                    else:
+                        reason = f"{reason} → browser: {browser_reason}"
+
+        if not filepath:
             kit.status = KitStatus.FAILED
             kit.error_message = reason
             db.commit()
@@ -149,8 +173,8 @@ def download_kit(self, kit_id: str) -> dict:
                 kit.status = KitStatus.FAILED
                 kit.error_message = str(e)[:500]
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         raise self.retry(exc=e) from e
 
     finally:

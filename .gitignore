@@ -55,8 +55,8 @@ rabbitmqdata/
 # Private operational data — loaded at runtime, never committed
 private/
 
-# YARA signatures — loaded from private/ or PK_YARA_RULES_DIR
-rules/
+# YARA signatures — t4d is third-party, custom rules are tracked
+rules/t4d/
 !rules/.gitkeep
 
 # Claude Code
