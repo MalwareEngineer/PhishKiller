@@ -89,7 +89,19 @@ def browser_download_kit(self, kit_id: str) -> dict:
         if not filepath:
             child_kit.status = KitStatus.FAILED
             child_kit.error_message = f"Browser fallback failed: {reason}"
+            # Mark parent as FAILED too — both httpx and browser paths exhausted
+            parent_kit.status = KitStatus.FAILED
+            parent_kit.error_message = (
+                f"httpx: ConnectError → browser: {reason}"[:500]
+            )
             db.commit()
+
+            # Check investigation completion (both kits are now terminal)
+            if parent_kit.investigation_id:
+                from phishkiller.tasks.analysis import _try_complete_investigation
+
+                _try_complete_investigation(db, parent_kit.investigation_id)
+
             logger.warning(
                 "Browser download failed for child kit %s (parent %s): %s",
                 child_id, kit_id, reason,

@@ -13,9 +13,23 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Fix: must use uppercase name to match SQLAlchemy Enum(IndicatorType)
+    # which stores members by .name (SOURCE_URL), not .value (source_url).
+    # If the old lowercase value exists from a prior run, rename it first.
     op.execute(
         """
-        ALTER TYPE indicatortype ADD VALUE IF NOT EXISTS 'source_url';
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_enum
+                WHERE enumtypid = 'indicatortype'::regtype
+                  AND enumlabel = 'source_url'
+            ) THEN
+                ALTER TYPE indicatortype RENAME VALUE 'source_url' TO 'SOURCE_URL';
+            ELSE
+                ALTER TYPE indicatortype ADD VALUE IF NOT EXISTS 'SOURCE_URL';
+            END IF;
+        END$$;
         """
     )
 
@@ -25,11 +39,11 @@ def downgrade() -> None:
     # Rename to mark as removed (same pattern as BASE64_BLOCK removal).
     op.execute(
         """
-        DELETE FROM indicators WHERE type = 'source_url';
+        DELETE FROM indicators WHERE type = 'SOURCE_URL';
         """
     )
     op.execute(
         """
-        ALTER TYPE indicatortype RENAME VALUE 'source_url' TO '__REMOVED_source_url';
+        ALTER TYPE indicatortype RENAME VALUE 'SOURCE_URL' TO '__REMOVED_SOURCE_URL';
         """
     )

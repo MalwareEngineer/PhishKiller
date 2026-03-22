@@ -75,6 +75,7 @@ async def _async_browser_download(
             humanize=True,
             block_webrtc=True,
             disable_coop=True,
+            i_know_what_im_doing=True,
             geoip=True,
         ) as browser:
             page = await browser.new_page()
