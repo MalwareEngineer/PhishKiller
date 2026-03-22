@@ -162,6 +162,26 @@ def download_kit(self, kit_id: str) -> dict:
                 h["location"] for h in redirect_chain_data["hops"]
                 if h.get("location")
             ]
+
+        # Tier A: JS loader detection → dispatch browser render in parallel
+        if settings.browser_download_enabled:
+            is_html_like = (
+                suffix in (".html", ".htm", ".bin", "")
+                or kit.mime_type == "application/octet-stream"
+            )
+            if is_html_like:
+                from phishkiller.analysis.browser_downloader import is_js_loader
+
+                if is_js_loader(filepath):
+                    logger.info(
+                        "Kit %s: JS loader detected, dispatching browser render",
+                        kit_id,
+                    )
+                    from phishkiller.tasks.browser import browser_download_kit
+
+                    browser_download_kit.apply_async(args=[kit_id])
+                    result["browser_render_dispatched"] = True
+
         return result
 
     except Exception as e:

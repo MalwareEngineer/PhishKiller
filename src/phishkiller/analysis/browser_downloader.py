@@ -29,6 +29,49 @@ _CF_CHALLENGE_MARKERS = (
 )
 
 
+_JS_LOADER_MARKERS = (
+    "eval(",
+    "document.write(",
+    "String.fromCharCode",
+    "atob(",
+    "unescape(",
+    "decodeURIComponent(",
+)
+
+
+def is_js_loader(filepath: Path, max_check_size: int = 50_000) -> bool:
+    """Detect if a downloaded HTML file is a JS-only loader with no real content.
+
+    Returns True when the file has JS execution markers (eval, atob, etc.)
+    but no ``<form>``, ``<input>``, or credential fields — indicating a
+    multi-stage loader that needs browser rendering to reveal the actual
+    phishing page.
+    """
+    try:
+        content = filepath.read_text(
+            encoding="utf-8", errors="ignore",
+        )[:max_check_size]
+    except Exception:
+        return False
+
+    lower = content.lower()
+
+    # Must look like HTML/JS (not a zip/binary that httpx mis-saved)
+    if not any(tag in lower for tag in ("<html", "<script", "<!doctype")):
+        return False
+
+    # Needs JS execution/deobfuscation markers
+    if not any(m.lower() in lower for m in _JS_LOADER_MARKERS):
+        return False
+
+    # Lacks real HTML content (forms, inputs, credential fields)
+    has_form = any(
+        tag in lower
+        for tag in ("<form", "<input", 'type="password"', "type='password'")
+    )
+    return not has_form
+
+
 def is_cloudflare_challenge(reason: str, response_body: str | None = None) -> bool:
     """Detect whether a download failure or response is a Cloudflare challenge.
 

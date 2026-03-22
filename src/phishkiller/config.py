@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     # Browser-based downloading (Camoufox stealth browser fallback)
     browser_download_enabled: bool = False
     browser_download_timeout: int = 60
+    browser_render_on_thin_results: bool = True
 
     # Chain crawling
     chain_max_depth: int = 3
