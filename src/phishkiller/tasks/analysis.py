@@ -124,8 +124,8 @@ def compute_hashes(self, prev_result: dict) -> dict:
                 kit.status = KitStatus.FAILED
                 kit.error_message = str(e)[:500]
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
@@ -210,8 +210,8 @@ def extract_archive(self, prev_result: dict) -> dict:
                 kit.status = KitStatus.FAILED
                 kit.error_message = str(e)[:500]
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
@@ -297,8 +297,8 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
                 kit.status = KitStatus.FAILED
                 kit.error_message = str(e)[:500]
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
@@ -508,8 +508,8 @@ def extract_iocs(self, prev_result: dict) -> dict:
                 )
                 db.add(analysis)
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {
             **prev_result,
             "iocs_extracted": 0,
@@ -525,8 +525,8 @@ def extract_iocs(self, prev_result: dict) -> dict:
                 kit.status = KitStatus.FAILED
                 kit.error_message = str(e)[:500]
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()
@@ -768,8 +768,8 @@ def finalize_kit(self, prev_result: dict) -> dict:
                 kit.status = KitStatus.FAILED
                 kit.error_message = f"Finalization error: {str(e)[:450]}"
                 db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {**prev_result, "status": "failed", "error": str(e)}
     finally:
         db.close()

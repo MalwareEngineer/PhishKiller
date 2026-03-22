@@ -1,0 +1,26 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps: psycopg2 build tools + Firefox/browser dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ cmake libpq-dev unrar-free libzbar0 \
+    # Firefox/Camoufox dependencies
+    libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 \
+    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
+    libgbm1 libpango-1.0-0 libcairo2 libatk1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml .
+COPY src/ src/
+COPY alembic/ alembic/
+COPY alembic.ini .
+
+# Install with browser extra (includes camoufox + geoip)
+RUN pip install --no-cache-dir ".[tlsh,yara,qr,browser]"
+
+# Fetch the Camoufox browser binary
+RUN python -m camoufox fetch
+
+# Dirs for kit downloads, extraction, and private config (volume-mounted in compose)
+RUN mkdir -p /app/downloads /app/extracted /app/rules /app/private

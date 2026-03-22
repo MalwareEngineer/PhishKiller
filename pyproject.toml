@@ -50,6 +50,9 @@ qr = [
     "pyzbar>=0.1.9",
     "Pillow>=10.0.0",
 ]
+browser = [
+    "camoufox[geoip]>=0.4.0",
+]
 
 [project.scripts]
 phishkiller = "phishkiller.cli:app"
