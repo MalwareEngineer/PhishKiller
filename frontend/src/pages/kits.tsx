@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useKits, useSubmitKit, useUploadKit } from "@/hooks/use-kits";
+import { useKits, useSubmitKit, useUploadKit, useBulkSubmitKits, useBulkUploadKits } from "@/hooks/use-kits";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { Pagination } from "@/components/shared/pagination";
 import { TableLoading } from "@/components/shared/loading";
@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Plus, Upload } from "lucide-react";
+import { Plus, Upload, X, FileText } from "lucide-react";
 import { toast } from "sonner";
 import type { KitStatus } from "@/types/api";
 
@@ -39,9 +39,14 @@ const PAGE_SIZE = 25;
 export function KitsPage() {
   const [offset, setOffset] = useState(0);
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [submitUrl, setSubmitUrl] = useState("");
+
+  // Submit URL state
   const [submitOpen, setSubmitOpen] = useState(false);
+  const [submitUrls, setSubmitUrls] = useState("");
+
+  // Upload state
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const { data, isLoading } = useKits({
     offset,
@@ -50,37 +55,87 @@ export function KitsPage() {
   });
 
   const submitMutation = useSubmitKit();
+  const bulkSubmitMutation = useBulkSubmitKits();
   const uploadMutation = useUploadKit();
+  const bulkUploadMutation = useBulkUploadKits();
 
   const handleSubmit = () => {
-    if (!submitUrl.trim()) return;
-    submitMutation.mutate(
-      { url: submitUrl.trim() },
-      {
+    const urls = submitUrls
+      .split("\n")
+      .map((u) => u.trim())
+      .filter((u) => u.length > 0);
+
+    if (urls.length === 0) return;
+
+    if (urls.length === 1) {
+      submitMutation.mutate(
+        { url: urls[0] },
+        {
+          onSuccess: (res) => {
+            toast.success(res.duplicate ? "Duplicate kit — already queued" : "Kit submitted for analysis");
+            setSubmitUrls("");
+            setSubmitOpen(false);
+          },
+          onError: (err) => toast.error(err.message),
+        }
+      );
+    } else {
+      bulkSubmitMutation.mutate(urls, {
         onSuccess: (res) => {
-          toast.success(res.duplicate ? "Duplicate kit — already queued" : "Kit submitted for analysis");
-          setSubmitUrl("");
+          const msg = res.skipped_duplicate > 0
+            ? `${res.submitted} URLs submitted (${res.skipped_duplicate} duplicates skipped)`
+            : `${res.submitted} URLs submitted for analysis`;
+          toast.success(msg);
+          setSubmitUrls("");
           setSubmitOpen(false);
         },
         onError: (err) => toast.error(err.message),
-      }
-    );
+      });
+    }
   };
 
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    uploadMutation.mutate(
-      { file },
-      {
-        onSuccess: () => {
-          toast.success("File uploaded for analysis");
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length > 0) {
+      setSelectedFiles((prev) => [...prev, ...files]);
+    }
+    // Reset input so re-selecting the same file works
+    e.target.value = "";
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpload = () => {
+    if (selectedFiles.length === 0) return;
+
+    if (selectedFiles.length === 1) {
+      uploadMutation.mutate(
+        { file: selectedFiles[0] },
+        {
+          onSuccess: () => {
+            toast.success("File uploaded for analysis");
+            setSelectedFiles([]);
+            setUploadOpen(false);
+          },
+          onError: (err) => toast.error(err.message),
+        }
+      );
+    } else {
+      bulkUploadMutation.mutate(selectedFiles, {
+        onSuccess: (res) => {
+          toast.success(`${res.submitted} files uploaded for analysis`);
+          setSelectedFiles([]);
           setUploadOpen(false);
         },
         onError: (err) => toast.error(err.message),
-      }
-    );
+      });
+    }
   };
+
+  const isSubmitting = submitMutation.isPending || bulkSubmitMutation.isPending;
+  const isUploading = uploadMutation.isPending || bulkUploadMutation.isPending;
 
   return (
     <div className="space-y-4">
@@ -91,33 +146,80 @@ export function KitsPage() {
             <Upload className="mr-2 h-4 w-4" />
             Upload
           </Button>
-          <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
+          <Dialog open={uploadOpen} onOpenChange={(open) => { setUploadOpen(open); if (!open) setSelectedFiles([]); }}>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Upload Phishing Kit</DialogTitle>
+                <DialogTitle>Upload Phishing Kits</DialogTitle>
               </DialogHeader>
-              <Input type="file" accept=".zip,.rar,.tar,.gz,.html,.eml" onChange={handleUpload} />
+              <div className="space-y-3">
+                <Input
+                  type="file"
+                  accept=".zip,.rar,.tar,.gz,.html,.eml"
+                  multiple
+                  onChange={handleFileSelect}
+                />
+                {selectedFiles.length > 0 && (
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {selectedFiles.map((file, i) => (
+                      <div key={`${file.name}-${i}`} className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 rounded px-2 py-1">
+                        <FileText className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate flex-1 font-mono text-xs">{file.name}</span>
+                        <span className="text-xs shrink-0">{(file.size / 1024).toFixed(1)} KB</span>
+                        <button onClick={() => removeFile(i)} className="shrink-0 hover:text-foreground">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {selectedFiles.length === 0
+                    ? "Select one or more files (.zip, .rar, .tar, .gz, .html, .eml)"
+                    : `${selectedFiles.length} file${selectedFiles.length !== 1 ? "s" : ""} selected`}
+                </p>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => { setUploadOpen(false); setSelectedFiles([]); }}>
+                  Cancel
+                </Button>
+                <Button onClick={handleUpload} disabled={selectedFiles.length === 0 || isUploading}>
+                  {isUploading ? "Uploading..." : `Upload ${selectedFiles.length > 0 ? selectedFiles.length : ""} file${selectedFiles.length !== 1 ? "s" : ""}`}
+                </Button>
+              </DialogFooter>
             </DialogContent>
           </Dialog>
 
           <Button size="sm" onClick={() => setSubmitOpen(true)}>
             <Plus className="mr-2 h-4 w-4" />
-            Submit URL
+            Submit URLs
           </Button>
-          <Dialog open={submitOpen} onOpenChange={setSubmitOpen}>
+          <Dialog open={submitOpen} onOpenChange={(open) => { setSubmitOpen(open); if (!open) setSubmitUrls(""); }}>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Submit URL for Analysis</DialogTitle>
+                <DialogTitle>Submit URLs for Analysis</DialogTitle>
               </DialogHeader>
-              <Input
-                placeholder="https://example.com/phishing-kit.zip"
-                value={submitUrl}
-                onChange={(e) => setSubmitUrl(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-              />
+              <div className="space-y-2">
+                <textarea
+                  className="flex min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 font-mono"
+                  placeholder={"https://example.com/kit1.zip\nhttps://example.com/kit2.zip\nhttps://example.com/kit3.zip"}
+                  value={submitUrls}
+                  onChange={(e) => setSubmitUrls(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) handleSubmit();
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  One URL per line. {submitUrls.split("\n").filter((u) => u.trim()).length > 0
+                    ? `${submitUrls.split("\n").filter((u) => u.trim()).length} URL${submitUrls.split("\n").filter((u) => u.trim()).length !== 1 ? "s" : ""}`
+                    : "Ctrl+Enter to submit"}
+                </p>
+              </div>
               <DialogFooter>
-                <Button onClick={handleSubmit} disabled={submitMutation.isPending}>
-                  {submitMutation.isPending ? "Submitting..." : "Submit"}
+                <Button variant="outline" onClick={() => { setSubmitOpen(false); setSubmitUrls(""); }}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSubmit} disabled={isSubmitting || !submitUrls.trim()}>
+                  {isSubmitting ? "Submitting..." : "Submit"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -154,7 +256,7 @@ export function KitsPage() {
                   <TableHead>Source URL</TableHead>
                   <TableHead>SHA256</TableHead>
                   <TableHead>Size</TableHead>
-                  <TableHead>Feed</TableHead>
+                  <TableHead>Source</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
               </TableHeader>

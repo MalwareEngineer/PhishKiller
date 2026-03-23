@@ -81,6 +81,18 @@ export interface KitBulkResponse {
   results: { url: string; kit_id: string; task_id?: string; duplicate: boolean }[];
 }
 
+export interface KitBulkUploadResult {
+  filename: string;
+  kit_id: string;
+  task_id?: string;
+  investigation_id?: string;
+}
+
+export interface KitBulkUploadResponse {
+  submitted: number;
+  results: KitBulkUploadResult[];
+}
+
 export interface SimilarKit {
   id: string;
   sha256?: string;
