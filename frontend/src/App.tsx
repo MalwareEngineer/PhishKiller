@@ -10,7 +10,6 @@ import { ActorsPage } from "@/pages/actors";
 import { ActorDetailPage } from "@/pages/actor-detail";
 import { CampaignsPage } from "@/pages/campaigns";
 import { CampaignDetailPage } from "@/pages/campaign-detail";
-import { FeedsPage } from "@/pages/feeds";
 
 export function App() {
   return (
@@ -26,7 +25,6 @@ export function App() {
         <Route path="actors/:id" element={<ActorDetailPage />} />
         <Route path="campaigns" element={<CampaignsPage />} />
         <Route path="campaigns/:id" element={<CampaignDetailPage />} />
-        <Route path="feeds" element={<FeedsPage />} />
       </Route>
     </Routes>
   );

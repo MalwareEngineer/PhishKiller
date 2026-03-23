@@ -11,13 +11,13 @@ campaign_kits = Table(
     Column(
         "campaign_id",
         UUID(as_uuid=True),
-        ForeignKey("campaigns.id"),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
         primary_key=True,
     ),
     Column(
         "kit_id",
         UUID(as_uuid=True),
-        ForeignKey("kits.id"),
+        ForeignKey("kits.id", ondelete="CASCADE"),
         primary_key=True,
     ),
 )

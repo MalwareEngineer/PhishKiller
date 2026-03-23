@@ -28,7 +28,7 @@ class Investigation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     name: Mapped[str | None] = mapped_column(String(256))
     root_kit_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("kits.id"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("kits.id", ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[InvestigationStatus] = mapped_column(
         Enum(InvestigationStatus), default=InvestigationStatus.PENDING

@@ -21,28 +21,22 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_routes={
-        "phishkiller.tasks.feeds.*": {"queue": "feeds"},
         "phishkiller.tasks.download.*": {"queue": "downloads"},
-        "phishkiller.tasks.discovery.*": {"queue": "discovery"},
         "phishkiller.tasks.browser.*": {"queue": "browser"},
         "phishkiller.tasks.analysis.*": {"queue": "analysis"},
         "phishkiller.tasks.chain.*": {"queue": "analysis"},
         "phishkiller.tasks.correlation.*": {"queue": "analysis"},
         "phishkiller.tasks.campaigns.*": {"queue": "analysis"},
-        "phishkiller.tasks.certstream_monitor.*": {"queue": "certstream"},
     },
 )
 
 celery_app.conf.include = [
-    "phishkiller.tasks.feeds",
     "phishkiller.tasks.download",
     "phishkiller.tasks.browser",
-    "phishkiller.tasks.discovery",
     "phishkiller.tasks.analysis",
     "phishkiller.tasks.chain",
     "phishkiller.tasks.correlation",
     "phishkiller.tasks.campaigns",
-    "phishkiller.tasks.certstream_monitor",
     "phishkiller.tasks.recovery",
     "phishkiller.tasks.periodic",
 ]

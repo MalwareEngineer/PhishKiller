@@ -82,7 +82,7 @@ services:
     command: >
       celery -A phishkiller.celery_app worker
       -l info -P solo -B
-      -Q celery,feeds
+      -Q celery
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
       PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
@@ -112,7 +112,7 @@ services:
     command: >
       celery -A phishkiller.celery_app worker
       -l info -P prefork -c 4
-      -Q downloads,discovery
+      -Q downloads
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
       PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller

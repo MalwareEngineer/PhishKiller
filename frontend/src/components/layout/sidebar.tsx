@@ -6,7 +6,6 @@ import {
   Search,
   Users,
   Target,
-  Rss,
   Shield,
   ChevronLeft,
   ChevronRight,
@@ -22,7 +21,6 @@ const navItems = [
   { to: "/indicators", icon: Search, label: "Indicators" },
   { to: "/actors", icon: Users, label: "Actors" },
   { to: "/campaigns", icon: Target, label: "Campaigns" },
-  { to: "/feeds", icon: Rss, label: "Feeds" },
 ];
 
 export function Sidebar() {

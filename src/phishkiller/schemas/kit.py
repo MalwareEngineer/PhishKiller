@@ -119,3 +119,13 @@ class SimilarKit(BaseModel):
     tlsh: str | None
     source_url: str
     distance: int
+
+
+class KitDeletePreview(BaseModel):
+    kit_id: uuid.UUID
+    total_kits: int
+    child_kits: int
+    indicators: int
+    analysis_results: int
+    campaign_links: int
+    investigations: int

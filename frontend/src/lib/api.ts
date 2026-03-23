@@ -2,6 +2,7 @@ import type {
   PaginatedResponse,
   KitSummary,
   KitDetail,
+  KitDeletePreview,
   KitSubmitResponse,
   SimilarKit,
   InvestigationSummary,
@@ -15,9 +16,6 @@ import type {
   ActorDetail,
   CampaignSummary,
   CampaignDetail,
-  FeedEntrySummary,
-  FeedStats,
-  FeedIngestResponse,
   HealthResponse,
   AnalysisResultDetail,
   TaskStatusResponse,
@@ -72,6 +70,7 @@ export const kits = {
   reanalyze: (id: string) =>
     request<{ kit_id: string; task_id: string }>(`/kits/${id}/reanalyze`, { method: "POST" }),
   delete: (id: string) => request<void>(`/kits/${id}`, { method: "DELETE" }),
+  deletePreview: (id: string) => request<KitDeletePreview>(`/kits/${id}/delete-preview`),
 };
 
 // ── Investigations ──
@@ -147,25 +146,6 @@ export const campaigns = {
     request<{ added: number }>(`/campaigns/${id}/kits`, {
       method: "POST",
       body: JSON.stringify({ kit_ids }),
-    }),
-};
-
-// ── Feeds ──
-
-export const feeds = {
-  entries: (params?: { offset?: number; limit?: number; source?: string; processed?: boolean }) => {
-    const q = new URLSearchParams();
-    if (params?.offset) q.set("offset", String(params.offset));
-    if (params?.limit) q.set("limit", String(params.limit));
-    if (params?.source) q.set("source", params.source);
-    if (params?.processed !== undefined) q.set("processed", String(params.processed));
-    return request<PaginatedResponse<FeedEntrySummary>>(`/feeds/entries?${q}`);
-  },
-  stats: () => request<FeedStats[]>("/feeds/stats"),
-  ingest: (source = "all") =>
-    request<FeedIngestResponse>("/feeds/ingest", {
-      method: "POST",
-      body: JSON.stringify({ source }),
     }),
 };
 

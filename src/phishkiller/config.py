@@ -37,9 +37,6 @@ class Settings(BaseSettings):
     celery_broker_url: str = "amqp://localhost:5672//"
     celery_result_backend: str = "redis://localhost:6379/1"
 
-    # Feed API keys
-    phishtank_api_key: str = ""
-
     # Analysis
     kit_download_dir: str = "./downloads"
     kit_extract_dir: str = "./extracted"
@@ -65,9 +62,6 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:5173"]
 
-    # CertStream
-    certstream_url: str = "wss://certstream.calidog.io"
-    certstream_score_threshold: int = 75
 
 
 @lru_cache
