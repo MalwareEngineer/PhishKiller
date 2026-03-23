@@ -4,6 +4,8 @@ import type {
   KitDetail,
   KitDeletePreview,
   KitSubmitResponse,
+  KitBulkResponse,
+  KitBulkUploadResponse,
   SimilarKit,
   InvestigationSummary,
   InvestigationDetail,
@@ -69,6 +71,18 @@ export const kits = {
     request<PaginatedResponse<IndicatorSummary>>(`/kits/${id}/indicators?offset=${offset}&limit=${limit}`),
   reanalyze: (id: string) =>
     request<{ kit_id: string; task_id: string }>(`/kits/${id}/reanalyze`, { method: "POST" }),
+  bulkSubmit: (urls: string[]) =>
+    request<KitBulkResponse>("/kits/bulk", {
+      method: "POST",
+      body: JSON.stringify({ urls }),
+    }),
+  bulkUpload: async (files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    const res = await fetch(`${BASE}/kits/upload/bulk`, { method: "POST", body: form });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    return res.json() as Promise<KitBulkUploadResponse>;
+  },
   delete: (id: string) => request<void>(`/kits/${id}`, { method: "DELETE" }),
   deletePreview: (id: string) => request<KitDeletePreview>(`/kits/${id}/delete-preview`),
 };

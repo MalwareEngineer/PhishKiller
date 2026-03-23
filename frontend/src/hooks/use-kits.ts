@@ -51,6 +51,22 @@ export function useUploadKit() {
   });
 }
 
+export function useBulkSubmitKits() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (urls: string[]) => kits.bulkSubmit(urls),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
+  });
+}
+
+export function useBulkUploadKits() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (files: File[]) => kits.bulkUpload(files),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
+  });
+}
+
 export function useReanalyzeKit() {
   const qc = useQueryClient();
   return useMutation({
