@@ -1,9 +1,17 @@
+import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit } from "@/hooks/use-kits";
+import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit, useKitDeletePreview } from "@/hooks/use-kits";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { IocTypeBadge } from "@/components/shared/ioc-type-badge";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -22,7 +30,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, Trash2, ArrowLeft } from "lucide-react";
+import { RefreshCw, Trash2, ArrowLeft, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 export function KitDetailPage() {
@@ -32,6 +40,8 @@ export function KitDetailPage() {
   const { data: similar } = useKitSimilar(id!, 100);
   const reanalyze = useReanalyzeKit();
   const deleteMut = useDeleteKit();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const { data: preview, isLoading: previewLoading } = useKitDeletePreview(id!, deleteOpen);
 
   if (isLoading || !kit) return <PageLoading />;
 
@@ -43,10 +53,10 @@ export function KitDetailPage() {
   };
 
   const handleDelete = () => {
-    if (!confirm("Delete this kit permanently?")) return;
     deleteMut.mutate(id!, {
       onSuccess: () => {
         toast.success("Kit deleted");
+        setDeleteOpen(false);
         navigate("/kits");
       },
       onError: (err) => toast.error(err.message),
@@ -78,7 +88,7 @@ export function KitDetailPage() {
             <RefreshCw className="mr-2 h-4 w-4" />
             Reanalyze
           </Button>
-          <Button variant="destructive" size="sm" onClick={handleDelete}>
+          <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
             <Trash2 className="mr-2 h-4 w-4" />
             Delete
           </Button>
@@ -310,6 +320,56 @@ export function KitDetailPage() {
           </Link>
         </div>
       )}
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              Confirm Deletion
+            </DialogTitle>
+          </DialogHeader>
+          {previewLoading ? (
+            <p className="text-sm text-muted-foreground py-4">Loading impact summary...</p>
+          ) : preview ? (
+            <div className="space-y-3">
+              <p className="text-sm">This will permanently delete:</p>
+              <ul className="text-sm space-y-1 ml-4 list-disc text-muted-foreground">
+                <li>
+                  <span className="text-foreground font-medium">{preview.total_kits}</span> kit{preview.total_kits !== 1 ? "s" : ""}
+                  {preview.child_kits > 0 && (
+                    <span> (including {preview.child_kits} child kit{preview.child_kits !== 1 ? "s" : ""})</span>
+                  )}
+                </li>
+                {preview.indicators > 0 && (
+                  <li><span className="text-foreground font-medium">{preview.indicators}</span> indicator{preview.indicators !== 1 ? "s" : ""}</li>
+                )}
+                {preview.analysis_results > 0 && (
+                  <li><span className="text-foreground font-medium">{preview.analysis_results}</span> analysis result{preview.analysis_results !== 1 ? "s" : ""}</li>
+                )}
+                {preview.campaign_links > 0 && (
+                  <li><span className="text-foreground font-medium">{preview.campaign_links}</span> campaign link{preview.campaign_links !== 1 ? "s" : ""}</li>
+                )}
+                {preview.investigations > 0 && (
+                  <li><span className="text-foreground font-medium">{preview.investigations}</span> investigation{preview.investigations !== 1 ? "s" : ""}</li>
+                )}
+              </ul>
+              <p className="text-xs text-muted-foreground">This action cannot be undone.</p>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleteMut.isPending || previewLoading}
+            >
+              {deleteMut.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

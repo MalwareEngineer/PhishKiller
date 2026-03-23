@@ -15,7 +15,6 @@ from phishkiller.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from phishkiller.models.analysis_result import AnalysisResult
     from phishkiller.models.campaign import Campaign
-    from phishkiller.models.feed_entry import FeedEntry
     from phishkiller.models.indicator import Indicator
     from phishkiller.models.investigation import Investigation
 
@@ -35,10 +34,6 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Source information
     source_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     source_feed: Mapped[str | None] = mapped_column(String(50))
-    feed_entry_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("feed_entries.id")
-    )
-
     # File metadata
     filename: Mapped[str | None] = mapped_column(String(512))
     file_size: Mapped[int | None] = mapped_column(BigInteger)
@@ -61,10 +56,10 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # Chain/investigation tracking
     parent_kit_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("kits.id"), index=True
+        UUID(as_uuid=True), ForeignKey("kits.id", ondelete="CASCADE"), index=True
     )
     investigation_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("investigations.id"), index=True
+        UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="SET NULL"), index=True
     )
     chain_depth: Mapped[int] = mapped_column(Integer, default=0)
     discovery_method: Mapped[str | None] = mapped_column(String(50))
@@ -80,17 +75,18 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     child_kits: Mapped[list[Kit]] = relationship(
         "Kit", back_populates="parent_kit",
         foreign_keys=[parent_kit_id],
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     investigation: Mapped[Investigation | None] = relationship(
         back_populates="kits", foreign_keys=[investigation_id]
     )
     indicators: Mapped[list[Indicator]] = relationship(
-        back_populates="kit", cascade="all, delete-orphan"
+        back_populates="kit", cascade="all, delete-orphan", passive_deletes=True
     )
     analysis_results: Mapped[list[AnalysisResult]] = relationship(
-        back_populates="kit", cascade="all, delete-orphan"
+        back_populates="kit", cascade="all, delete-orphan", passive_deletes=True
     )
-    feed_entry: Mapped[FeedEntry | None] = relationship(back_populates="kits")
     campaigns: Mapped[list[Campaign]] = relationship(
         secondary="campaign_kits", back_populates="kits"
     )

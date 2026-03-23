@@ -14,6 +14,7 @@ from phishkiller.schemas.kit import (
     KitBulkUploadResponse,
     KitBulkUploadResult,
     KitCreate,
+    KitDeletePreview,
     KitDetail,
     KitListResponse,
     KitSubmitResponse,
@@ -216,6 +217,15 @@ async def get_kit(kit_id: uuid.UUID, db: DbSession) -> KitDetail:
     if not kit:
         raise HTTPException(status_code=404, detail="Kit not found")
     return KitDetail.model_validate(kit)
+
+
+@router.get("/{kit_id}/delete-preview", response_model=KitDeletePreview)
+async def delete_preview(kit_id: uuid.UUID, db: DbSession) -> KitDeletePreview:
+    service = KitService(db)
+    preview = await service.get_deletion_preview(kit_id)
+    if not preview:
+        raise HTTPException(status_code=404, detail="Kit not found")
+    return KitDeletePreview(**preview)
 
 
 @router.delete("/{kit_id}", status_code=status.HTTP_204_NO_CONTENT)

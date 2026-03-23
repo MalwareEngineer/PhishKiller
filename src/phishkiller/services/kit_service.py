@@ -1,12 +1,21 @@
 """Kit business logic."""
 
+import logging
+import shutil
 import uuid
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from phishkiller.models.analysis_result import AnalysisResult
+from phishkiller.models.associations import campaign_kits
+from phishkiller.models.indicator import Indicator
+from phishkiller.models.investigation import Investigation
 from phishkiller.models.kit import Kit, KitStatus
+
+logger = logging.getLogger(__name__)
 
 
 class KitService:
@@ -233,9 +242,97 @@ class KitService:
         result = chain.apply_async()
         return result.id
 
+    async def _collect_descendant_ids(self, kit_id: uuid.UUID) -> list[uuid.UUID]:
+        """Recursively collect all descendant kit IDs (depth-first)."""
+        all_ids: list[uuid.UUID] = []
+
+        async def _recurse(parent_id: uuid.UUID) -> None:
+            result = await self.db.execute(
+                select(Kit.id).where(Kit.parent_kit_id == parent_id)
+            )
+            child_ids = [row[0] for row in result.all()]
+            for cid in child_ids:
+                all_ids.append(cid)
+                await _recurse(cid)
+
+        await _recurse(kit_id)
+        return all_ids
+
+    async def get_deletion_preview(self, kit_id: uuid.UUID) -> dict | None:
+        """Return a summary of everything that will be cascade-deleted."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        descendant_ids = await self._collect_descendant_ids(kit_id)
+        all_kit_ids = [kit_id] + descendant_ids
+
+        indicator_count = (await self.db.execute(
+            select(func.count()).select_from(Indicator).where(
+                Indicator.kit_id.in_(all_kit_ids)
+            )
+        )).scalar_one()
+
+        analysis_count = (await self.db.execute(
+            select(func.count()).select_from(AnalysisResult).where(
+                AnalysisResult.kit_id.in_(all_kit_ids)
+            )
+        )).scalar_one()
+
+        campaign_link_count = (await self.db.execute(
+            select(func.count()).select_from(campaign_kits).where(
+                campaign_kits.c.kit_id.in_(all_kit_ids)
+            )
+        )).scalar_one()
+
+        investigation_count = (await self.db.execute(
+            select(func.count()).select_from(Investigation).where(
+                Investigation.root_kit_id.in_(all_kit_ids)
+            )
+        )).scalar_one()
+
+        return {
+            "kit_id": str(kit_id),
+            "total_kits": len(all_kit_ids),
+            "child_kits": len(descendant_ids),
+            "indicators": indicator_count,
+            "analysis_results": analysis_count,
+            "campaign_links": campaign_link_count,
+            "investigations": investigation_count,
+        }
+
     async def delete_kit(self, kit_id: uuid.UUID) -> bool:
+        """Delete a kit and all its descendants (DB cascades handle FK cleanup)."""
         kit = await self.get_kit(kit_id)
         if not kit:
             return False
+
+        # Collect local file paths for cleanup before the rows disappear
+        local_paths: list[str] = []
+        if kit.local_path:
+            local_paths.append(kit.local_path)
+
+        descendant_ids = await self._collect_descendant_ids(kit_id)
+        if descendant_ids:
+            result = await self.db.execute(
+                select(Kit.local_path).where(
+                    Kit.id.in_(descendant_ids),
+                    Kit.local_path.isnot(None),
+                )
+            )
+            local_paths.extend(row[0] for row in result.all())
+
+        # DB cascades delete children, indicators, analysis_results,
+        # campaign_kits rows, and investigations (if root_kit)
         await self.db.delete(kit)
+
+        # Best-effort file cleanup (after ORM marks for deletion)
+        for path in local_paths:
+            try:
+                kit_dir = Path(path).parent
+                if kit_dir.exists():
+                    shutil.rmtree(kit_dir)
+            except OSError:
+                logger.warning("Failed to clean up kit files at %s", path)
+
         return True

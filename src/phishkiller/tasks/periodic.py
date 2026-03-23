@@ -6,22 +6,6 @@ from phishkiller.celery_app import celery_app
 
 # Periodic task schedule
 celery_app.conf.beat_schedule = {
-    "ingest-phishtank-every-3h": {
-        "task": "phishkiller.tasks.feeds.ingest_phishtank",
-        "schedule": crontab(minute=0, hour="*/3"),
-        "options": {"queue": "feeds"},
-    },
-    "ingest-openphish-every-6h": {
-        "task": "phishkiller.tasks.feeds.ingest_openphish",
-        "schedule": crontab(minute=30, hour="*/6"),
-        "options": {"queue": "feeds"},
-    },
-    "process-feed-entries-every-2m": {
-        "task": "phishkiller.tasks.feeds.process_feed_entries",
-        "schedule": crontab(minute="*/2"),
-        "args": [2000],
-        "options": {"queue": "feeds"},
-    },
     "recover-stuck-kits-every-15m": {
         "task": "phishkiller.tasks.recovery.recover_stuck_kits",
         "schedule": crontab(minute="*/15"),

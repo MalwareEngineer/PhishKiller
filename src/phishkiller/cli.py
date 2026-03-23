@@ -51,7 +51,6 @@ app = typer.Typer(
 
 kits_app = typer.Typer(help="Kit management commands", no_args_is_help=True)
 iocs_app = typer.Typer(help="IOC query commands", no_args_is_help=True)
-feeds_app = typer.Typer(help="Feed management commands", no_args_is_help=True)
 worker_app = typer.Typer(help="Worker management commands", no_args_is_help=True)
 actors_app = typer.Typer(help="Actor/threat group commands", no_args_is_help=True)
 campaigns_app = typer.Typer(help="Campaign management commands", no_args_is_help=True)
@@ -59,7 +58,6 @@ investigations_app = typer.Typer(help="Investigation management commands", no_ar
 
 app.add_typer(kits_app, name="kits")
 app.add_typer(iocs_app, name="iocs")
-app.add_typer(feeds_app, name="feeds")
 app.add_typer(worker_app, name="worker")
 app.add_typer(actors_app, name="actors")
 app.add_typer(campaigns_app, name="campaigns")
@@ -488,147 +486,6 @@ def iocs_stats():
     table.add_row("[bold]Total[/bold]", f"[bold]{total:,}[/bold]")
 
     console.print(table)
-
-
-# ─── Feeds Sub-Commands ──────────────────────────────────────────────
-
-
-@feeds_app.command("ingest")
-def feeds_ingest(
-    source: str = typer.Option(
-        "all", "--source", "-s",
-        help="Feed source (phishtank, openphish, all)",
-    ),
-):
-    """Trigger feed ingestion manually."""
-    data = _api("post", "/feeds/ingest", json={"source": source})
-    console.print(f"[green]+[/green] {data['message']}")
-    for tid in data.get("task_ids", []):
-        console.print(f"  Task: {tid}")
-
-
-@feeds_app.command("status")
-def feeds_status():
-    """Show feed processing statistics."""
-    data = _api("get", "/feeds/stats")
-
-    table = Table(title="Feed Statistics")
-    table.add_column("Source", style="bold")
-    table.add_column("Total", justify="right")
-    table.add_column("Processed", justify="right")
-    table.add_column("Pending", justify="right")
-
-    for stat in data:
-        table.add_row(
-            stat["source"],
-            f"{stat['total']:,}",
-            f"{stat['processed']:,}",
-            f"{stat['unprocessed']:,}",
-        )
-    console.print(table)
-
-
-@feeds_app.command("entries")
-def feeds_entries(
-    source: str = typer.Option(None, "--source", "-s", help="Filter by source"),
-    processed: bool = typer.Option(
-        None, "--processed/--unprocessed", help="Filter by processed state"
-    ),
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
-):
-    """List feed entries."""
-    params = {"limit": limit}
-    if source:
-        params["source"] = source
-    if processed is not None:
-        params["processed"] = processed
-    data = _api("get", "/feeds/entries", params=params)
-
-    table = Table(title=f"Feed Entries ({data['total']} total)")
-    table.add_column("Source", style="bold")
-    table.add_column("URL", max_width=255)
-    table.add_column("Processed")
-    table.add_column("Created")
-
-    for entry in data["items"]:
-        table.add_row(
-            entry["source"],
-            entry["url"],
-            "Y" if entry["is_processed"] else "N",
-            entry["created_at"],
-        )
-    console.print(table)
-
-
-@feeds_app.command("health")
-def feeds_health():
-    """Check feed health — flag sources with no recent ingestion."""
-    from datetime import UTC, datetime, timedelta
-
-    from sqlalchemy import func, select
-
-    from phishkiller.database import get_sync_db
-    from phishkiller.models.feed_entry import FeedEntry, FeedSource
-
-    expected_intervals = {
-        FeedSource.PHISHTANK: timedelta(hours=4),
-        FeedSource.OPENPHISH: timedelta(hours=8),
-    }
-
-    db = get_sync_db()
-    try:
-        now = datetime.now(UTC)
-
-        table = Table(title="Feed Health")
-        table.add_column("Source", style="bold")
-        table.add_column("Last Entry")
-        table.add_column("Age")
-        table.add_column("Threshold")
-        table.add_column("Status")
-
-        any_unhealthy = False
-
-        for source, max_interval in expected_intervals.items():
-            last_entry = db.execute(
-                select(func.max(FeedEntry.created_at))
-                .where(FeedEntry.source == source)
-            ).scalar()
-
-            threshold_hrs = int(max_interval.total_seconds() // 3600)
-
-            if last_entry is None:
-                table.add_row(
-                    source.value, "never", "—",
-                    f"{threshold_hrs}h", "[red]NO DATA[/red]",
-                )
-                any_unhealthy = True
-                continue
-
-            age = now - last_entry.replace(tzinfo=UTC)
-            hours = int(age.total_seconds() // 3600)
-            minutes = int((age.total_seconds() % 3600) // 60)
-            healthy = age <= max_interval
-            status_str = "[green]OK[/green]" if healthy else "[red]STALE[/red]"
-
-            if not healthy:
-                any_unhealthy = True
-
-            table.add_row(
-                source.value,
-                last_entry.strftime("%Y-%m-%d %H:%M UTC"),
-                f"{hours}h {minutes}m",
-                f"{threshold_hrs}h",
-                status_str,
-            )
-
-        console.print(table)
-        if any_unhealthy:
-            console.print(
-                "\n[red]WARNING:[/red] One or more feeds are stale or missing data."
-            )
-            raise typer.Exit(1)
-    finally:
-        db.close()
 
 
 # ─── Worker Sub-Commands ────────────────────────────────────────────

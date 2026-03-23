@@ -32,8 +32,6 @@ export type AnalysisType =
   | "link_score"
   | "redirect_chain";
 
-export type FeedSource = "phishtank" | "openphish" | "certstream" | "manual";
-
 // ── Paginated response ──
 
 export interface PaginatedResponse<T> {
@@ -89,6 +87,16 @@ export interface SimilarKit {
   tlsh?: string;
   source_url: string;
   distance: number;
+}
+
+export interface KitDeletePreview {
+  kit_id: string;
+  total_kits: number;
+  child_kits: number;
+  indicators: number;
+  analysis_results: number;
+  campaign_links: number;
+  investigations: number;
 }
 
 // ── Investigations ──
@@ -210,30 +218,6 @@ export interface AnalysisResultDetail extends AnalysisResultBrief {
   kit_id: string;
   result_data: Record<string, unknown>;
   error?: string;
-}
-
-// ── Feeds ──
-
-export interface FeedEntrySummary {
-  id: string;
-  source: FeedSource;
-  url: string;
-  external_id?: string;
-  target_brand?: string;
-  is_processed: boolean;
-  created_at: string;
-}
-
-export interface FeedStats {
-  source: string;
-  total: number;
-  processed: number;
-  unprocessed: number;
-}
-
-export interface FeedIngestResponse {
-  task_ids: string[];
-  message: string;
 }
 
 // ── Health ──

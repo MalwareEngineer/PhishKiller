@@ -59,10 +59,21 @@ export function useReanalyzeKit() {
   });
 }
 
+export function useKitDeletePreview(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-delete-preview", id],
+    queryFn: () => kits.deletePreview(id),
+    enabled: !!id && enabled,
+  });
+}
+
 export function useDeleteKit() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => kits.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["kits"] });
+      qc.invalidateQueries({ queryKey: ["investigations"] });
+    },
   });
 }
