@@ -19,7 +19,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   Select,
@@ -88,13 +87,11 @@ export function KitsPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Kits</h1>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => setUploadOpen(true)}>
+            <Upload className="mr-2 h-4 w-4" />
+            Upload
+          </Button>
           <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
-            <DialogTrigger >
-              <Button variant="outline" size="sm">
-                <Upload className="mr-2 h-4 w-4" />
-                Upload
-              </Button>
-            </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Upload Phishing Kit</DialogTitle>
@@ -103,13 +100,11 @@ export function KitsPage() {
             </DialogContent>
           </Dialog>
 
+          <Button size="sm" onClick={() => setSubmitOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Submit URL
+          </Button>
           <Dialog open={submitOpen} onOpenChange={setSubmitOpen}>
-            <DialogTrigger >
-              <Button size="sm">
-                <Plus className="mr-2 h-4 w-4" />
-                Submit URL
-              </Button>
-            </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Submit URL for Analysis</DialogTitle>

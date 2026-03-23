@@ -14,22 +14,20 @@ import { FeedsPage } from "@/pages/feeds";
 
 export function App() {
   return (
-    <div className="dark">
-      <Routes>
-        <Route element={<Shell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="kits" element={<KitsPage />} />
-          <Route path="kits/:id" element={<KitDetailPage />} />
-          <Route path="investigations" element={<InvestigationsPage />} />
-          <Route path="investigations/:id" element={<InvestigationDetailPage />} />
-          <Route path="indicators" element={<IndicatorsPage />} />
-          <Route path="actors" element={<ActorsPage />} />
-          <Route path="actors/:id" element={<ActorDetailPage />} />
-          <Route path="campaigns" element={<CampaignsPage />} />
-          <Route path="campaigns/:id" element={<CampaignDetailPage />} />
-          <Route path="feeds" element={<FeedsPage />} />
-        </Route>
-      </Routes>
-    </div>
+    <Routes>
+      <Route element={<Shell />}>
+        <Route index element={<DashboardPage />} />
+        <Route path="kits" element={<KitsPage />} />
+        <Route path="kits/:id" element={<KitDetailPage />} />
+        <Route path="investigations" element={<InvestigationsPage />} />
+        <Route path="investigations/:id" element={<InvestigationDetailPage />} />
+        <Route path="indicators" element={<IndicatorsPage />} />
+        <Route path="actors" element={<ActorsPage />} />
+        <Route path="actors/:id" element={<ActorDetailPage />} />
+        <Route path="campaigns" element={<CampaignsPage />} />
+        <Route path="campaigns/:id" element={<CampaignDetailPage />} />
+        <Route path="feeds" element={<FeedsPage />} />
+      </Route>
+    </Routes>
   );
 }
