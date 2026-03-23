@@ -8,7 +8,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,10 +44,8 @@ export function CampaignsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Campaigns</h1>
+        <Button size="sm" onClick={() => setOpen(true)}><Plus className="mr-2 h-4 w-4" />New Campaign</Button>
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger >
-            <Button size="sm"><Plus className="mr-2 h-4 w-4" />New Campaign</Button>
-          </DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>Create Campaign</DialogTitle></DialogHeader>
             <div className="space-y-3">
