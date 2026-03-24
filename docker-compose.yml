@@ -63,11 +63,15 @@ services:
       PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
       PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
       PK_REDIS_URL: redis://redis:6379/0
+      PK_KIT_DOWNLOAD_DIR: /app/downloads
+      PK_KIT_EXTRACT_DIR: /app/extracted
     env_file:
       - .env
     ports:
       - "8000:8000"
     volumes:
+      - downloads:/app/downloads:ro
+      - extracted:/app/extracted:ro
       - ./rules:/app/rules:ro
       - ./private:/app/private:ro
     depends_on:

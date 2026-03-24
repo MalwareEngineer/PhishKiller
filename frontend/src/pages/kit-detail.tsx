@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit, useKitDeletePreview } from "@/hooks/use-kits";
+import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent } from "@/hooks/use-kits";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { IocTypeBadge } from "@/components/shared/ioc-type-badge";
 import { PageLoading } from "@/components/shared/loading";
@@ -30,8 +30,33 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, Trash2, ArrowLeft, AlertTriangle } from "lucide-react";
+import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
+import type { AnalysisResultBrief } from "@/types/api";
+
+// ── Helpers ──
+
+interface YaraMatch {
+  rule: string;
+  namespace?: string;
+  tags?: string[];
+  meta?: Record<string, string>;
+}
+
+function getYaraMatches(results: AnalysisResultBrief[]): YaraMatch[] {
+  const yaraResult = results.find((r) => r.analysis_type === "yara_scan");
+  if (!yaraResult?.result_data) return [];
+  const matches = yaraResult.result_data.matches;
+  return Array.isArray(matches) ? matches : [];
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ── Main Page ──
 
 export function KitDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -42,8 +67,13 @@ export function KitDetailPage() {
   const deleteMut = useDeleteKit();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const { data: preview, isLoading: previewLoading } = useKitDeletePreview(id!, deleteOpen);
+  const [activeTab, setActiveTab] = useState("indicators");
+  const { data: contentData, isLoading: contentLoading } = useKitContent(id!, activeTab === "content");
+  const [selectedFile, setSelectedFile] = useState(0);
 
   if (isLoading || !kit) return <PageLoading />;
+
+  const yaraMatches = getYaraMatches(kit.analysis_results);
 
   const handleReanalyze = () => {
     reanalyze.mutate(id!, {
@@ -101,7 +131,21 @@ export function KitDetailPage() {
           <HashField label="SHA256" value={kit.sha256} />
           <HashField label="MD5" value={kit.md5} />
           <HashField label="SHA1" value={kit.sha1} />
-          <HashField label="TLSH" value={kit.tlsh} />
+          <div>
+            <span className="text-xs text-muted-foreground">TLSH</span>
+            {kit.tlsh ? (
+              <Link
+                to={`/kits?search=${encodeURIComponent(`tlsh:${kit.tlsh}`)}`}
+                className="font-mono text-xs break-all block hover:underline text-blue-400"
+                title="Search for similar kits by TLSH"
+              >
+                {kit.tlsh}
+                <Search className="inline ml-1 h-3 w-3" />
+              </Link>
+            ) : (
+              <p className="font-mono text-xs break-all">—</p>
+            )}
+          </div>
           <div>
             <span className="text-xs text-muted-foreground">Filename</span>
             <p className="font-mono text-sm">{kit.filename ?? "—"}</p>
@@ -112,7 +156,7 @@ export function KitDetailPage() {
           </div>
           <div>
             <span className="text-xs text-muted-foreground">Size</span>
-            <p className="text-sm">{kit.file_size ? `${(kit.file_size / 1024).toFixed(1)} KB` : "—"}</p>
+            <p className="text-sm">{kit.file_size ? formatBytes(kit.file_size) : "—"}</p>
           </div>
           <div>
             <span className="text-xs text-muted-foreground">Chain Depth</span>
@@ -130,13 +174,19 @@ export function KitDetailPage() {
       )}
 
       {/* Tabs */}
-      <Tabs defaultValue="indicators">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="indicators">
             Indicators ({kit.indicators.length})
           </TabsTrigger>
+          <TabsTrigger value="yara">
+            YARA ({yaraMatches.length})
+          </TabsTrigger>
           <TabsTrigger value="analysis">
             Analysis ({kit.analysis_results.length})
+          </TabsTrigger>
+          <TabsTrigger value="content">
+            Content
           </TabsTrigger>
           <TabsTrigger value="similar">
             Similar ({similar?.length ?? 0})
@@ -149,6 +199,7 @@ export function KitDetailPage() {
           </TabsTrigger>
         </TabsList>
 
+        {/* Indicators Tab */}
         <TabsContent value="indicators" className="mt-4">
           {kit.indicators.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">No indicators extracted</p>
@@ -183,6 +234,48 @@ export function KitDetailPage() {
           )}
         </TabsContent>
 
+        {/* YARA Tab */}
+        <TabsContent value="yara" className="mt-4">
+          {yaraMatches.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">No YARA matches</p>
+          ) : (
+            <div className="space-y-3">
+              {yaraMatches.map((match, i) => (
+                <Card key={`${match.rule}-${i}`}>
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="default" className="font-mono">{match.rule}</Badge>
+                      {match.namespace && match.namespace !== "default" && (
+                        <Badge variant="secondary" className="text-xs">{match.namespace}</Badge>
+                      )}
+                      {match.tags?.map((tag) => (
+                        <Badge key={tag} variant="outline" className="text-xs">{tag}</Badge>
+                      ))}
+                      <Link
+                        to={`/kits?search=${encodeURIComponent(`yara:${match.rule}`)}`}
+                        className="text-xs text-blue-400 hover:underline ml-auto flex items-center gap-1"
+                      >
+                        Find other kits <ExternalLink className="h-3 w-3" />
+                      </Link>
+                    </div>
+                    {match.meta && Object.keys(match.meta).length > 0 && (
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1 text-xs">
+                        {Object.entries(match.meta).map(([k, v]) => (
+                          <div key={k}>
+                            <span className="text-muted-foreground">{k}:</span>{" "}
+                            <span className="font-mono">{String(v)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Analysis Tab */}
         <TabsContent value="analysis" className="mt-4">
           {kit.analysis_results.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">No analysis results yet</p>
@@ -191,8 +284,11 @@ export function KitDetailPage() {
               {kit.analysis_results.map((result) => (
                 <AccordionItem key={result.id} value={result.id} className="border rounded-md px-4">
                   <AccordionTrigger className="text-sm">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
                       <Badge variant="secondary">{result.analysis_type}</Badge>
+                      {result.error && (
+                        <Badge variant="destructive" className="text-xs">error</Badge>
+                      )}
                       {result.duration_seconds != null && (
                         <span className="text-xs text-muted-foreground">
                           {result.duration_seconds.toFixed(2)}s
@@ -203,11 +299,15 @@ export function KitDetailPage() {
                           {result.files_processed} files
                         </span>
                       )}
+                      <AnalysisSummary result={result} />
                     </div>
                   </AccordionTrigger>
                   <AccordionContent>
+                    {result.error && (
+                      <p className="text-sm text-red-400 font-mono mb-2">{result.error}</p>
+                    )}
                     <pre className="text-xs font-mono bg-muted/50 p-3 rounded-md overflow-auto max-h-64">
-                      {JSON.stringify(result, null, 2)}
+                      {JSON.stringify(result.result_data ?? {}, null, 2)}
                     </pre>
                   </AccordionContent>
                 </AccordionItem>
@@ -216,6 +316,55 @@ export function KitDetailPage() {
           )}
         </TabsContent>
 
+        {/* Content Tab */}
+        <TabsContent value="content" className="mt-4">
+          {contentLoading ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">Loading content...</p>
+          ) : !contentData || contentData.files.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">No text content available</p>
+          ) : (
+            <div className="space-y-3">
+              {contentData.files.length > 1 && (
+                <div className="flex flex-wrap gap-1">
+                  {contentData.files.map((f, i) => (
+                    <Button
+                      key={f.filename}
+                      variant={i === selectedFile ? "default" : "outline"}
+                      size="sm"
+                      className="text-xs font-mono"
+                      onClick={() => setSelectedFile(i)}
+                    >
+                      {f.filename}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {(() => {
+                const file = contentData.files[selectedFile];
+                if (!file) return null;
+                return (
+                  <div>
+                    <div className="flex items-center gap-3 mb-2 text-xs text-muted-foreground">
+                      <span className="font-mono">{file.filename}</span>
+                      <span>{formatBytes(file.size)}</span>
+                      {file.mime_type && <span>{file.mime_type}</span>}
+                      {file.truncated && (
+                        <Badge variant="outline" className="text-xs text-yellow-400 border-yellow-400/30">
+                          truncated at 1MB
+                        </Badge>
+                      )}
+                    </div>
+                    <pre className="text-xs font-mono bg-muted/50 p-4 rounded-md overflow-auto max-h-[600px] whitespace-pre-wrap break-all">
+                      {file.content}
+                    </pre>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Similar Tab */}
         <TabsContent value="similar" className="mt-4">
           {!similar || similar.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">No similar kits found</p>
@@ -247,6 +396,7 @@ export function KitDetailPage() {
           )}
         </TabsContent>
 
+        {/* Children Tab */}
         <TabsContent value="children" className="mt-4">
           {kit.child_kits.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">No child kits</p>
@@ -284,6 +434,7 @@ export function KitDetailPage() {
           )}
         </TabsContent>
 
+        {/* Campaigns Tab */}
         <TabsContent value="campaigns" className="mt-4">
           {kit.campaigns.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">Not linked to any campaigns</p>
@@ -302,12 +453,12 @@ export function KitDetailPage() {
         </TabsContent>
       </Tabs>
 
-      {/* Parent link */}
+      {/* Parent + Investigation links — full IDs */}
       {kit.parent_kit_id && (
         <div className="text-sm text-muted-foreground">
           Parent kit:{" "}
-          <Link to={`/kits/${kit.parent_kit_id}`} className="font-mono hover:underline">
-            {kit.parent_kit_id.slice(0, 8)}...
+          <Link to={`/kits/${kit.parent_kit_id}`} className="font-mono text-xs hover:underline break-all">
+            {kit.parent_kit_id}
           </Link>
         </div>
       )}
@@ -315,8 +466,8 @@ export function KitDetailPage() {
       {kit.investigation_id && (
         <div className="text-sm text-muted-foreground">
           Investigation:{" "}
-          <Link to={`/investigations/${kit.investigation_id}`} className="font-mono hover:underline">
-            {kit.investigation_id.slice(0, 8)}...
+          <Link to={`/investigations/${kit.investigation_id}`} className="font-mono text-xs hover:underline break-all">
+            {kit.investigation_id}
           </Link>
         </div>
       )}
@@ -374,6 +525,8 @@ export function KitDetailPage() {
   );
 }
 
+// ── Sub-components ──
+
 function HashField({ label, value }: { label: string; value?: string }) {
   return (
     <div>
@@ -381,4 +534,39 @@ function HashField({ label, value }: { label: string; value?: string }) {
       <p className="font-mono text-xs break-all">{value ?? "—"}</p>
     </div>
   );
+}
+
+function AnalysisSummary({ result }: { result: AnalysisResultBrief }) {
+  const data = result.result_data;
+  if (!data) return null;
+
+  switch (result.analysis_type) {
+    case "yara_scan": {
+      const count = (data.match_count as number) ?? (Array.isArray(data.matches) ? data.matches.length : 0);
+      return count > 0 ? (
+        <span className="text-xs text-yellow-400">{count} rule{count !== 1 ? "s" : ""} matched</span>
+      ) : (
+        <span className="text-xs text-muted-foreground">no matches</span>
+      );
+    }
+    case "ioc_extraction": {
+      const count = (data.iocs_extracted as number) ?? (data.total_iocs as number) ?? 0;
+      return <span className="text-xs text-muted-foreground">{count} IOCs</span>;
+    }
+    case "similarity": {
+      const count = (data.similar_count as number) ?? 0;
+      return <span className="text-xs text-muted-foreground">{count} similar</span>;
+    }
+    case "hash": {
+      return <span className="text-xs text-muted-foreground">hashes computed</span>;
+    }
+    case "deobfuscation": {
+      const decoded = (data.decoded_count as number) ?? (data.files_decoded as number) ?? 0;
+      return decoded > 0 ? (
+        <span className="text-xs text-muted-foreground">{decoded} decoded</span>
+      ) : null;
+    }
+    default:
+      return null;
+  }
 }

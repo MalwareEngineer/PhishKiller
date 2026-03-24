@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
-import { useKits, useSubmitKit, useUploadKit, useBulkSubmitKits, useBulkUploadKits } from "@/hooks/use-kits";
+import { useState, useEffect } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { useKits, useSubmitKit, useUploadKit, useBulkSubmitKits, useBulkUploadKits, useSearchKits } from "@/hooks/use-kits";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { Pagination } from "@/components/shared/pagination";
 import { TableLoading } from "@/components/shared/loading";
@@ -27,18 +27,50 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Plus, Upload, X, FileText } from "lucide-react";
+import { Plus, Upload, X, FileText, Search } from "lucide-react";
 import { toast } from "sonner";
-import type { KitStatus } from "@/types/api";
+import type { KitStatus, KitSummary } from "@/types/api";
 
 const STATUSES: (KitStatus | "all")[] = ["all", "pending", "downloading", "analyzing", "analyzed", "failed"];
 const PAGE_SIZE = 25;
 
+/** Parse search input into structured params. Supports:
+ *  - `yara:RuleName` → yara_rule filter
+ *  - `tlsh:T1...`   → TLSH similarity search
+ *  - anything else   → text search (URL, hash, filename)
+ */
+function parseSearch(input: string) {
+  const trimmed = input.trim();
+  if (trimmed.startsWith("yara:")) {
+    return { yara_rule: trimmed.slice(5).trim() };
+  }
+  if (trimmed.startsWith("tlsh:")) {
+    return { tlsh: trimmed.slice(5).trim() };
+  }
+  return { q: trimmed };
+}
+
 export function KitsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [offset, setOffset] = useState(0);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  // Search state — initialise from URL ?search= param
+  const [searchInput, setSearchInput] = useState(searchParams.get("search") ?? "");
+  const [activeSearch, setActiveSearch] = useState(searchParams.get("search") ?? "");
+
+  // Sync from URL on first load or when navigated to with ?search=
+  useEffect(() => {
+    const urlSearch = searchParams.get("search") ?? "";
+    if (urlSearch && urlSearch !== activeSearch) {
+      setSearchInput(urlSearch);
+      setActiveSearch(urlSearch);
+      setOffset(0);
+    }
+  }, [searchParams]);
 
   // Submit URL state
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -48,16 +80,45 @@ export function KitsPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
-  const { data, isLoading } = useKits({
+  const isSearching = activeSearch.trim().length > 0;
+  const searchParsed = parseSearch(activeSearch);
+
+  const { data: listData, isLoading: listLoading } = useKits({
     offset,
     limit: PAGE_SIZE,
     status_filter: statusFilter === "all" ? undefined : statusFilter as KitStatus,
   });
 
+  const { data: searchData, isLoading: searchLoading } = useSearchKits(
+    { ...searchParsed, offset, limit: PAGE_SIZE },
+    isSearching,
+  );
+
+  const data = isSearching ? searchData : listData;
+  const isLoading = isSearching ? searchLoading : listLoading;
+
   const submitMutation = useSubmitKit();
   const bulkSubmitMutation = useBulkSubmitKits();
   const uploadMutation = useUploadKit();
   const bulkUploadMutation = useBulkUploadKits();
+
+  const handleSearch = () => {
+    setActiveSearch(searchInput);
+    setOffset(0);
+    // Sync URL
+    if (searchInput.trim()) {
+      setSearchParams({ search: searchInput.trim() });
+    } else {
+      setSearchParams({});
+    }
+  };
+
+  const clearSearch = () => {
+    setSearchInput("");
+    setActiveSearch("");
+    setOffset(0);
+    setSearchParams({});
+  };
 
   const handleSubmit = () => {
     const urls = submitUrls
@@ -99,7 +160,6 @@ export function KitsPage() {
     if (files.length > 0) {
       setSelectedFiles((prev) => [...prev, ...files]);
     }
-    // Reset input so re-selecting the same file works
     e.target.value = "";
   };
 
@@ -227,19 +287,51 @@ export function KitsPage() {
         </div>
       </div>
 
+      {/* Search + Filter bar */}
       <div className="flex items-center gap-3">
-        <Select value={statusFilter} onValueChange={(v) => { if (v) { setStatusFilter(v); setOffset(0); } }}>
-          <SelectTrigger className="w-40">
-            <SelectValue placeholder="Filter status" />
-          </SelectTrigger>
-          <SelectContent>
-            {STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s === "all" ? "All statuses" : s.charAt(0).toUpperCase() + s.slice(1)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="relative flex-1 max-w-lg">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search URL, hash, yara:RuleName, tlsh:T1..."
+            className="pl-9 font-mono text-sm"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSearch();
+              if (e.key === "Escape") clearSearch();
+            }}
+          />
+          {activeSearch && (
+            <button
+              className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+              onClick={clearSearch}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        {!isSearching && (
+          <Select value={statusFilter} onValueChange={(v) => { if (v) { setStatusFilter(v); setOffset(0); } }}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Filter status" />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUSES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s === "all" ? "All statuses" : s.charAt(0).toUpperCase() + s.slice(1)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {isSearching && (
+          <Badge variant="secondary" className="text-xs whitespace-nowrap">
+            {searchParsed.yara_rule ? `YARA: ${searchParsed.yara_rule}` :
+             searchParsed.tlsh ? "TLSH similarity" :
+             `Text: ${searchParsed.q}`}
+            {data && ` (${data.total} result${data.total !== 1 ? "s" : ""})`}
+          </Badge>
+        )}
       </div>
 
       <Card>
@@ -261,7 +353,7 @@ export function KitsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(data?.items ?? []).map((kit) => (
+                {(data?.items ?? []).map((kit: KitSummary) => (
                   <TableRow key={kit.id} className="cursor-pointer hover:bg-muted/50">
                     <TableCell>
                       <KitStatusBadge status={kit.status} />
@@ -288,7 +380,7 @@ export function KitsPage() {
                 {data?.items.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                      No kits found
+                      {isSearching ? "No kits match your search" : "No kits found"}
                     </TableCell>
                   </TableRow>
                 )}

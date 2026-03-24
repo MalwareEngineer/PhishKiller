@@ -3,6 +3,7 @@ import type {
   KitSummary,
   KitDetail,
   KitDeletePreview,
+  KitContentResponse,
   KitSubmitResponse,
   KitBulkResponse,
   KitBulkUploadResponse,
@@ -85,6 +86,17 @@ export const kits = {
   },
   delete: (id: string) => request<void>(`/kits/${id}`, { method: "DELETE" }),
   deletePreview: (id: string) => request<KitDeletePreview>(`/kits/${id}/delete-preview`),
+  content: (id: string) => request<KitContentResponse>(`/kits/${id}/content`),
+  search: (params: { q?: string; yara_rule?: string; tlsh?: string; tlsh_threshold?: number; offset?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params.q) q.set("q", params.q);
+    if (params.yara_rule) q.set("yara_rule", params.yara_rule);
+    if (params.tlsh) q.set("tlsh", params.tlsh);
+    if (params.tlsh_threshold) q.set("tlsh_threshold", String(params.tlsh_threshold));
+    if (params.offset) q.set("offset", String(params.offset));
+    if (params.limit) q.set("limit", String(params.limit));
+    return request<PaginatedResponse<KitSummary>>(`/kits/search?${q}`);
+  },
 };
 
 // ── Investigations ──

@@ -38,8 +38,10 @@ class IndicatorBrief(BaseModel):
 class AnalysisResultBrief(BaseModel):
     id: uuid.UUID
     analysis_type: str
+    result_data: dict = {}
     duration_seconds: float | None
     files_processed: int | None
+    error: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -129,3 +131,16 @@ class KitDeletePreview(BaseModel):
     analysis_results: int
     campaign_links: int
     investigations: int
+
+
+class KitContentFile(BaseModel):
+    filename: str
+    content: str
+    size: int
+    mime_type: str | None = None
+    truncated: bool = False
+
+
+class KitContentResponse(BaseModel):
+    kit_id: uuid.UUID
+    files: list[KitContentFile]

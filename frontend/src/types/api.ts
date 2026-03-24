@@ -221,8 +221,10 @@ export interface CampaignBrief {
 export interface AnalysisResultBrief {
   id: string;
   analysis_type: AnalysisType;
+  result_data?: Record<string, unknown>;
   duration_seconds?: number;
   files_processed?: number;
+  error?: string;
   created_at: string;
 }
 
@@ -230,6 +232,21 @@ export interface AnalysisResultDetail extends AnalysisResultBrief {
   kit_id: string;
   result_data: Record<string, unknown>;
   error?: string;
+}
+
+// ── Kit Content ──
+
+export interface KitContentFile {
+  filename: string;
+  content: string;
+  size: number;
+  mime_type?: string;
+  truncated: boolean;
+}
+
+export interface KitContentResponse {
+  kit_id: string;
+  files: KitContentFile[];
 }
 
 // ── Health ──
