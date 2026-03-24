@@ -215,6 +215,15 @@ def crawl_chain(self, prev_result: dict) -> dict:
         if not kit or not kit.investigation_id:
             return prev_result
 
+        # Browser-render kits re-download the same URL with a real browser.
+        # Their redirect chain duplicates the parent's — skip child spawning.
+        if kit.discovery_method == "browser_render":
+            logger.info(
+                "Kit %s is a browser_render child, skipping chain crawl",
+                kit_id,
+            )
+            return {**prev_result, "chain_skipped": "browser_render"}
+
         from phishkiller.models.investigation import Investigation
 
         investigation = db.query(Investigation).filter(
@@ -248,6 +257,9 @@ def crawl_chain(self, prev_result: dict) -> dict:
         seen = set()
 
         def _add(url: str, source: str, score: float, reason: str) -> None:
+            # Reject non-HTTP URLs and bare paths like "/"
+            if not url or not url.startswith(("http://", "https://")):
+                return
             if url in seen or url == kit.source_url:
                 return
             seen.add(url)

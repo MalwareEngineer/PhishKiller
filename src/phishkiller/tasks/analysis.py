@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from celery import chain
 from celery.exceptions import SoftTimeLimitExceeded
@@ -439,7 +440,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
         else:
             result = extractor.scan_file(filepath)
 
-        # Store indicators
+        # Store file-based indicators
         for ioc in result.iocs:
             indicator = Indicator(
                 type=ioc.type,
@@ -451,19 +452,123 @@ def extract_iocs(self, prev_result: dict) -> dict:
             )
             db.add(indicator)
 
-        # Add the kit source URL as an automatic IOC
+        # ------------------------------------------------------------------
+        # Network-layer IOC extraction
+        # Domains come from URLs we already know (source_url, redirect chain).
+        # IPs come from DNS resolution at download time.
+        # These are high-confidence because they come from actual connections,
+        # not regex scraping of page content.
+        # ------------------------------------------------------------------
         from phishkiller.models.indicator import IndicatorType
+        from phishkiller.analysis.patterns import BENIGN_URL_ROOT_DOMAINS, extract_root_domain
 
+        network_iocs_added = 0
+        seen_values: set[str] = {ioc.value for ioc in result.iocs}
+        redirect_chain = prev_result.get("redirect_chain", {})
+
+        # Collect all URLs involved in this kit's network activity
+        network_urls: list[str] = []
         if kit.source_url:
-            source_indicator = Indicator(
-                type=IndicatorType.SOURCE_URL,
-                value=kit.source_url,
-                context="kit_source",
+            network_urls.append(kit.source_url)
+        for hop in redirect_chain.get("hops", []):
+            if hop.get("url"):
+                network_urls.append(hop["url"])
+            if hop.get("location"):
+                network_urls.append(hop["location"])
+        final_url = redirect_chain.get("final_url")
+        if final_url:
+            network_urls.append(final_url)
+
+        # Extract unique domains from network URLs
+        for url in network_urls:
+            try:
+                hostname = urlparse(url).hostname
+            except Exception:
+                continue
+            if not hostname:
+                continue
+            domain = hostname.lower()
+            root = extract_root_domain(domain)
+            if root in BENIGN_URL_ROOT_DOMAINS:
+                continue
+            if domain in seen_values:
+                continue
+            seen_values.add(domain)
+            # Also dedup against investigation-wide indicators
+            if kit.investigation_id:
+                existing = db.query(Indicator.id).join(Kit).filter(
+                    Indicator.type == IndicatorType.DOMAIN,
+                    Indicator.value == domain,
+                    Kit.investigation_id == kit.investigation_id,
+                ).first()
+                if existing:
+                    continue
+            db.add(Indicator(
+                type=IndicatorType.DOMAIN,
+                value=domain,
+                context="redirect_chain" if redirect_chain else "source_url",
                 source_file=None,
-                confidence=100,
+                confidence=95,
                 kit_id=kit.id,
-            )
-            db.add(source_indicator)
+            ))
+            network_iocs_added += 1
+
+        # Resolve IP from the kit's final destination (or source URL)
+        resolve_target = final_url or kit.source_url
+        if resolve_target and kit.discovery_method != "browser_render":
+            try:
+                import socket
+                target_host = urlparse(resolve_target).hostname
+                if target_host:
+                    ip = socket.gethostbyname(target_host)
+                    if ip and ip not in seen_values and not ip.startswith(("10.", "192.168.", "127.")):
+                        seen_values.add(ip)
+                        # Dedup against investigation
+                        existing_ip = None
+                        if kit.investigation_id:
+                            existing_ip = db.query(Indicator.id).join(Kit).filter(
+                                Indicator.type == IndicatorType.IP_ADDRESS,
+                                Indicator.value == ip,
+                                Kit.investigation_id == kit.investigation_id,
+                            ).first()
+                        if not existing_ip:
+                            db.add(Indicator(
+                                type=IndicatorType.IP_ADDRESS,
+                                value=ip,
+                                context=f"dns_resolution:{target_host}",
+                                source_file=None,
+                                confidence=95,
+                                kit_id=kit.id,
+                            ))
+                            network_iocs_added += 1
+            except Exception as e:
+                logger.debug("DNS resolution failed for %s: %s", resolve_target, e)
+
+        # Add the kit source URL as an automatic IOC — but skip for
+        # browser_render children since their URL is the same as the parent's.
+        added_source_url = False
+        if kit.source_url and kit.discovery_method != "browser_render":
+            # Dedup: check if this exact URL is already an indicator in the
+            # same investigation (redirect child landing on known URL)
+            existing_source = None
+            if kit.investigation_id:
+                existing_source = db.query(Indicator.id).join(Kit).filter(
+                    Indicator.type == IndicatorType.SOURCE_URL,
+                    Indicator.value == kit.source_url,
+                    Kit.investigation_id == kit.investigation_id,
+                ).first()
+
+            if not existing_source:
+                source_indicator = Indicator(
+                    type=IndicatorType.SOURCE_URL,
+                    value=kit.source_url,
+                    context="kit_source",
+                    source_file=None,
+                    confidence=100,
+                    kit_id=kit.id,
+                )
+                db.add(source_indicator)
+                added_source_url = True
 
         from phishkiller.analysis.patterns import PATTERN_VERSION
 
@@ -477,7 +582,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
             ioc_summary[ioc_type] = ioc_summary.get(ioc_type, 0) + 1
 
         total_iocs = len(result.iocs)
-        if kit.source_url:
+        if added_source_url:
             ioc_summary["source_url"] = ioc_summary.get("source_url", 0) + 1
             total_iocs += 1
 

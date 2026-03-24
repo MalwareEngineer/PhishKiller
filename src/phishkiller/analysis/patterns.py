@@ -423,7 +423,7 @@ _JS_OBJECT_PREFIXES = (
     "location.", "parent.", "caller.", "button.", "input.",
     "form.", "link.", "file.", "cookie.", "entry.",
     "source.", "asset.", "media.", "place.", "attr.",
-    "attribute.", "item.", "data.", "browser.",
+    "attribute.", "item.", "data.", "browser.", "object.",
     # HTML elements that get parsed as domain prefixes
     "tbody.", "thead.", "tfoot.", "field.",
 )

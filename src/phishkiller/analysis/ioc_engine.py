@@ -192,6 +192,20 @@ class IOCExtractor:
             )
             return []
 
+        # Extensionless files (e.g. "authorize") are common in phishing kits.
+        # Sniff the first bytes — if it looks like text/HTML, process it.
+        ext = Path(filepath).suffix.lower()
+        if ext and ext not in PROCESSABLE_EXTENSIONS:
+            return []
+        if not ext:
+            try:
+                with open(filepath, "rb") as f:
+                    head = f.read(512)
+                if not head or not self._looks_like_text(head):
+                    return []
+            except Exception:
+                return []
+
         try:
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
@@ -199,6 +213,23 @@ class IOCExtractor:
             return []
 
         return self.scan_content(content, relative_path)
+
+    @staticmethod
+    def _looks_like_text(head: bytes) -> bool:
+        """Sniff first bytes to decide if an extensionless file is text."""
+        # Check for HTML/XML markers
+        head_lower = head.lower()
+        if any(marker in head_lower for marker in (
+            b"<!doctype", b"<html", b"<script", b"<?php", b"<?xml",
+        )):
+            return True
+        # Check if mostly printable ASCII / UTF-8
+        try:
+            text = head.decode("utf-8", errors="strict")
+            printable = sum(1 for c in text if c.isprintable() or c in "\n\r\t")
+            return printable / len(text) > 0.85
+        except (UnicodeDecodeError, ZeroDivisionError):
+            return False
 
     def _extract_emails(
         self, line: str, source_file: str, line_num: int
@@ -461,6 +492,24 @@ class IOCExtractor:
         # (mixed case, no 0/O/I/l). All-lowercase-hex = almost certainly a hash.
         return len(value) == 32 and all(c in "0123456789abcdef" for c in value)
 
+    @staticmethod
+    def _is_url_fragment(match, line: str) -> bool:
+        """Check if a regex match sits inside a URL/query-string context.
+
+        False-positive wallets often appear in URL-encoded params, base64
+        state tokens, or OAuth query strings.  We look at characters
+        immediately before/after the match for URL-encoding signals.
+        """
+        start, end = match.start(), match.end()
+        # Characters before/after the match (grab a small window)
+        before = line[max(0, start - 6):start]
+        after = line[end:end + 6]
+        url_signals = ("%2f", "%2F", "%3a", "%3A", "%3d", "%3D",
+                       "%26", "%3f", "%3F", "=", "&", "scope=",
+                       "state=", "nonce=", "redirect_uri=", "client_id=")
+        combined = before + after
+        return any(sig in combined for sig in url_signals)
+
     def _extract_crypto_wallets(
         self, line: str, source_file: str, line_num: int
     ) -> list[ExtractedIOC]:
@@ -468,6 +517,9 @@ class IOCExtractor:
         for match in BITCOIN_PATTERN.finditer(line):
             wallet = match.group(0)
             if self._is_hex_hash(wallet):
+                continue
+            # Skip matches embedded in URL query strings / base64 state tokens
+            if self._is_url_fragment(match, line):
                 continue
             results.append(ExtractedIOC(
                 type=IndicatorType.CRYPTOCURRENCY_WALLET,
@@ -514,6 +566,11 @@ class IOCExtractor:
             if root in BENIGN_DOMAINS:
                 continue
             if domain in JS_FALSE_DOMAINS:
+                continue
+
+            # Skip truncated benign domains from obfuscated/XOR'd content.
+            # E.g. "ffice.com" is a broken fragment of "office.com".
+            if any(bd.endswith(domain) and bd != domain for bd in BENIGN_DOMAINS):
                 continue
 
             # Skip i18n / validation key patterns (vat-id.input.error.message.format-error.il)

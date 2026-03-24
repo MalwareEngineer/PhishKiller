@@ -2,12 +2,28 @@
 
 import logging
 import uuid
+from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy.orm import Session
 
 from phishkiller.models.kit import Kit, KitStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize a URL for dedup comparison.
+
+    Strips fragments, trailing slashes, and lowercases scheme+host so that
+    ``https://foo.com/path#anchor`` and ``https://foo.com/path`` match.
+    """
+    try:
+        p = urlparse(url)
+        # Drop fragment, normalise scheme + host to lowercase
+        path = p.path.rstrip("/") or "/"
+        return urlunparse((p.scheme.lower(), p.netloc.lower(), path, p.params, p.query, ""))
+    except Exception:
+        return url
 
 
 class ChainCrawler:
@@ -29,18 +45,23 @@ class ChainCrawler:
         """
         from phishkiller.tasks.analysis import build_analysis_chain
 
+        # Build a set of normalized URLs already in this investigation
+        existing_urls = {
+            _normalize_url(row[0])
+            for row in self.db.query(Kit.source_url).filter(
+                Kit.investigation_id == investigation_id,
+            ).all()
+        }
+
         child_ids = []
 
         for link in scored_links:
-            # Dedup: skip if we already have this URL in the investigation
-            existing = self.db.query(Kit.id).filter(
-                Kit.source_url == link.url,
-                Kit.investigation_id == investigation_id,
-                Kit.status != KitStatus.FAILED,
-            ).first()
-            if existing:
+            # Dedup: skip if a normalized match already exists in investigation
+            norm = _normalize_url(link.url)
+            if norm in existing_urls:
                 logger.debug("Skipping duplicate URL in investigation: %s", link.url)
                 continue
+            existing_urls.add(norm)
 
             kit = Kit(
                 source_url=link.url,

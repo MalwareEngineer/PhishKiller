@@ -66,75 +66,66 @@ export function IndicatorsPage() {
         </Select>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-[1fr_250px]">
-        <Card>
-          <CardContent className="p-0">
-            {isLoading ? (
-              <div className="p-4"><TableLoading /></div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Value</TableHead>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Source File</TableHead>
-                    <TableHead>Kit</TableHead>
-                    <TableHead>Created</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(data?.items ?? []).map((ioc) => (
-                    <TableRow key={ioc.id}>
-                      <TableCell><IocTypeBadge type={ioc.type} /></TableCell>
-                      <TableCell className="font-mono text-xs break-all max-w-xs">{ioc.value}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Progress value={ioc.confidence} className="h-1.5 w-12" />
-                          <span className="text-xs">{ioc.confidence}%</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground truncate max-w-32">
-                        {ioc.source_file ?? "—"}
-                      </TableCell>
-                      <TableCell>
-                        <Link to={`/kits/${ioc.kit_id}`} className="text-xs font-mono hover:underline">
-                          {ioc.kit_id.slice(0, 8)}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(ioc.created_at).toLocaleString()}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {data?.items.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                        No indicators found
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
+      {/* Stats row */}
+      {stats && stats.length > 0 && (
+        <div className="flex flex-wrap gap-3">
+          {stats.map((s) => (
+            <div key={s.type} className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
+              <span className="text-muted-foreground">{s.type.replace(/_/g, " ")}</span>
+              <span className="font-semibold">{s.count.toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
-        {/* Stats sidebar */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">IOC Counts</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {(stats ?? []).map((s) => (
-              <div key={s.type} className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">{s.type.replace(/_/g, " ")}</span>
-                <span className="font-medium">{s.count.toLocaleString()}</span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="p-4"><TableLoading /></div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Type</TableHead>
+                  <TableHead className="w-full">Value</TableHead>
+                  <TableHead>Conf.</TableHead>
+                  <TableHead>Kit</TableHead>
+                  <TableHead>Created</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(data?.items ?? []).map((ioc) => (
+                  <TableRow key={ioc.id}>
+                    <TableCell className="whitespace-nowrap"><IocTypeBadge type={ioc.type} /></TableCell>
+                    <TableCell className="font-mono text-xs" style={{ maxWidth: 0 }}>
+                      <div className="truncate" title={ioc.value}>{ioc.value}</div>
+                      {ioc.context && ioc.context !== "kit_source" && (
+                        <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{ioc.context}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-right">{ioc.confidence}%</TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <Link to={`/kits/${ioc.kit_id}`} className="text-xs font-mono hover:underline">
+                        {ioc.kit_id.slice(0, 8)}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(ioc.created_at).toLocaleDateString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {data?.items.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                      No indicators found
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       {data && <Pagination offset={offset} limit={PAGE_SIZE} total={data.total} onOffsetChange={setOffset} />}
     </div>
