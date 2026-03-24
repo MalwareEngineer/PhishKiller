@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 # Increment when patterns, allowlists, or extraction logic change.
 # Used to identify kits that need re-analysis after updates.
-PATTERN_VERSION = 2
+PATTERN_VERSION = 3
 
 # ---------- Email addresses ----------
 EMAIL_PATTERN = re.compile(
@@ -83,6 +83,12 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "azureedge.net", "office.com", "office365.com", "live.com",
     "outlook.com", "bing.com", "msn.com", "hotmail.com",
     "windowsupdate.com", "visualstudio.com",
+    "msftauth.net", "msauth.net", "msftauthimages.net",
+    "s-microsoft.com", "microsoft.cloud", "xbox.com",
+    "microsoftonline-p.com", "microsoftazuread-sso.com",
+    "logincdn.msftcloudes.com", "azure-api.net",
+    "onmicrosoft.com", "sharepoint.com", "onenote.com",
+    "skype.com", "teams.microsoft.com",
     # Amazon / AWS
     "amazon.com", "amazonaws.com", "amazontrust.com", "cloudfront.net",
     "awsstatic.com",
@@ -280,12 +286,16 @@ BENIGN_URL_EXTENSIONS = frozenset({
     ".pdf",
 })
 
-# C2/exfil keywords that boost confidence
+# C2/exfil keywords that boost confidence — must be specific to phishing
+# infrastructure, NOT generic web terms like "login" or "submit" that match
+# every legitimate login page a kit impersonates.
 C2_KEYWORDS = {
-    "send", "post", "exfil", "result", "log", "gate",
-    "receive", "submit", "upload", "steal", "grab",
-    "collect", "report", "panel", "admin", "login",
+    "exfil", "steal", "grab", "gate",
     "next.php", "post.php", "done.php", "finish.php",
+    "send.php", "save.php", "log.php", "gate.php",
+    "panel.php", "result.php", "collect.php",
+    "bot_token", "chat_id", "sendMessage",
+    "telegram.org/bot",
 }
 
 # ---------- PHP mail() function patterns ----------

@@ -197,10 +197,12 @@ def decode_qr_codes(self, prev_result: dict) -> dict:
     time_limit=330,
 )
 def crawl_chain(self, prev_result: dict) -> dict:
-    """Score discovered links and submit high-scoring ones as child kits.
+    """Create child kits from actual HTTP redirects in the crawl chain.
 
     Only fires for kits that belong to an investigation (chain mode).
-    Collects links from: EML parsing, QR decoding, IOC extraction, redirect chain.
+    Child kits are created ONLY from redirect URLs (HTTP 30x hops) — URLs
+    extracted from page source (C2, EML links, QR codes) remain as indicators
+    on the parent kit.
     """
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
@@ -234,36 +236,37 @@ def crawl_chain(self, prev_result: dict) -> dict:
         if not settings.chain_enabled:
             return {**prev_result, "chain_skipped": "disabled"}
 
-        # Collect all link sources
-        all_links: list[tuple[str, str]] = []  # (url, source)
+        # Child kits are created ONLY from navigation events:
+        #  - HTTP redirects (30x hops in the download chain)
+        #  - EML links (URLs a victim would click in the email)
+        #  - QR code URLs (encoded destination the victim scans)
+        # URLs extracted from page source (C2, JS refs, etc.) stay as
+        # indicators on the parent kit — no child kit explosion.
+        from phishkiller.analysis.link_scorer import ScoredLink
 
-        for url in prev_result.get("eml_links", []):
-            all_links.append((url, "eml_link"))
-        for url in prev_result.get("qr_urls", []):
-            all_links.append((url, "qr_code"))
+        scored: list[ScoredLink] = []
+        seen = set()
+
+        def _add(url: str, source: str, score: float, reason: str) -> None:
+            if url in seen or url == kit.source_url:
+                return
+            seen.add(url)
+            scored.append(ScoredLink(
+                url=url, score=score, source=source, reasons=[reason],
+            ))
+
         for url in prev_result.get("redirect_urls", []):
-            all_links.append((url, "redirect"))
-        for url in prev_result.get("c2_urls", []):
-            all_links.append((url, "c2_url"))
+            _add(url, "redirect", 0.9, "http_redirect")
+        for url in prev_result.get("eml_links", []):
+            _add(url, "eml_link", 0.8, "email_link")
+        for url in prev_result.get("qr_urls", []):
+            _add(url, "qr_code", 0.85, "qr_code_url")
 
-        if not all_links:
+        if not scored:
             return {**prev_result, "children_spawned": 0}
 
-        from phishkiller.analysis.link_scorer import LinkScorer
-
-        scorer = LinkScorer()
-        scored = scorer.score_links(
-            [url for url, _ in all_links],
-            context={
-                "sources": {url: src for url, src in all_links},
-                "parent_url": kit.source_url,
-            },
-        )
-
-        # Filter by threshold
-        threshold = settings.chain_link_score_threshold
         max_children = settings.chain_max_children_per_kit
-        to_follow = [s for s in scored if s.score >= threshold][:max_children]
+        to_follow = scored[:max_children]
 
         # Submit child kits
         from phishkiller.analysis.chain_crawler import ChainCrawler
@@ -288,11 +291,8 @@ def crawl_chain(self, prev_result: dict) -> dict:
             kit_id=kit.id,
             analysis_type=AnalysisType.LINK_SCORE,
             result_data={
-                "total_links_collected": len(all_links),
-                "links_scored": len(scored),
-                "links_above_threshold": len(to_follow),
+                "navigation_urls_found": len(scored),
                 "children_spawned": len(child_ids),
-                "threshold": threshold,
                 "scored_links": [
                     {"url": s.url, "score": s.score, "reasons": s.reasons, "source": s.source}
                     for s in scored[:50]
