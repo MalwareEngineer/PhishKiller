@@ -79,6 +79,21 @@ class ExtractionResult:
 class IOCExtractor:
     """Scans phishing kit files for indicators of compromise."""
 
+    def __init__(self, source_url: str | None = None):
+        """Initialize with optional source URL for same-domain filtering.
+
+        URLs on the same root domain as source_url are skipped — they're
+        internal kit links (cloned page paths), not separate C2 infrastructure.
+        """
+        self._source_root_domain: str | None = None
+        if source_url:
+            try:
+                host = urlparse(source_url).hostname
+                if host:
+                    self._source_root_domain = extract_root_domain(host)
+            except Exception:
+                pass
+
     def scan_directory(self, directory: str) -> ExtractionResult:
         result = ExtractionResult()
         for root, _, files in os.walk(directory):
@@ -279,7 +294,7 @@ class IOCExtractor:
     ) -> list[ExtractedIOC]:
         results = []
 
-        # Telegram API URLs (high confidence)
+        # Telegram API URLs (high confidence — definite exfil)
         telegram_urls = set()
         for match in TELEGRAM_API_PATTERN.finditer(line):
             url = URL_TRAILING_JUNK.sub("", match.group(0))
@@ -293,7 +308,9 @@ class IOCExtractor:
                 confidence=95,
             ))
 
-        # General C2/exfil URLs
+        # General URL extraction — only classify as C2_URL if there are
+        # strong exfiltration signals. Skip URLs that are just cloned page
+        # content (Microsoft login paths, CDN assets, etc.)
         for match in C2_URL_PATTERN.finditer(line):
             url = match.group(0)
 
@@ -301,11 +318,9 @@ class IOCExtractor:
             url = URL_TRAILING_JUNK.sub("", url)
 
             # Truncate at JS string concatenation boundaries
-            # (e.g. "http://evil.com/'+window.location.href" → "http://evil.com/")
             js_break = JS_CONCAT_BOUNDARY.search(url)
             if js_break:
                 url = url[:js_break.start()]
-                # After truncation, must still be a valid URL with a real hostname
                 try:
                     _trunc_host = urlparse(url).hostname
                     if not _trunc_host or "." not in _trunc_host or len(url) < 12:
@@ -321,7 +336,7 @@ class IOCExtractor:
             if "api.telegram.org" in url_lower:
                 continue
 
-            # Skip URLs with CSS selector fragments (e.g. tailwindcss.com*/*,:after)
+            # Skip URLs with CSS selector fragments
             if CSS_JUNK_IN_URL.search(url):
                 continue
 
@@ -329,14 +344,13 @@ class IOCExtractor:
             if is_benign_url(url):
                 continue
 
-            # Skip localhost and non-domain hostnames (no TLD)
+            # Skip localhost and non-domain hostnames
             try:
                 _host = urlparse(url).hostname
                 if _host:
                     _host_lower = _host.lower()
                     if _host_lower in ("localhost", "127.0.0.1"):
                         continue
-                    # Skip internal/fake hostnames without a real TLD (http://go/..., http://custom.transaction)
                     if "." not in _host_lower or _host_lower.endswith(
                         (".transaction", ".internal", ".local", ".invalid", ".test")
                     ):
@@ -344,7 +358,7 @@ class IOCExtractor:
             except Exception:
                 pass
 
-            # Skip javascript: pseudo-protocol URLs (https://javascript:...)
+            # Skip javascript: pseudo-protocol
             try:
                 parsed = urlparse(url)
                 if parsed.hostname and parsed.hostname.lower() == "javascript":
@@ -353,30 +367,39 @@ class IOCExtractor:
             except Exception:
                 url_path = url_lower
 
-            # Skip URLs with base64 blobs as the hostname/path
-            # (e.g. https://www.YXNkYXNkQGdtYWlsLmNvbQ==)
+            # Skip URLs with base64 blobs as hostname
             if "==" in url_lower or "==" in (parsed.hostname or ""):
                 continue
 
-            # Skip static asset URLs — check the URL *path*, not the full string
-            # so query strings like .js?ver=3.0 are still caught
+            # Skip static asset URLs
             if any(url_path.endswith(ext) for ext in BENIGN_URL_EXTENSIONS):
                 continue
 
-            # Score confidence based on context
-            confidence = 60
-            line_lower = line.lower()
-            if any(kw in url_lower or kw in line_lower for kw in C2_KEYWORDS):
-                confidence = 85
+            # Skip URLs on the same root domain as the kit's source URL.
+            # These are internal kit links (cloned login page paths, OAuth
+            # endpoints, etc.) — not separate C2 infrastructure. The source
+            # URL already captures the phishing domain.
+            if self._source_root_domain:
+                url_root = extract_root_domain(parsed.hostname or "")
+                if url_root == self._source_root_domain:
+                    continue
 
-            results.append(ExtractedIOC(
-                type=IndicatorType.C2_URL,
-                value=url,
-                source_file=source_file,
-                line_number=line_num,
-                context=line[:200],
-                confidence=confidence,
-            ))
+            # Only extract URLs with strong C2/exfil signals
+            url_lower = url.lower()
+            line_lower = line.lower()
+            has_c2_signal = any(
+                kw in url_lower or kw in line_lower for kw in C2_KEYWORDS
+            )
+
+            if has_c2_signal:
+                results.append(ExtractedIOC(
+                    type=IndicatorType.C2_URL,
+                    value=url,
+                    source_file=source_file,
+                    line_number=line_num,
+                    context=line[:200],
+                    confidence=85,
+                ))
         return results
 
     def _extract_ips(

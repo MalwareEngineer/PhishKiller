@@ -433,7 +433,7 @@ def extract_iocs(self, prev_result: dict) -> dict:
 
         from phishkiller.analysis.ioc_engine import IOCExtractor
 
-        extractor = IOCExtractor()
+        extractor = IOCExtractor(source_url=kit.source_url)
         if extract_dir:
             result = extractor.scan_directory(extract_dir)
         else:
@@ -498,12 +498,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
         db.add(analysis)
         db.commit()
 
-        # Collect C2 URLs for crawl_chain to follow as child kits
-        c2_urls = [
-            ioc.value for ioc in result.iocs
-            if ioc.type == IndicatorType.C2_URL
-        ]
-
         logger.info(
             "IOC extraction for kit %s: %d IOCs from %d files",
             kit_id, total_iocs, result.files_processed,
@@ -512,7 +506,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
             **prev_result,
             "iocs_extracted": total_iocs,
             "ioc_summary": ioc_summary,
-            "c2_urls": c2_urls,
         }
 
     except SoftTimeLimitExceeded:
