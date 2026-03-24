@@ -321,49 +321,72 @@ class KitService:
             ".svg", ".yml", ".yaml", ".ini", ".conf", ".cfg", ".htaccess",
         }
 
+        # MIME types that indicate readable text content
+        text_mimes = {
+            "text/html", "text/plain", "text/css", "text/xml",
+            "application/json", "application/xml", "application/javascript",
+            "application/x-php", "message/rfc822",
+        }
+
+        def _is_text_file(fp: Path, kit_mime: str | None = None) -> bool:
+            """Check if a file is likely text content."""
+            if fp.suffix.lower() in text_exts:
+                return True
+            # No extension — check kit MIME type or sniff content
+            if not fp.suffix:
+                if kit_mime and kit_mime in text_mimes:
+                    return True
+                # Sniff first 512 bytes for text content
+                try:
+                    head = fp.read_bytes()[:512]
+                    # If it decodes as UTF-8 and looks like HTML/JS/text, it's text
+                    head.decode("utf-8")
+                    return True
+                except (OSError, UnicodeDecodeError):
+                    return False
+            return False
+
+        def _read_file(fp: Path, relative_to: Path | None = None) -> dict | None:
+            try:
+                size = fp.stat().st_size
+                truncated = size > max_file_size
+                content = fp.read_text(errors="replace")[:max_file_size]
+                mime, _ = mimetypes.guess_type(fp.name)
+                # Fall back to the kit's stored MIME type for extension-less files
+                if not mime and not fp.suffix and kit.mime_type:
+                    mime = kit.mime_type
+                filename = str(fp.relative_to(relative_to)) if relative_to else fp.name
+                return {
+                    "filename": filename,
+                    "content": content,
+                    "size": size,
+                    "mime_type": mime,
+                    "truncated": truncated,
+                }
+            except (OSError, UnicodeDecodeError):
+                return None
+
         # Check extracted directory first
         extract_dir = Path(settings.kit_extract_dir) / str(kit_id)
         if extract_dir.is_dir():
             for fp in sorted(extract_dir.rglob("*")):
                 if not fp.is_file():
                     continue
-                if fp.suffix.lower() not in text_exts:
+                if not _is_text_file(fp):
                     continue
                 if len(files) >= 50:
                     break
-                try:
-                    size = fp.stat().st_size
-                    truncated = size > max_file_size
-                    content = fp.read_text(errors="replace")[:max_file_size]
-                    mime, _ = mimetypes.guess_type(fp.name)
-                    files.append({
-                        "filename": str(fp.relative_to(extract_dir)),
-                        "content": content,
-                        "size": size,
-                        "mime_type": mime,
-                        "truncated": truncated,
-                    })
-                except (OSError, UnicodeDecodeError):
-                    continue
+                entry = _read_file(fp, relative_to=extract_dir)
+                if entry:
+                    files.append(entry)
 
         # Fallback: raw downloaded file
         if not files and kit.local_path:
             raw = Path(kit.local_path)
-            if raw.is_file() and raw.suffix.lower() in text_exts:
-                try:
-                    size = raw.stat().st_size
-                    truncated = size > max_file_size
-                    content = raw.read_text(errors="replace")[:max_file_size]
-                    mime, _ = mimetypes.guess_type(raw.name)
-                    files.append({
-                        "filename": raw.name,
-                        "content": content,
-                        "size": size,
-                        "mime_type": mime,
-                        "truncated": truncated,
-                    })
-                except (OSError, UnicodeDecodeError):
-                    pass
+            if raw.is_file() and _is_text_file(raw, kit.mime_type):
+                entry = _read_file(raw)
+                if entry:
+                    files.append(entry)
 
         return files
 

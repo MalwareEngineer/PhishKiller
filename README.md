@@ -10,17 +10,18 @@ submission (GUI/CLI) or API integration (email gateway, SOAR playbook).
 ## Features
 
 - **14-step analysis pipeline** — download, extract, decrypt, scan, correlate, and discover linked kits automatically
-- **React dashboard** — SOC analyst GUI for kit triage, investigation trees, indicator search, campaign/actor management
-- **YARA scanning** — 890+ t4d PhishingKit rules plus custom rules for kit families, evasion techniques, and credential exfiltration patterns
-- **IOC extraction** — C2 URLs, emails, IPs, domains, crypto wallets, Telegram bot tokens/chat IDs, SMTP credentials, phone numbers
-- **AES-GCM decryption** — Decrypt encrypted phishing pages (device code kits, self-decrypting HTML)
-- **QR code detection** — Extract and decode QR codes from phishing images (quishing)
-- **TLSH similarity clustering** — Fuzzy-hash kits to find related variants and group kit families
-- **Kit chain discovery** — Follow C2 URLs, redirects, and form actions to discover child/grandchild kits up to configurable depth
-- **Actor correlation** — Auto-create threat actors from high-confidence IOCs (email, Telegram, crypto wallets)
-- **Campaign grouping** — Automatically group kits sharing actors and TLSH similarity into campaigns
-- **Stealth browser fallback** — Camoufox (anti-detect Firefox) for Cloudflare-protected pages with Turnstile, FingerprintJS, and anti-VM detection
-- **CLI + REST API** — Full-featured command line and HTTP API for submissions, search, and management
+- **React dashboard** — kit triage, investigation trees, indicator search, content viewer, campaign/actor management
+- **YARA scanning** — 890+ t4d PhishingKit rules plus custom rules for kit families, evasion techniques, and credential exfiltration
+- **Network-layer IOC extraction** — domains from redirect chain URLs, IPs from DNS resolution, source URLs deduplicated per investigation
+- **Content-based IOC extraction** — C2 URLs, emails, crypto wallets, Telegram bot tokens/chat IDs, SMTP credentials, phone numbers
+- **AES-GCM decryption** — decrypt encrypted phishing pages (device code kits, self-decrypting HTML)
+- **QR code detection** — extract and decode QR codes from phishing images (quishing)
+- **TLSH similarity clustering** — fuzzy-hash kits to find related variants and group kit families
+- **Redirect chain crawling** — follow HTTP redirects and email/QR links to discover child kits; C2 URLs stay as indicators
+- **Actor correlation** — auto-create threat actors from high-confidence IOCs (email, Telegram, crypto wallets)
+- **Campaign grouping** — automatically group kits sharing actors and TLSH similarity into campaigns
+- **Stealth browser fallback** — Camoufox (anti-detect Firefox) for Cloudflare-protected pages
+- **CLI + REST API** — command line and HTTP API for submissions, search, and management
 
 ## Architecture
 
@@ -63,13 +64,10 @@ into `rules/t4d/`:
 ./scripts/update_yara_rules.sh
 ```
 
-Custom rules in `rules/` detect kit families, evasion techniques, credential
-exfiltration, and brand-targeted templates. Rules are mounted read-only into
-Docker containers. YARA scanning is optional — the pipeline runs without rules.
+Custom rules in `rules/` are mounted read-only into Docker containers.
+YARA scanning is optional — the pipeline runs without rules.
 
 ## CLI
-
-The `phishkiller` CLI wraps the REST API.
 
 ```bash
 # Submit a URL or local file
@@ -87,7 +85,7 @@ phishkiller status <kit_id>
 # List / search
 phishkiller kits list --status analyzed
 phishkiller kits similar <kit_id>
-phishkiller iocs list --type c2_url
+phishkiller iocs list --type domain
 phishkiller iocs search "example.com"
 
 # Investigations
@@ -129,6 +127,7 @@ curl -X POST http://localhost:8000/api/v1/kits/upload/bulk \
 | `POST /api/v1/investigations` | Start investigation |
 | `GET /api/v1/kits` | List kits |
 | `GET /api/v1/kits/{id}` | Kit detail with children, campaigns, IOCs |
+| `GET /api/v1/kits/{id}/content` | Kit file content (text/HTML viewer) |
 | `GET /api/v1/kits/{id}/similar` | Find similar kits by TLSH |
 | `GET /api/v1/kits/{id}/delete-preview` | Preview cascade deletion impact |
 | `DELETE /api/v1/kits/{id}` | Delete kit (cascades to children, indicators, results) |
@@ -150,17 +149,18 @@ yara_scan → extract_iocs → decode_qr → similarity → correlate_actors →
 auto_assign_campaign → crawl_chain → finalize
 ```
 
+- **download** — fetch URL with redirect tracking, or store uploaded file
 - **extract** — ZIP, RAR, TAR, GZ archives with path traversal protection
-- **parse_eml** — Extract URLs, attachments, and headers from email files
+- **parse_eml** — extract URLs, attachments, and headers from email files
 - **deobfuscate** — PHP `eval(base64_decode(...))` unwrapping
 - **decrypt_html** — AES-GCM encrypted phishing pages (device code kits)
 - **yara_scan** — t4d PhishingKit rules on raw downloads and extracted files
-- **extract_iocs** — C2 URLs, emails, IPs, domains, crypto wallets, Telegram tokens, SMTP creds, phone numbers
+- **extract_iocs** — network-layer domains/IPs from redirect chain + DNS, content-based C2 URLs/emails/wallets
 - **decode_qr** — QR code extraction from images (quishing attacks)
 - **similarity** — TLSH fuzzy hashing for kit family clustering
-- **correlate_actors** — Auto-create threat actors from high-confidence IOCs
-- **auto_assign_campaign** — Group kits by shared actor + TLSH similarity
-- **crawl_chain** — Follow scored links as child kits (redirects, form actions, QR targets)
+- **correlate_actors** — auto-create threat actors from high-confidence IOCs
+- **auto_assign_campaign** — group kits by shared actor + TLSH similarity
+- **crawl_chain** — follow redirects, email links, and QR targets as child kits (browser_render children skip chain crawl)
 
 ## License
 

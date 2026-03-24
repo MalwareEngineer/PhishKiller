@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent } from "@/hooks/use-kits";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
@@ -54,6 +54,76 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const PREVIEW_LINES = 200;
+
+function prettifyContent(raw: string): string {
+  // Split minified HTML at tag boundaries for readability
+  const hasLongLine = raw.length > 2000 && raw.indexOf("\n") === -1 || raw.split("\n").some(l => l.length > 500);
+  if (!hasLongLine) return raw;
+  return raw.replace(/></g, ">\n<");
+}
+
+interface ContentFile {
+  filename: string;
+  content: string;
+  size: number;
+  mime_type?: string;
+  truncated?: boolean;
+}
+
+function ContentViewer({ file }: { file: ContentFile | undefined }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const { lines, totalLines } = useMemo(() => {
+    if (!file) return { lines: [], totalLines: 0 };
+    const pretty = prettifyContent(file.content);
+    const all = pretty.split("\n");
+    return { lines: all, totalLines: all.length };
+  }, [file]);
+
+  if (!file) return null;
+
+  const needsTruncation = totalLines > PREVIEW_LINES;
+  const display = needsTruncation && !expanded ? lines.slice(0, PREVIEW_LINES) : lines;
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="font-mono font-medium text-foreground">{file.filename}</span>
+          <span>{formatBytes(file.size)}</span>
+          {file.mime_type && <span className="opacity-60">{file.mime_type}</span>}
+          <span className="opacity-60">{totalLines.toLocaleString()} lines</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {file.truncated && (
+            <Badge variant="outline" className="text-xs text-yellow-400 border-yellow-400/30">
+              truncated at 1MB
+            </Badge>
+          )}
+        </div>
+      </div>
+      <pre className="text-xs font-mono leading-5 whitespace-pre p-4 overflow-auto max-h-[700px] m-0">
+        {display.join("\n")}
+      </pre>
+      {needsTruncation && (
+        <div className="border-t px-4 py-2 bg-muted/20">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded
+              ? "Show less"
+              : `Show all ${totalLines.toLocaleString()} lines (${formatBytes(file.size)})`}
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
 }
 
 // ── Main Page ──
@@ -339,27 +409,7 @@ export function KitDetailPage() {
                   ))}
                 </div>
               )}
-              {(() => {
-                const file = contentData.files[selectedFile];
-                if (!file) return null;
-                return (
-                  <div>
-                    <div className="flex items-center gap-3 mb-2 text-xs text-muted-foreground">
-                      <span className="font-mono">{file.filename}</span>
-                      <span>{formatBytes(file.size)}</span>
-                      {file.mime_type && <span>{file.mime_type}</span>}
-                      {file.truncated && (
-                        <Badge variant="outline" className="text-xs text-yellow-400 border-yellow-400/30">
-                          truncated at 1MB
-                        </Badge>
-                      )}
-                    </div>
-                    <pre className="text-xs font-mono bg-muted/50 p-4 rounded-md overflow-auto max-h-[600px] whitespace-pre-wrap break-all">
-                      {file.content}
-                    </pre>
-                  </div>
-                );
-              })()}
+              <ContentViewer file={contentData.files[selectedFile]} />
             </div>
           )}
         </TabsContent>

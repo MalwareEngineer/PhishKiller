@@ -158,10 +158,14 @@ def download_kit(self, kit_id: str) -> dict:
         }
         if redirect_chain_data:
             result["redirect_chain"] = redirect_chain_data
-            result["redirect_urls"] = [
-                h["location"] for h in redirect_chain_data["hops"]
-                if h.get("location")
-            ]
+            # Only the final destination becomes a child kit — intermediate
+            # hops are recorded in the redirect_chain analysis result but
+            # don't spawn their own kits.
+            final_url = redirect_chain_data.get("final_url", "")
+            if final_url and final_url != kit.source_url:
+                result["redirect_urls"] = [final_url]
+            else:
+                result["redirect_urls"] = []
 
         # Tier A: JS loader detection → dispatch browser render in parallel
         if settings.browser_download_enabled:
