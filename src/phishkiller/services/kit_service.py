@@ -1,15 +1,17 @@
 """Kit business logic."""
 
 import logging
+import mimetypes
 import shutil
 import uuid
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from phishkiller.models.analysis_result import AnalysisResult
+from phishkiller.config import get_settings
+from phishkiller.models.analysis_result import AnalysisResult, AnalysisType
 from phishkiller.models.associations import campaign_kits
 from phishkiller.models.indicator import Indicator
 from phishkiller.models.investigation import Investigation
@@ -299,6 +301,207 @@ class KitService:
             "analysis_results": analysis_count,
             "campaign_links": campaign_link_count,
             "investigations": investigation_count,
+        }
+
+    async def get_kit_content(
+        self, kit_id: uuid.UUID, max_file_size: int = 1_048_576
+    ) -> list[dict] | None:
+        """Read text content from the kit's extracted files (or raw download)."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        settings = get_settings()
+        files: list[dict] = []
+
+        # Scannable text extensions
+        text_exts = {
+            ".html", ".htm", ".php", ".js", ".css", ".json", ".xml",
+            ".txt", ".eml", ".py", ".sh", ".bat", ".ps1", ".vbs",
+            ".svg", ".yml", ".yaml", ".ini", ".conf", ".cfg", ".htaccess",
+        }
+
+        # Check extracted directory first
+        extract_dir = Path(settings.kit_extract_dir) / str(kit_id)
+        if extract_dir.is_dir():
+            for fp in sorted(extract_dir.rglob("*")):
+                if not fp.is_file():
+                    continue
+                if fp.suffix.lower() not in text_exts:
+                    continue
+                if len(files) >= 50:
+                    break
+                try:
+                    size = fp.stat().st_size
+                    truncated = size > max_file_size
+                    content = fp.read_text(errors="replace")[:max_file_size]
+                    mime, _ = mimetypes.guess_type(fp.name)
+                    files.append({
+                        "filename": str(fp.relative_to(extract_dir)),
+                        "content": content,
+                        "size": size,
+                        "mime_type": mime,
+                        "truncated": truncated,
+                    })
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+        # Fallback: raw downloaded file
+        if not files and kit.local_path:
+            raw = Path(kit.local_path)
+            if raw.is_file() and raw.suffix.lower() in text_exts:
+                try:
+                    size = raw.stat().st_size
+                    truncated = size > max_file_size
+                    content = raw.read_text(errors="replace")[:max_file_size]
+                    mime, _ = mimetypes.guess_type(raw.name)
+                    files.append({
+                        "filename": raw.name,
+                        "content": content,
+                        "size": size,
+                        "mime_type": mime,
+                        "truncated": truncated,
+                    })
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        return files
+
+    async def search_kits(
+        self,
+        q: str | None = None,
+        yara_rule: str | None = None,
+        tlsh_hash: str | None = None,
+        tlsh_threshold: int = 100,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[dict], int]:
+        """Search kits by text, YARA rule name, or TLSH similarity."""
+
+        # TLSH similarity search (different path — needs in-memory comparison)
+        if tlsh_hash:
+            return await self._search_by_tlsh(tlsh_hash, tlsh_threshold, offset, limit)
+
+        # YARA rule search — JSONB query on analysis_results
+        if yara_rule:
+            return await self._search_by_yara(yara_rule, offset, limit)
+
+        # General text search
+        if q:
+            return await self._search_by_text(q, offset, limit)
+
+        return [], 0
+
+    async def _search_by_text(
+        self, q: str, offset: int, limit: int
+    ) -> tuple[list[dict], int]:
+        pattern = f"%{q}%"
+        where = or_(
+            Kit.source_url.ilike(pattern),
+            Kit.sha256.ilike(pattern),
+            Kit.md5.ilike(pattern),
+            Kit.sha1.ilike(pattern),
+            Kit.tlsh.ilike(pattern),
+            Kit.filename.ilike(pattern),
+        )
+        count_q = select(func.count(Kit.id)).where(where)
+        total = (await self.db.execute(count_q)).scalar_one()
+
+        query = select(Kit).where(where).order_by(Kit.created_at.desc()).offset(offset).limit(limit)
+        result = await self.db.execute(query)
+        kits = result.scalars().all()
+        return [self._kit_to_summary(k) for k in kits], total
+
+    async def _search_by_yara(
+        self, rule_name: str, offset: int, limit: int
+    ) -> tuple[list[dict], int]:
+        """Find kits where a YARA rule matched (JSONB query on analysis_results)."""
+        # analysis_results.result_data->'matches' is an array of objects with 'rule' key
+        from sqlalchemy import text
+
+        # Count
+        count_sql = text("""
+            SELECT COUNT(DISTINCT k.id)
+            FROM kits k
+            JOIN analysis_results ar ON ar.kit_id = k.id
+            WHERE ar.analysis_type = 'yara_scan'
+              AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(ar.result_data->'matches') m
+                WHERE m->>'rule' ILIKE :pattern
+              )
+        """)
+        pattern = f"%{rule_name}%"
+        total = (await self.db.execute(count_sql, {"pattern": pattern})).scalar_one()
+
+        # Fetch
+        fetch_sql = text("""
+            SELECT DISTINCT k.id, k.source_url, k.sha256, k.tlsh, k.status,
+                   k.file_size, k.source_feed, k.created_at
+            FROM kits k
+            JOIN analysis_results ar ON ar.kit_id = k.id
+            WHERE ar.analysis_type = 'yara_scan'
+              AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(ar.result_data->'matches') m
+                WHERE m->>'rule' ILIKE :pattern
+              )
+            ORDER BY k.created_at DESC
+            OFFSET :offset LIMIT :limit
+        """)
+        rows = (await self.db.execute(
+            fetch_sql, {"pattern": pattern, "offset": offset, "limit": limit}
+        )).mappings().all()
+
+        items = [
+            {
+                "id": str(r["id"]),
+                "source_url": r["source_url"],
+                "sha256": r["sha256"],
+                "tlsh": r["tlsh"],
+                "status": r["status"],
+                "file_size": r["file_size"],
+                "source_feed": r["source_feed"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ]
+        return items, total
+
+    async def _search_by_tlsh(
+        self, tlsh_hash: str, threshold: int, offset: int, limit: int
+    ) -> tuple[list[dict], int]:
+        """Find kits similar to the given TLSH hash."""
+        query = select(Kit).where(Kit.tlsh.isnot(None))
+        result = await self.db.execute(query)
+        candidates = result.scalars().all()
+
+        similar: list[dict] = []
+        try:
+            import tlsh
+
+            for kit in candidates:
+                distance = tlsh.diff(tlsh_hash, kit.tlsh)
+                if distance <= threshold:
+                    d = self._kit_to_summary(kit)
+                    d["distance"] = distance
+                    similar.append(d)
+            similar.sort(key=lambda x: x["distance"])
+        except ImportError:
+            pass
+
+        total = len(similar)
+        return similar[offset : offset + limit], total
+
+    @staticmethod
+    def _kit_to_summary(kit: Kit) -> dict:
+        return {
+            "id": str(kit.id),
+            "source_url": kit.source_url,
+            "sha256": kit.sha256,
+            "tlsh": kit.tlsh,
+            "status": kit.status.value if hasattr(kit.status, "value") else str(kit.status),
+            "file_size": kit.file_size,
+            "source_feed": kit.source_feed,
+            "created_at": kit.created_at.isoformat() if kit.created_at else None,
         }
 
     async def delete_kit(self, kit_id: uuid.UUID) -> bool:

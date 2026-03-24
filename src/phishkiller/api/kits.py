@@ -13,6 +13,7 @@ from phishkiller.schemas.kit import (
     KitBulkResult,
     KitBulkUploadResponse,
     KitBulkUploadResult,
+    KitContentResponse,
     KitCreate,
     KitDeletePreview,
     KitDetail,
@@ -210,6 +211,27 @@ async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
     )
 
 
+@router.get("/search")
+async def search_kits(
+    db: DbSession,
+    pagination: Pagination,
+    q: str | None = None,
+    yara_rule: str | None = None,
+    tlsh: str | None = None,
+    tlsh_threshold: int = 100,
+):
+    service = KitService(db)
+    items, total = await service.search_kits(
+        q=q,
+        yara_rule=yara_rule,
+        tlsh_hash=tlsh,
+        tlsh_threshold=tlsh_threshold,
+        offset=pagination.offset,
+        limit=pagination.limit,
+    )
+    return {"items": items, "total": total}
+
+
 @router.get("/{kit_id}", response_model=KitDetail)
 async def get_kit(kit_id: uuid.UUID, db: DbSession) -> KitDetail:
     service = KitService(db)
@@ -257,6 +279,15 @@ async def find_similar_kits(
 ) -> list[SimilarKit]:
     service = KitService(db)
     return await service.find_similar(kit_id, threshold=threshold)
+
+
+@router.get("/{kit_id}/content", response_model=KitContentResponse)
+async def get_kit_content(kit_id: uuid.UUID, db: DbSession) -> KitContentResponse:
+    service = KitService(db)
+    files = await service.get_kit_content(kit_id)
+    if files is None:
+        raise HTTPException(status_code=404, detail="Kit not found")
+    return KitContentResponse(kit_id=kit_id, files=files)
 
 
 @router.post("/{kit_id}/reanalyze", status_code=status.HTTP_202_ACCEPTED)

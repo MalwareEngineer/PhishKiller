@@ -83,6 +83,29 @@ export function useKitDeletePreview(id: string, enabled: boolean) {
   });
 }
 
+export function useKitContent(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-content", id],
+    queryFn: () => kits.content(id),
+    enabled: !!id && enabled,
+  });
+}
+
+export function useSearchKits(params: {
+  q?: string;
+  yara_rule?: string;
+  tlsh?: string;
+  tlsh_threshold?: number;
+  offset?: number;
+  limit?: number;
+}, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-search", params],
+    queryFn: () => kits.search(params),
+    enabled,
+  });
+}
+
 export function useDeleteKit() {
   const qc = useQueryClient();
   return useMutation({
