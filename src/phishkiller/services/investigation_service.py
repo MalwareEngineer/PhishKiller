@@ -35,7 +35,7 @@ class InvestigationService:
         return result.scalar_one_or_none()
 
     async def create_from_url(
-        self, url: str, max_depth: int = 3
+        self, url: str, max_depth: int = 5
     ) -> tuple[Investigation, Kit, str]:
         """Create an investigation starting from a URL."""
         kit = Kit(
@@ -70,7 +70,7 @@ class InvestigationService:
     async def create_from_file(
         self,
         kit: Kit,
-        max_depth: int = 3,
+        max_depth: int = 5,
     ) -> Investigation:
         """Create an investigation from an already-created kit (e.g. .eml or image upload)."""
         # Choose prefix based on file type

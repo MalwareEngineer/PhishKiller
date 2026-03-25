@@ -10,7 +10,7 @@ from phishkiller.schemas.kit import KitSummary
 
 class InvestigationCreate(BaseModel):
     url: HttpUrl | None = None
-    max_depth: int = 3
+    max_depth: int = 5
 
 
 class InvestigationSummary(BaseModel):

@@ -22,7 +22,6 @@ export function InvestigationsPage() {
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
-  const [maxDepth, setMaxDepth] = useState("3");
 
   const { data, isLoading } = useInvestigations(offset, PAGE_SIZE);
   const create = useCreateInvestigation();
@@ -30,7 +29,7 @@ export function InvestigationsPage() {
   const handleCreate = () => {
     if (!url.trim()) return;
     create.mutate(
-      { url: url.trim(), max_depth: parseInt(maxDepth) || 3 },
+      { url: url.trim() },
       {
         onSuccess: () => {
           toast.success("Investigation started");
@@ -57,14 +56,6 @@ export function InvestigationsPage() {
             </DialogHeader>
             <div className="space-y-3">
               <Input placeholder="https://..." value={url} onChange={(e) => setUrl(e.target.value)} />
-              <Input
-                type="number"
-                placeholder="Max depth (default 3)"
-                value={maxDepth}
-                onChange={(e) => setMaxDepth(e.target.value)}
-                min={1}
-                max={5}
-              />
             </div>
             <DialogFooter>
               <Button onClick={handleCreate} disabled={create.isPending}>

@@ -116,3 +116,27 @@ export function useDeleteKit() {
     },
   });
 }
+
+export function useAddKitToCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kitId, campaignId }: { kitId: string; campaignId: string }) =>
+      kits.addToCampaign(kitId, campaignId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["kit", vars.kitId] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useAddKitToActor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kitId, actorId }: { kitId: string; actorId: string }) =>
+      kits.addToActor(kitId, actorId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["kit", vars.kitId] });
+      qc.invalidateQueries({ queryKey: ["actors"] });
+    },
+  });
+}

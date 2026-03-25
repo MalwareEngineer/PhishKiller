@@ -65,6 +65,30 @@ class IndicatorService:
         )
         return list(result.scalars().all()), total
 
+    async def get_indicator_ids_for_kit_tree(
+        self, root_kit_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Return all indicator IDs belonging to a kit and all its descendants."""
+        from phishkiller.models.kit import Kit
+
+        # Collect kit IDs: root + all children (BFS)
+        kit_ids: list[uuid.UUID] = [root_kit_id]
+        queue = [root_kit_id]
+        while queue:
+            parent_id = queue.pop(0)
+            result = await self.db.execute(
+                select(Kit.id).where(Kit.parent_kit_id == parent_id)
+            )
+            children = list(result.scalars().all())
+            kit_ids.extend(children)
+            queue.extend(children)
+
+        # Get all indicator IDs for these kits
+        result = await self.db.execute(
+            select(Indicator.id).where(Indicator.kit_id.in_(kit_ids))
+        )
+        return list(result.scalars().all())
+
     async def get_stats(self) -> list[dict]:
         query = (
             select(Indicator.type, func.count(Indicator.id).label("count"))

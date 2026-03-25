@@ -32,3 +32,15 @@ export function useDeleteCampaign() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
   });
 }
+
+export function useAddKitsToCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ campaignId, kitIds }: { campaignId: string; kitIds: string[] }) =>
+      campaigns.addKits(campaignId, kitIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+      qc.invalidateQueries({ queryKey: ["kit"] });
+    },
+  });
+}

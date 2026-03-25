@@ -87,6 +87,16 @@ export const kits = {
   delete: (id: string) => request<void>(`/kits/${id}`, { method: "DELETE" }),
   deletePreview: (id: string) => request<KitDeletePreview>(`/kits/${id}/delete-preview`),
   content: (id: string) => request<KitContentResponse>(`/kits/${id}/content`),
+  addToCampaign: (kitId: string, campaignId: string) =>
+    request<{ added: number; kit_id: string; used_root: boolean; message: string }>(
+      `/kits/${kitId}/add-to-campaign`,
+      { method: "POST", body: JSON.stringify({ campaign_id: campaignId }) },
+    ),
+  addToActor: (kitId: string, actorId: string) =>
+    request<{ linked: number; kit_id: string; used_root: boolean; message: string }>(
+      `/kits/${kitId}/add-to-actor`,
+      { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
+    ),
   search: (params: { q?: string; yara_rule?: string; tlsh?: string; tlsh_threshold?: number; offset?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (params.q) q.set("q", params.q);
