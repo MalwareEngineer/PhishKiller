@@ -328,18 +328,20 @@ class KitService:
             "application/x-php", "message/rfc822",
         }
 
+        # Extensions that are generic placeholders — treat as unknown and sniff
+        opaque_exts = {".bin", ".dat", ".tmp", ".download"}
+
         def _is_text_file(fp: Path, kit_mime: str | None = None) -> bool:
             """Check if a file is likely text content."""
             if fp.suffix.lower() in text_exts:
                 return True
-            # No extension — check kit MIME type or sniff content
-            if not fp.suffix:
+            # No extension or generic placeholder — check MIME or sniff content
+            if not fp.suffix or fp.suffix.lower() in opaque_exts:
                 if kit_mime and kit_mime in text_mimes:
                     return True
                 # Sniff first 512 bytes for text content
                 try:
                     head = fp.read_bytes()[:512]
-                    # If it decodes as UTF-8 and looks like HTML/JS/text, it's text
                     head.decode("utf-8")
                     return True
                 except (OSError, UnicodeDecodeError):
