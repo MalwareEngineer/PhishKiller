@@ -98,9 +98,15 @@ async def upload_kit(
         kit_id=kit_id,
     )
 
-    # Auto-create investigation for .eml uploads
+    # Auto-create investigation for uploads that may spawn child kits:
+    #  - .eml files (contain clickable links)
+    #  - Image files (may contain QR codes with phishing URLs)
     filename_lower = (file.filename or "").lower()
-    if filename_lower.endswith(".eml"):
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+    needs_investigation = filename_lower.endswith(".eml") or any(
+        filename_lower.endswith(ext) for ext in IMAGE_EXTS
+    )
+    if needs_investigation:
         from phishkiller.services.investigation_service import InvestigationService
 
         inv_service = InvestigationService(db)
@@ -158,9 +164,14 @@ async def bulk_upload_kits(
     inv_service = InvestigationService(db)
     final_results: list[KitBulkUploadResult] = []
 
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
     for entry, result in zip(file_entries, results, strict=False):
         investigation_id = None
-        if entry["filename"].lower().endswith(".eml"):
+        fname = entry["filename"].lower()
+        needs_inv = fname.endswith(".eml") or any(
+            fname.endswith(ext) for ext in IMAGE_EXTS
+        )
+        if needs_inv:
             kit = await service.get_kit(result["kit_id"])
             if kit:
                 inv = await inv_service.create_from_file(kit)

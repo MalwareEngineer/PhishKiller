@@ -214,7 +214,7 @@ export function KitsPage() {
               <div className="space-y-3">
                 <Input
                   type="file"
-                  accept=".zip,.rar,.tar,.gz,.html,.eml"
+                  accept=".zip,.rar,.tar,.gz,.html,.eml,.png,.jpg,.jpeg,.gif,.bmp,.webp"
                   multiple
                   onChange={handleFileSelect}
                 />
@@ -234,7 +234,7 @@ export function KitsPage() {
                 )}
                 <p className="text-xs text-muted-foreground">
                   {selectedFiles.length === 0
-                    ? "Select one or more files (.zip, .rar, .tar, .gz, .html, .eml)"
+                    ? "Select one or more files (.zip, .rar, .tar, .gz, .html, .eml, .png, .jpg)"
                     : `${selectedFiles.length} file${selectedFiles.length !== 1 ? "s" : ""} selected`}
                 </p>
               </div>

@@ -72,10 +72,19 @@ class InvestigationService:
         kit: Kit,
         max_depth: int = 3,
     ) -> Investigation:
-        """Create an investigation from an already-created kit (e.g. .eml upload)."""
+        """Create an investigation from an already-created kit (e.g. .eml or image upload)."""
+        # Choose prefix based on file type
+        fname = (kit.filename or "").lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+        if any(fname.endswith(ext) for ext in image_exts):
+            prefix = "QR"
+        elif fname.endswith(".eml"):
+            prefix = "EML"
+        else:
+            prefix = "FILE"
         investigation = Investigation(
             id=uuid.uuid4(),
-            name=f"EML-{str(kit.id)[:8]}",
+            name=f"{prefix}-{str(kit.id)[:8]}",
             root_kit_id=kit.id,
             status=InvestigationStatus.IN_PROGRESS,
             max_depth=max_depth,

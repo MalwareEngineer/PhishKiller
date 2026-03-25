@@ -49,6 +49,12 @@ def download_kit(self, kit_id: str) -> dict:
                 ".tar": "application/x-tar",
                 ".rar": "application/x-rar-compressed",
                 ".php": "application/x-php",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".bmp": "image/bmp",
+                ".webp": "image/webp",
             }
             kit.mime_type = mime_map.get(suffix, "application/octet-stream")
             db.commit()
