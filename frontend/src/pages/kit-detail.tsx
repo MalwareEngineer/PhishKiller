@@ -277,21 +277,21 @@ export function KitDetailPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Value</TableHead>
-                  <TableHead>Confidence</TableHead>
+                  <TableHead className="whitespace-nowrap">Type</TableHead>
+                  <TableHead className="w-full">Value</TableHead>
+                  <TableHead className="whitespace-nowrap">Confidence</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {kit.indicators.map((ioc) => (
                   <TableRow key={ioc.id}>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <IocTypeBadge type={ioc.type} />
                     </TableCell>
-                    <TableCell className="font-mono text-xs break-all max-w-lg">
-                      {ioc.value}
+                    <TableCell className="font-mono text-xs" style={{ maxWidth: 0 }}>
+                      <div className="truncate" title={ioc.value}>{ioc.value}</div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <Progress value={ioc.confidence} className="h-1.5 w-16" />
                         <span className="text-xs text-muted-foreground">{ioc.confidence}%</span>
