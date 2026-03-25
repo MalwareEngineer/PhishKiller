@@ -313,6 +313,16 @@ async def get_kit_indicators(
     return {"items": indicators, "total": total}
 
 
+@router.get("/{kit_id}/actors")
+async def get_kit_actors(kit_id: uuid.UUID, db: DbSession):
+    """Get actors linked to this kit through its indicators."""
+    from phishkiller.services.indicator_service import IndicatorService
+
+    service = IndicatorService(db)
+    actors = await service.get_linked_actors_for_kit(kit_id)
+    return [{"id": str(a.id), "name": a.name} for a in actors]
+
+
 @router.get("/{kit_id}/similar", response_model=list[SimilarKit])
 async def find_similar_kits(
     kit_id: uuid.UUID,

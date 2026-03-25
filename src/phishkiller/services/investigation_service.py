@@ -96,6 +96,17 @@ class InvestigationService:
         kit.chain_depth = 0
         return investigation
 
+    async def update_investigation(
+        self, investigation_id: uuid.UUID, data: dict
+    ) -> Investigation | None:
+        investigation = await self.get_investigation(investigation_id)
+        if not investigation:
+            return None
+        for key, value in data.items():
+            setattr(investigation, key, value)
+        await self.db.flush()
+        return investigation
+
     async def get_kit_tree(self, investigation_id: uuid.UUID) -> list[Kit]:
         """Get all kits in an investigation, ordered by depth then created_at."""
         query = (

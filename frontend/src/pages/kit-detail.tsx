@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor } from "@/hooks/use-kits";
+import { useKit, useKitSimilar, useKitActors, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor } from "@/hooks/use-kits";
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useActors } from "@/hooks/use-actors";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
@@ -146,6 +146,7 @@ export function KitDetailPage() {
   const addToActor = useAddKitToActor();
   const { data: campaignsData } = useCampaigns({ limit: 200 });
   const { data: actorsData } = useActors(0, 200);
+  const { data: kitActors } = useKitActors(id!);
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
 
@@ -276,7 +277,7 @@ export function KitDetailPage() {
             Campaigns ({kit.campaigns.length})
           </TabsTrigger>
           <TabsTrigger value="actors">
-            Actors
+            Actors ({kitActors?.length ?? 0})
           </TabsTrigger>
         </TabsList>
 
@@ -555,6 +556,17 @@ export function KitDetailPage() {
 
         {/* Actors Tab */}
         <TabsContent value="actors" className="mt-4 space-y-4">
+          {(kitActors ?? []).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {kitActors!.map((a) => (
+                <Link key={a.id} to={`/actors/${a.id}`}>
+                  <Badge variant="outline" className="cursor-pointer hover:bg-muted">
+                    {a.name}
+                  </Badge>
+                </Link>
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <select
               className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"

@@ -1,16 +1,19 @@
 import { useNavigate, useParams } from "react-router-dom";
-import { useActor, useDeleteActor } from "@/hooks/use-actors";
+import { useActor, useDeleteActor, useUpdateActor } from "@/hooks/use-actors";
+import { EditableDescription } from "@/components/shared/editable-description";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 export function ActorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: actor, isLoading } = useActor(id!);
   const deleteMutation = useDeleteActor();
+  const updateMutation = useUpdateActor();
 
   if (isLoading || !actor) return <PageLoading />;
 
@@ -36,6 +39,20 @@ export function ActorDetailPage() {
         </Button>
       </div>
 
+      <EditableDescription
+        value={actor.description}
+        onSave={(description) =>
+          updateMutation.mutate(
+            { id: id!, description },
+            {
+              onSuccess: () => toast.success("Description updated"),
+              onError: (err) => toast.error(err.message),
+            }
+          )
+        }
+        isPending={updateMutation.isPending}
+      />
+
       <Card>
         <CardContent className="grid gap-4 p-4 md:grid-cols-2">
           <div>
@@ -46,10 +63,6 @@ export function ActorDetailPage() {
               ))}
               {(!actor.aliases || actor.aliases.length === 0) && <span className="text-sm">—</span>}
             </div>
-          </div>
-          <div>
-            <span className="text-xs text-muted-foreground">Description</span>
-            <p className="text-sm mt-1">{actor.description ?? "—"}</p>
           </div>
           <div>
             <span className="text-xs text-muted-foreground">Email Addresses</span>

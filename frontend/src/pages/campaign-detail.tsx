@@ -1,5 +1,6 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useCampaign, useDeleteCampaign } from "@/hooks/use-campaigns";
+import { useCampaign, useDeleteCampaign, useUpdateCampaign } from "@/hooks/use-campaigns";
+import { EditableDescription } from "@/components/shared/editable-description";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,12 +10,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 export function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: campaign, isLoading } = useCampaign(id!);
   const deleteMutation = useDeleteCampaign();
+  const updateMutation = useUpdateCampaign();
 
   if (isLoading || !campaign) return <PageLoading />;
 
@@ -39,14 +42,23 @@ export function CampaignDetailPage() {
           {deleteMutation.isPending ? "Deleting…" : "Delete"}
         </Button>
       </div>
-      <div>
-        {campaign.target_brand && (
-          <p className="text-sm text-muted-foreground mt-1">Target: {campaign.target_brand}</p>
-        )}
-        {campaign.description && (
-          <p className="text-sm mt-2">{campaign.description}</p>
-        )}
-      </div>
+      {campaign.target_brand && (
+        <p className="text-sm text-muted-foreground">Target: {campaign.target_brand}</p>
+      )}
+
+      <EditableDescription
+        value={campaign.description}
+        onSave={(description) =>
+          updateMutation.mutate(
+            { id: id!, description },
+            {
+              onSuccess: () => toast.success("Description updated"),
+              onError: (err) => toast.error(err.message),
+            }
+          )
+        }
+        isPending={updateMutation.isPending}
+      />
 
       {campaign.actors.length > 0 && (
         <div>

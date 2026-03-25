@@ -64,6 +64,8 @@ export const kits = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     return res.json() as Promise<KitSubmitResponse>;
   },
+  actors: (id: string) =>
+    request<{ id: string; name: string }[]>(`/kits/${id}/actors`),
   similar: (id: string, threshold?: number) => {
     const q = threshold ? `?threshold=${threshold}` : "";
     return request<SimilarKit[]>(`/kits/${id}/similar${q}`);
@@ -122,6 +124,11 @@ export const investigations = {
     request<InvestigationSubmitResponse>("/investigations", {
       method: "POST",
       body: JSON.stringify({ url, max_depth }),
+    }),
+  update: (id: string, data: Partial<InvestigationDetail>) =>
+    request<InvestigationDetail>(`/investigations/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
     }),
 };
 

@@ -89,6 +89,20 @@ class IndicatorService:
         )
         return list(result.scalars().all())
 
+    async def get_linked_actors_for_kit(
+        self, kit_id: uuid.UUID
+    ) -> list:
+        """Return distinct actors linked to a kit's indicators."""
+        from phishkiller.models.actor import Actor
+
+        result = await self.db.execute(
+            select(Actor)
+            .join(Indicator, Indicator.actor_id == Actor.id)
+            .where(Indicator.kit_id == kit_id)
+            .distinct()
+        )
+        return list(result.scalars().all())
+
     async def get_stats(self) -> list[dict]:
         query = (
             select(Indicator.type, func.count(Indicator.id).label("count"))
