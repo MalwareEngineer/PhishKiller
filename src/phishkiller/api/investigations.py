@@ -12,6 +12,7 @@ from phishkiller.schemas.investigation import (
     InvestigationSubmitResponse,
     InvestigationSummary,
     InvestigationTreeNode,
+    InvestigationUpdate,
 )
 from phishkiller.schemas.kit import KitSummary
 from phishkiller.services.investigation_service import InvestigationService
@@ -69,6 +70,22 @@ async def get_investigation(
     if not investigation:
         raise HTTPException(status_code=404, detail="Investigation not found")
 
+    detail = InvestigationDetail.model_validate(investigation)
+    if investigation.root_kit:
+        detail.root_kit = KitSummary.model_validate(investigation.root_kit)
+    return detail
+
+
+@router.put("/{investigation_id}", response_model=InvestigationDetail)
+async def update_investigation(
+    investigation_id: uuid.UUID, payload: InvestigationUpdate, db: DbSession
+) -> InvestigationDetail:
+    service = InvestigationService(db)
+    investigation = await service.update_investigation(
+        investigation_id, payload.model_dump(exclude_unset=True)
+    )
+    if not investigation:
+        raise HTTPException(status_code=404, detail="Investigation not found")
     detail = InvestigationDetail.model_validate(investigation)
     if investigation.root_kit:
         detail.root_kit = KitSummary.model_validate(investigation.root_kit)

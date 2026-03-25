@@ -98,9 +98,15 @@ async def upload_kit(
         kit_id=kit_id,
     )
 
-    # Auto-create investigation for .eml uploads
+    # Auto-create investigation for uploads that may spawn child kits:
+    #  - .eml files (contain clickable links)
+    #  - Image files (may contain QR codes with phishing URLs)
     filename_lower = (file.filename or "").lower()
-    if filename_lower.endswith(".eml"):
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+    needs_investigation = filename_lower.endswith(".eml") or any(
+        filename_lower.endswith(ext) for ext in IMAGE_EXTS
+    )
+    if needs_investigation:
         from phishkiller.services.investigation_service import InvestigationService
 
         inv_service = InvestigationService(db)
@@ -158,9 +164,14 @@ async def bulk_upload_kits(
     inv_service = InvestigationService(db)
     final_results: list[KitBulkUploadResult] = []
 
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
     for entry, result in zip(file_entries, results, strict=False):
         investigation_id = None
-        if entry["filename"].lower().endswith(".eml"):
+        fname = entry["filename"].lower()
+        needs_inv = fname.endswith(".eml") or any(
+            fname.endswith(ext) for ext in IMAGE_EXTS
+        )
+        if needs_inv:
             kit = await service.get_kit(result["kit_id"])
             if kit:
                 inv = await inv_service.create_from_file(kit)
@@ -172,6 +183,21 @@ async def bulk_upload_kits(
             task_id=result["task_id"],
             investigation_id=investigation_id,
         ))
+
+    # Auto-create campaign to group bulk-uploaded kits
+    if len(final_results) > 1:
+        from phishkiller.services.campaign_service import CampaignService
+
+        campaign_svc = CampaignService(db)
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        campaign = await campaign_svc.create_campaign({
+            "name": f"Bulk upload {ts}",
+            "auto_generated": True,
+        })
+        kit_ids = [r.kit_id for r in final_results]
+        await campaign_svc.add_kits(campaign.id, kit_ids)
 
     return KitBulkUploadResponse(
         submitted=len(final_results),
@@ -203,6 +229,22 @@ async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
                 kit = await service.get_kit(r["kit_id"])
                 if kit:
                     await inv_service.create_from_file(kit)
+
+    # Auto-create campaign to group bulk-submitted kits
+    non_dup = [r for r in results if not r.get("duplicate")]
+    if len(non_dup) > 1:
+        from phishkiller.services.campaign_service import CampaignService
+
+        campaign_svc = CampaignService(db)
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        campaign = await campaign_svc.create_campaign({
+            "name": f"Bulk submit {ts}",
+            "auto_generated": True,
+        })
+        kit_ids = [r["kit_id"] for r in non_dup]
+        await campaign_svc.add_kits(campaign.id, kit_ids)
 
     return KitBulkResponse(
         submitted=submitted,
@@ -271,6 +313,16 @@ async def get_kit_indicators(
     return {"items": indicators, "total": total}
 
 
+@router.get("/{kit_id}/actors")
+async def get_kit_actors(kit_id: uuid.UUID, db: DbSession):
+    """Get actors linked to this kit through its indicators."""
+    from phishkiller.services.indicator_service import IndicatorService
+
+    service = IndicatorService(db)
+    actors = await service.get_linked_actors_for_kit(kit_id)
+    return [{"id": str(a.id), "name": a.name} for a in actors]
+
+
 @router.get("/{kit_id}/similar", response_model=list[SimilarKit])
 async def find_similar_kits(
     kit_id: uuid.UUID,
@@ -298,3 +350,130 @@ async def reanalyze_kit(kit_id: uuid.UUID, db: DbSession):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Kit not found") from exc
     return {"kit_id": str(kit_id), "task_id": task_id}
+
+
+@router.post("/{kit_id}/add-to-campaign")
+async def add_kit_to_campaign(
+    kit_id: uuid.UUID,
+    payload: dict,
+    db: DbSession,
+):
+    """Add a kit to a campaign.
+
+    If the kit is a child in an investigation chain, the root kit is
+    added instead so the full chain stays together.  Returns which kit
+    was actually linked.
+    """
+    from pydantic import BaseModel
+
+    campaign_id = payload.get("campaign_id")
+    if not campaign_id:
+        raise HTTPException(status_code=400, detail="campaign_id is required")
+
+    service = KitService(db)
+    kit = await service.get_kit(kit_id)
+    if not kit:
+        raise HTTPException(status_code=404, detail="Kit not found")
+
+    # Resolve root kit of the chain
+    actual_kit = kit
+    used_root = False
+    if kit.parent_kit_id:
+        # Walk up to the root
+        current = kit
+        while current.parent_kit_id:
+            parent = await service.get_kit(current.parent_kit_id)
+            if not parent:
+                break
+            current = parent
+        actual_kit = current
+        used_root = actual_kit.id != kit.id
+
+    from phishkiller.services.campaign_service import CampaignService
+
+    campaign_svc = CampaignService(db)
+    try:
+        count = await campaign_svc.add_kits(
+            uuid.UUID(campaign_id), [actual_kit.id]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Campaign not found") from exc
+
+    return {
+        "added": count,
+        "kit_id": str(actual_kit.id),
+        "used_root": used_root,
+        "message": f"Root kit {str(actual_kit.id)[:8]} added (child kit selected)"
+        if used_root
+        else "Kit added to campaign",
+    }
+
+
+@router.post("/{kit_id}/add-to-actor")
+async def add_kit_to_actor(
+    kit_id: uuid.UUID,
+    payload: dict,
+    db: DbSession,
+):
+    """Link a kit's indicators to an actor.
+
+    If the kit is a child in an investigation chain, the root kit's
+    indicators (and all children's indicators) are linked instead.
+    """
+    actor_id = payload.get("actor_id")
+    if not actor_id:
+        raise HTTPException(status_code=400, detail="actor_id is required")
+
+    service = KitService(db)
+    kit = await service.get_kit(kit_id)
+    if not kit:
+        raise HTTPException(status_code=404, detail="Kit not found")
+
+    # Resolve root kit of the chain
+    actual_kit = kit
+    used_root = False
+    if kit.parent_kit_id:
+        current = kit
+        while current.parent_kit_id:
+            parent = await service.get_kit(current.parent_kit_id)
+            if not parent:
+                break
+            current = parent
+        actual_kit = current
+        used_root = actual_kit.id != kit.id
+
+    # Gather indicators from root kit + all children
+    from phishkiller.services.indicator_service import IndicatorService
+
+    indicator_service = IndicatorService(db)
+    indicator_ids = await indicator_service.get_indicator_ids_for_kit_tree(
+        actual_kit.id
+    )
+
+    if not indicator_ids:
+        return {
+            "linked": 0,
+            "kit_id": str(actual_kit.id),
+            "used_root": used_root,
+            "message": "No indicators to link",
+        }
+
+    from phishkiller.services.actor_service import ActorService
+
+    actor_service = ActorService(db)
+    actor = await actor_service.get_actor(uuid.UUID(actor_id))
+    if not actor:
+        raise HTTPException(status_code=404, detail="Actor not found")
+
+    count = await actor_service.link_indicators(
+        uuid.UUID(actor_id), indicator_ids
+    )
+
+    return {
+        "linked": count,
+        "kit_id": str(actual_kit.id),
+        "used_root": used_root,
+        "message": f"Root kit {str(actual_kit.id)[:8]} indicators linked (child kit selected)"
+        if used_root
+        else f"{count} indicator(s) linked to actor",
+    }

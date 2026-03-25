@@ -53,6 +53,14 @@ async def update_actor(actor_id: uuid.UUID, payload: ActorUpdate, db: DbSession)
     return actor
 
 
+@router.delete("/{actor_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_actor(actor_id: uuid.UUID, db: DbSession):
+    service = ActorService(db)
+    deleted = await service.delete_actor(actor_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Actor not found")
+
+
 @router.post("/{actor_id}/link")
 async def link_indicators(
     actor_id: uuid.UUID, payload: LinkIndicatorsRequest, db: DbSession

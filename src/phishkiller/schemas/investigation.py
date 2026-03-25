@@ -10,12 +10,13 @@ from phishkiller.schemas.kit import KitSummary
 
 class InvestigationCreate(BaseModel):
     url: HttpUrl | None = None
-    max_depth: int = 3
+    max_depth: int = 5
 
 
 class InvestigationSummary(BaseModel):
     id: uuid.UUID
     name: str | None
+    description: str | None = None
     status: str
     max_depth: int
     total_kits: int
@@ -29,6 +30,10 @@ class InvestigationDetail(InvestigationSummary):
     root_kit: KitSummary | None = None
 
     model_config = {"from_attributes": True}
+
+
+class InvestigationUpdate(BaseModel):
+    description: str | None = None
 
 
 class InvestigationTreeNode(BaseModel):

@@ -40,3 +40,15 @@ export function useCreateInvestigation() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["investigations"] }),
   });
 }
+
+export function useUpdateInvestigation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string; description?: string }) =>
+      investigations.update(id, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["investigation", vars.id] });
+      qc.invalidateQueries({ queryKey: ["investigations"] });
+    },
+  });
+}

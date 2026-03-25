@@ -1,6 +1,8 @@
 import { useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useKit, useKitSimilar, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent } from "@/hooks/use-kits";
+import { useKit, useKitSimilar, useKitActors, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor } from "@/hooks/use-kits";
+import { useCampaigns } from "@/hooks/use-campaigns";
+import { useActors } from "@/hooks/use-actors";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { IocTypeBadge } from "@/components/shared/ioc-type-badge";
 import { PageLoading } from "@/components/shared/loading";
@@ -30,7 +32,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink } from "lucide-react";
+import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus } from "lucide-react";
 import { toast } from "sonner";
 import type { AnalysisResultBrief } from "@/types/api";
 
@@ -140,6 +142,13 @@ export function KitDetailPage() {
   const [activeTab, setActiveTab] = useState("indicators");
   const { data: contentData, isLoading: contentLoading } = useKitContent(id!, activeTab === "content");
   const [selectedFile, setSelectedFile] = useState(0);
+  const addToCampaign = useAddKitToCampaign();
+  const addToActor = useAddKitToActor();
+  const { data: campaignsData } = useCampaigns({ limit: 200 });
+  const { data: actorsData } = useActors(0, 200);
+  const { data: kitActors } = useKitActors(id!);
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [selectedActorId, setSelectedActorId] = useState("");
 
   if (isLoading || !kit) return <PageLoading />;
 
@@ -267,6 +276,9 @@ export function KitDetailPage() {
           <TabsTrigger value="campaigns">
             Campaigns ({kit.campaigns.length})
           </TabsTrigger>
+          <TabsTrigger value="actors">
+            Actors ({kitActors?.length ?? 0})
+          </TabsTrigger>
         </TabsList>
 
         {/* Indicators Tab */}
@@ -277,21 +289,21 @@ export function KitDetailPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Value</TableHead>
-                  <TableHead>Confidence</TableHead>
+                  <TableHead className="whitespace-nowrap">Type</TableHead>
+                  <TableHead className="w-full">Value</TableHead>
+                  <TableHead className="whitespace-nowrap">Confidence</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {kit.indicators.map((ioc) => (
                   <TableRow key={ioc.id}>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <IocTypeBadge type={ioc.type} />
                     </TableCell>
-                    <TableCell className="font-mono text-xs break-all max-w-lg">
-                      {ioc.value}
+                    <TableCell className="font-mono text-xs" style={{ maxWidth: 0 }}>
+                      <div className="truncate" title={ioc.value}>{ioc.value}</div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <Progress value={ioc.confidence} className="h-1.5 w-16" />
                         <span className="text-xs text-muted-foreground">{ioc.confidence}%</span>
@@ -485,10 +497,8 @@ export function KitDetailPage() {
         </TabsContent>
 
         {/* Campaigns Tab */}
-        <TabsContent value="campaigns" className="mt-4">
-          {kit.campaigns.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">Not linked to any campaigns</p>
-          ) : (
+        <TabsContent value="campaigns" className="mt-4 space-y-4">
+          {kit.campaigns.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {kit.campaigns.map((c) => (
                 <Link key={c.id} to={`/campaigns/${c.id}`}>
@@ -500,6 +510,102 @@ export function KitDetailPage() {
               ))}
             </div>
           )}
+          <div className="flex items-center gap-2">
+            <select
+              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              value={selectedCampaignId}
+              onChange={(e) => setSelectedCampaignId(e.target.value)}
+            >
+              <option value="">Select a campaign...</option>
+              {(campaignsData?.items ?? [])
+                .filter((c) => !kit.campaigns.some((kc) => kc.id === c.id))
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.target_brand ? ` (${c.target_brand})` : ""}
+                  </option>
+                ))}
+            </select>
+            <Button
+              size="sm"
+              disabled={!selectedCampaignId || addToCampaign.isPending}
+              onClick={() => {
+                addToCampaign.mutate(
+                  { kitId: id!, campaignId: selectedCampaignId },
+                  {
+                    onSuccess: (data) => {
+                      if (data.used_root) {
+                        toast.info(data.message);
+                      } else {
+                        toast.success("Kit added to campaign");
+                      }
+                      setSelectedCampaignId("");
+                    },
+                    onError: (err) => toast.error(err.message),
+                  }
+                );
+              }}
+            >
+              <Plus className="mr-1 h-4 w-4" />
+              {addToCampaign.isPending ? "Adding..." : "Add to Campaign"}
+            </Button>
+          </div>
+          {kit.campaigns.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-4">Not linked to any campaigns yet</p>
+          )}
+        </TabsContent>
+
+        {/* Actors Tab */}
+        <TabsContent value="actors" className="mt-4 space-y-4">
+          {(kitActors ?? []).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {kitActors!.map((a) => (
+                <Link key={a.id} to={`/actors/${a.id}`}>
+                  <Badge variant="outline" className="cursor-pointer hover:bg-muted">
+                    {a.name}
+                  </Badge>
+                </Link>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <select
+              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              value={selectedActorId}
+              onChange={(e) => setSelectedActorId(e.target.value)}
+            >
+              <option value="">Select an actor...</option>
+              {(actorsData?.items ?? []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              disabled={!selectedActorId || addToActor.isPending}
+              onClick={() => {
+                addToActor.mutate(
+                  { kitId: id!, actorId: selectedActorId },
+                  {
+                    onSuccess: (data) => {
+                      if (data.used_root) {
+                        toast.info(data.message);
+                      } else {
+                        toast.success(`${data.linked} indicator(s) linked to actor`);
+                      }
+                      setSelectedActorId("");
+                    },
+                    onError: (err) => toast.error(err.message),
+                  }
+                );
+              }}
+            >
+              <Plus className="mr-1 h-4 w-4" />
+              {addToActor.isPending ? "Linking..." : "Link to Actor"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Links all indicators from this kit (and its children) to the selected actor.
+            {kit.parent_kit_id && " Since this is a child kit, the root kit's indicators will be linked instead."}
+          </p>
         </TabsContent>
       </Tabs>
 

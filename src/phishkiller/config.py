@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     browser_render_on_thin_results: bool = True
 
     # Chain crawling
-    chain_max_depth: int = 3
+    chain_max_depth: int = 5
     chain_max_children_per_kit: int = 10
     chain_link_score_threshold: float = 0.5
     chain_enabled: bool = True

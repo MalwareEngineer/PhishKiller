@@ -467,8 +467,9 @@ def extract_iocs(self, prev_result: dict) -> dict:
         redirect_chain = prev_result.get("redirect_chain", {})
 
         # Collect all URLs involved in this kit's network activity
+        # Skip file:// URLs — they're local uploads, not network-derived IOCs
         network_urls: list[str] = []
-        if kit.source_url:
+        if kit.source_url and not kit.source_url.startswith("file://"):
             network_urls.append(kit.source_url)
         for hop in redirect_chain.get("hops", []):
             if hop.get("url"):
@@ -515,6 +516,8 @@ def extract_iocs(self, prev_result: dict) -> dict:
 
         # Resolve IP from the kit's final destination (or source URL)
         resolve_target = final_url or kit.source_url
+        if resolve_target and resolve_target.startswith("file://"):
+            resolve_target = None
         if resolve_target and kit.discovery_method != "browser_render":
             try:
                 import socket
@@ -547,7 +550,11 @@ def extract_iocs(self, prev_result: dict) -> dict:
         # Add the kit source URL as an automatic IOC — but skip for
         # browser_render children since their URL is the same as the parent's.
         added_source_url = False
-        if kit.source_url and kit.discovery_method != "browser_render":
+        if (
+            kit.source_url
+            and kit.discovery_method != "browser_render"
+            and not kit.source_url.startswith("file://")
+        ):
             # Dedup: check if this exact URL is already an indicator in the
             # same investigation (redirect child landing on known URL)
             existing_source = None

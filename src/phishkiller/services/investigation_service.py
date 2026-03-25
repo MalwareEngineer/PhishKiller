@@ -35,7 +35,7 @@ class InvestigationService:
         return result.scalar_one_or_none()
 
     async def create_from_url(
-        self, url: str, max_depth: int = 3
+        self, url: str, max_depth: int = 5
     ) -> tuple[Investigation, Kit, str]:
         """Create an investigation starting from a URL."""
         kit = Kit(
@@ -70,12 +70,21 @@ class InvestigationService:
     async def create_from_file(
         self,
         kit: Kit,
-        max_depth: int = 3,
+        max_depth: int = 5,
     ) -> Investigation:
-        """Create an investigation from an already-created kit (e.g. .eml upload)."""
+        """Create an investigation from an already-created kit (e.g. .eml or image upload)."""
+        # Choose prefix based on file type
+        fname = (kit.filename or "").lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+        if any(fname.endswith(ext) for ext in image_exts):
+            prefix = "QR"
+        elif fname.endswith(".eml"):
+            prefix = "EML"
+        else:
+            prefix = "FILE"
         investigation = Investigation(
             id=uuid.uuid4(),
-            name=f"EML-{str(kit.id)[:8]}",
+            name=f"{prefix}-{str(kit.id)[:8]}",
             root_kit_id=kit.id,
             status=InvestigationStatus.IN_PROGRESS,
             max_depth=max_depth,
@@ -85,6 +94,17 @@ class InvestigationService:
 
         kit.investigation_id = investigation.id
         kit.chain_depth = 0
+        return investigation
+
+    async def update_investigation(
+        self, investigation_id: uuid.UUID, data: dict
+    ) -> Investigation | None:
+        investigation = await self.get_investigation(investigation_id)
+        if not investigation:
+            return None
+        for key, value in data.items():
+            setattr(investigation, key, value)
+        await self.db.flush()
         return investigation
 
     async def get_kit_tree(self, investigation_id: uuid.UUID) -> list[Kit]:

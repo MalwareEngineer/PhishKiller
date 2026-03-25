@@ -1,16 +1,19 @@
 import { useParams, Link } from "react-router-dom";
-import { useInvestigation, useInvestigationTree } from "@/hooks/use-investigations";
+import { useInvestigation, useInvestigationTree, useUpdateInvestigation } from "@/hooks/use-investigations";
+import { EditableDescription } from "@/components/shared/editable-description";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import type { InvestigationTreeNode } from "@/types/api";
 
 export function InvestigationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { data: inv, isLoading } = useInvestigation(id!);
   const { data: tree } = useInvestigationTree(id!);
+  const updateMutation = useUpdateInvestigation();
 
   if (isLoading || !inv) return <PageLoading />;
 
@@ -29,6 +32,20 @@ export function InvestigationDetailPage() {
           <span>{new Date(inv.created_at).toLocaleString()}</span>
         </div>
       </div>
+
+      <EditableDescription
+        value={inv.description}
+        onSave={(description) =>
+          updateMutation.mutate(
+            { id: id!, description },
+            {
+              onSuccess: () => toast.success("Description updated"),
+              onError: (err) => toast.error(err.message),
+            }
+          )
+        }
+        isPending={updateMutation.isPending}
+      />
 
       {inv.root_kit && (
         <Card>

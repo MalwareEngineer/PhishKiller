@@ -1,18 +1,57 @@
-import { useParams } from "react-router-dom";
-import { useActor } from "@/hooks/use-actors";
+import { useNavigate, useParams } from "react-router-dom";
+import { useActor, useDeleteActor, useUpdateActor } from "@/hooks/use-actors";
+import { EditableDescription } from "@/components/shared/editable-description";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 export function ActorDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: actor, isLoading } = useActor(id!);
+  const deleteMutation = useDeleteActor();
+  const updateMutation = useUpdateActor();
 
   if (isLoading || !actor) return <PageLoading />;
 
+  const handleDelete = () => {
+    if (!window.confirm(`Delete actor "${actor.name}"? Linked indicators will be unlinked but not deleted.`)) return;
+    deleteMutation.mutate(id!, {
+      onSuccess: () => navigate("/actors"),
+    });
+  };
+
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">{actor.name}</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">{actor.name}</h1>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={handleDelete}
+          disabled={deleteMutation.isPending}
+        >
+          <Trash2 className="h-4 w-4 mr-1" />
+          {deleteMutation.isPending ? "Deleting…" : "Delete"}
+        </Button>
+      </div>
+
+      <EditableDescription
+        value={actor.description}
+        onSave={(description) =>
+          updateMutation.mutate(
+            { id: id!, description },
+            {
+              onSuccess: () => toast.success("Description updated"),
+              onError: (err) => toast.error(err.message),
+            }
+          )
+        }
+        isPending={updateMutation.isPending}
+      />
 
       <Card>
         <CardContent className="grid gap-4 p-4 md:grid-cols-2">
@@ -24,10 +63,6 @@ export function ActorDetailPage() {
               ))}
               {(!actor.aliases || actor.aliases.length === 0) && <span className="text-sm">—</span>}
             </div>
-          </div>
-          <div>
-            <span className="text-xs text-muted-foreground">Description</span>
-            <p className="text-sm mt-1">{actor.description ?? "—"}</p>
           </div>
           <div>
             <span className="text-xs text-muted-foreground">Email Addresses</span>

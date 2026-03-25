@@ -64,6 +64,8 @@ export const kits = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     return res.json() as Promise<KitSubmitResponse>;
   },
+  actors: (id: string) =>
+    request<{ id: string; name: string }[]>(`/kits/${id}/actors`),
   similar: (id: string, threshold?: number) => {
     const q = threshold ? `?threshold=${threshold}` : "";
     return request<SimilarKit[]>(`/kits/${id}/similar${q}`);
@@ -87,6 +89,16 @@ export const kits = {
   delete: (id: string) => request<void>(`/kits/${id}`, { method: "DELETE" }),
   deletePreview: (id: string) => request<KitDeletePreview>(`/kits/${id}/delete-preview`),
   content: (id: string) => request<KitContentResponse>(`/kits/${id}/content`),
+  addToCampaign: (kitId: string, campaignId: string) =>
+    request<{ added: number; kit_id: string; used_root: boolean; message: string }>(
+      `/kits/${kitId}/add-to-campaign`,
+      { method: "POST", body: JSON.stringify({ campaign_id: campaignId }) },
+    ),
+  addToActor: (kitId: string, actorId: string) =>
+    request<{ linked: number; kit_id: string; used_root: boolean; message: string }>(
+      `/kits/${kitId}/add-to-actor`,
+      { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
+    ),
   search: (params: { q?: string; yara_rule?: string; tlsh?: string; tlsh_threshold?: number; offset?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (params.q) q.set("q", params.q);
@@ -112,6 +124,11 @@ export const investigations = {
     request<InvestigationSubmitResponse>("/investigations", {
       method: "POST",
       body: JSON.stringify({ url, max_depth }),
+    }),
+  update: (id: string, data: Partial<InvestigationDetail>) =>
+    request<InvestigationDetail>(`/investigations/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
     }),
 };
 
@@ -146,6 +163,8 @@ export const actors = {
     request<ActorDetail>("/actors", { method: "POST", body: JSON.stringify(data) }),
   update: (id: string, data: Partial<ActorDetail>) =>
     request<ActorDetail>(`/actors/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request<void>(`/actors/${id}`, { method: "DELETE" }),
   link: (id: string, indicator_ids: string[]) =>
     request<{ linked: number }>(`/actors/${id}/link`, {
       method: "POST",
@@ -168,6 +187,8 @@ export const campaigns = {
     request<CampaignDetail>("/campaigns", { method: "POST", body: JSON.stringify(data) }),
   update: (id: string, data: Partial<CampaignDetail>) =>
     request<CampaignDetail>(`/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request<void>(`/campaigns/${id}`, { method: "DELETE" }),
   addKits: (id: string, kit_ids: string[]) =>
     request<{ added: number }>(`/campaigns/${id}/kits`, {
       method: "POST",

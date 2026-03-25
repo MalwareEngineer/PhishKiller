@@ -44,6 +44,22 @@ class ActorService:
         await self.db.flush()
         return actor
 
+    async def delete_actor(self, actor_id: uuid.UUID) -> bool:
+        actor = await self.get_actor(actor_id)
+        if not actor:
+            return False
+        # Unlink indicators (SET NULL) so FK doesn't block delete
+        from sqlalchemy import update
+
+        await self.db.execute(
+            update(Indicator)
+            .where(Indicator.actor_id == actor_id)
+            .values(actor_id=None)
+        )
+        await self.db.delete(actor)
+        await self.db.flush()
+        return True
+
     async def link_indicators(
         self, actor_id: uuid.UUID, indicator_ids: list[uuid.UUID]
     ) -> int:

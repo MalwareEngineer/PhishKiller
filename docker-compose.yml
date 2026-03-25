@@ -70,7 +70,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - downloads:/app/downloads:ro
+      - downloads:/app/downloads
       - extracted:/app/extracted:ro
       - ./rules:/app/rules:ro
       - ./private:/app/private:ro

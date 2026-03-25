@@ -116,6 +116,7 @@ export interface KitDeletePreview {
 export interface InvestigationSummary {
   id: string;
   name?: string;
+  description?: string;
   status: string;
   max_depth: number;
   total_kits: number;

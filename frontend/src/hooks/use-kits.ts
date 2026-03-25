@@ -17,6 +17,14 @@ export function useKit(id: string) {
   });
 }
 
+export function useKitActors(id: string) {
+  return useQuery({
+    queryKey: ["kit-actors", id],
+    queryFn: () => kits.actors(id),
+    enabled: !!id,
+  });
+}
+
 export function useKitSimilar(id: string, threshold?: number) {
   return useQuery({
     queryKey: ["kit-similar", id, threshold],
@@ -113,6 +121,31 @@ export function useDeleteKit() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kits"] });
       qc.invalidateQueries({ queryKey: ["investigations"] });
+    },
+  });
+}
+
+export function useAddKitToCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kitId, campaignId }: { kitId: string; campaignId: string }) =>
+      kits.addToCampaign(kitId, campaignId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["kit", vars.kitId] });
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+    },
+  });
+}
+
+export function useAddKitToActor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kitId, actorId }: { kitId: string; actorId: string }) =>
+      kits.addToActor(kitId, actorId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["kit", vars.kitId] });
+      qc.invalidateQueries({ queryKey: ["kit-actors", vars.kitId] });
+      qc.invalidateQueries({ queryKey: ["actors"] });
     },
   });
 }
