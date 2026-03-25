@@ -45,7 +45,8 @@ class CampaignService:
         campaign = Campaign(**data)
         self.db.add(campaign)
         await self.db.flush()
-        return campaign
+        # Re-fetch with relationships loaded so CampaignDetail can serialize
+        return await self.get_campaign(campaign.id)  # type: ignore[return-value]
 
     async def update_campaign(
         self, campaign_id: uuid.UUID, data: dict
@@ -58,6 +59,14 @@ class CampaignService:
                 setattr(campaign, key, value)
         await self.db.flush()
         return campaign
+
+    async def delete_campaign(self, campaign_id: uuid.UUID) -> bool:
+        campaign = await self.get_campaign(campaign_id)
+        if not campaign:
+            return False
+        await self.db.delete(campaign)
+        await self.db.flush()
+        return True
 
     async def add_kits(
         self, campaign_id: uuid.UUID, kit_ids: list[uuid.UUID]

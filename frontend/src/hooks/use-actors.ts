@@ -36,3 +36,11 @@ export function useUpdateActor() {
     },
   });
 }
+
+export function useDeleteActor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => actors.delete(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["actors"] }),
+  });
+}

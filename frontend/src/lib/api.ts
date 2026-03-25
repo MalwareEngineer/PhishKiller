@@ -146,6 +146,8 @@ export const actors = {
     request<ActorDetail>("/actors", { method: "POST", body: JSON.stringify(data) }),
   update: (id: string, data: Partial<ActorDetail>) =>
     request<ActorDetail>(`/actors/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request<void>(`/actors/${id}`, { method: "DELETE" }),
   link: (id: string, indicator_ids: string[]) =>
     request<{ linked: number }>(`/actors/${id}/link`, {
       method: "POST",

@@ -59,6 +59,14 @@ async def update_campaign(
     return campaign
 
 
+@router.delete("/{campaign_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_campaign(campaign_id: uuid.UUID, db: DbSession):
+    service = CampaignService(db)
+    deleted = await service.delete_campaign(campaign_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+
 @router.post("/{campaign_id}/kits")
 async def add_kits_to_campaign(
     campaign_id: uuid.UUID, payload: AddKitsRequest, db: DbSession
