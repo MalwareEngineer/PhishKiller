@@ -1,5 +1,5 @@
-import { useParams, Link } from "react-router-dom";
-import { useCampaign } from "@/hooks/use-campaigns";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useCampaign, useDeleteCampaign } from "@/hooks/use-campaigns";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,17 +7,39 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Trash2 } from "lucide-react";
 
 export function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: campaign, isLoading } = useCampaign(id!);
+  const deleteMutation = useDeleteCampaign();
 
   if (isLoading || !campaign) return <PageLoading />;
 
+  const handleDelete = () => {
+    if (!window.confirm(`Delete campaign "${campaign.name}"? Linked kits will be unlinked but not deleted.`)) return;
+    deleteMutation.mutate(id!, {
+      onSuccess: () => navigate("/campaigns"),
+    });
+  };
+
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">{campaign.name}</h1>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={handleDelete}
+          disabled={deleteMutation.isPending}
+        >
+          <Trash2 className="h-4 w-4 mr-1" />
+          {deleteMutation.isPending ? "Deleting…" : "Delete"}
+        </Button>
+      </div>
+      <div>
         {campaign.target_brand && (
           <p className="text-sm text-muted-foreground mt-1">Target: {campaign.target_brand}</p>
         )}

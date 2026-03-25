@@ -170,6 +170,8 @@ export const campaigns = {
     request<CampaignDetail>("/campaigns", { method: "POST", body: JSON.stringify(data) }),
   update: (id: string, data: Partial<CampaignDetail>) =>
     request<CampaignDetail>(`/campaigns/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request<void>(`/campaigns/${id}`, { method: "DELETE" }),
   addKits: (id: string, kit_ids: string[]) =>
     request<{ added: number }>(`/campaigns/${id}/kits`, {
       method: "POST",

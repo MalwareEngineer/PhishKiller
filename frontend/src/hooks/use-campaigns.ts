@@ -24,3 +24,11 @@ export function useCreateCampaign() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
   });
 }
+
+export function useDeleteCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => campaigns.delete(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+  });
+}
