@@ -92,13 +92,38 @@ class IndicatorService:
     async def get_linked_actors_for_kit(
         self, kit_id: uuid.UUID
     ) -> list:
-        """Return distinct actors linked to a kit's indicators."""
+        """Return distinct actors linked to any kit in the same tree."""
         from phishkiller.models.actor import Actor
+
+        from phishkiller.models.kit import Kit
+
+        # Walk up to root first
+        root_id = kit_id
+        while True:
+            result = await self.db.execute(
+                select(Kit.parent_kit_id).where(Kit.id == root_id)
+            )
+            parent = result.scalar_one_or_none()
+            if not parent:
+                break
+            root_id = parent
+
+        # BFS from root to collect all kit IDs in the tree
+        all_kit_ids: list[uuid.UUID] = [root_id]
+        queue = [root_id]
+        while queue:
+            pid = queue.pop(0)
+            result = await self.db.execute(
+                select(Kit.id).where(Kit.parent_kit_id == pid)
+            )
+            children = list(result.scalars().all())
+            all_kit_ids.extend(children)
+            queue.extend(children)
 
         result = await self.db.execute(
             select(Actor)
             .join(Indicator, Indicator.actor_id == Actor.id)
-            .where(Indicator.kit_id == kit_id)
+            .where(Indicator.kit_id.in_(all_kit_ids))
             .distinct()
         )
         return list(result.scalars().all())
