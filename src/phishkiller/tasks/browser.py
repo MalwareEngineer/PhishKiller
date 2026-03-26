@@ -42,6 +42,22 @@ def browser_download_kit(self, kit_id: str) -> dict:
         if not parent_kit:
             raise ValueError(f"Kit {kit_id} not found")
 
+        # Depth guard — refuse to create another child beyond max_depth
+        if parent_kit.investigation_id:
+            from phishkiller.models.investigation import Investigation
+
+            investigation = db.query(Investigation).filter(
+                Investigation.id == parent_kit.investigation_id
+            ).first()
+            if investigation:
+                max_depth = min(investigation.max_depth, settings.chain_max_depth)
+                if parent_kit.chain_depth >= max_depth:
+                    logger.info(
+                        "Kit %s at depth %d (max %d), skipping browser render",
+                        kit_id, parent_kit.chain_depth, max_depth,
+                    )
+                    return {"kit_id": kit_id, "status": "skipped", "reason": "max_depth"}
+
         logger.info(
             "Browser downloading kit %s from %s", kit_id, parent_kit.source_url,
         )

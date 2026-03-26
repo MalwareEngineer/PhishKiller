@@ -60,10 +60,16 @@ class KitService:
         return result.scalar_one_or_none()
 
     async def _find_existing_kit(self, url: str) -> Kit | None:
-        """Find an existing non-FAILED kit with the same source URL."""
-        query = select(Kit).where(
-            Kit.source_url == url,
-            Kit.status != KitStatus.FAILED,
+        """Find an existing non-FAILED root kit with the same source URL."""
+        query = (
+            select(Kit)
+            .where(
+                Kit.source_url == url,
+                Kit.status != KitStatus.FAILED,
+                Kit.parent_kit_id.is_(None),
+            )
+            .order_by(Kit.created_at.desc())
+            .limit(1)
         )
         result = await self.db.execute(query)
         return result.scalar_one_or_none()

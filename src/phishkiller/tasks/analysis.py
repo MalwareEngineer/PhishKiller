@@ -968,7 +968,20 @@ def finalize_kit(self, prev_result: dict) -> dict:
                 Kit.discovery_method == "browser_render",
             ).first() is not None
 
-            if is_thin and is_html_like and not has_browser_child:
+            # Enforce depth limit — never dispatch browser_render beyond max_depth
+            at_depth_limit = False
+            if kit.investigation_id:
+                from phishkiller.models.investigation import Investigation
+
+                investigation = db.query(Investigation).filter(
+                    Investigation.id == kit.investigation_id
+                ).first()
+                if investigation:
+                    max_depth = min(investigation.max_depth, settings.chain_max_depth)
+                    if kit.chain_depth >= max_depth:
+                        at_depth_limit = True
+
+            if is_thin and is_html_like and not has_browser_child and not at_depth_limit:
                 logger.info(
                     "Kit %s: thin results (iocs=%d, yara=%d), "
                     "dispatching browser render",

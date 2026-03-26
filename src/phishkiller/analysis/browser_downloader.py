@@ -1,8 +1,11 @@
 """Stealth browser downloader for Cloudflare-protected phishing pages.
 
 Uses Camoufox (anti-detect Firefox) to bypass bot protection, Cloudflare
-Turnstile CAPTCHAs, and anti-analysis JavaScript.  Falls back gracefully
-when the ``camoufox`` package is not installed.
+Turnstile CAPTCHAs, custom anti-bot verification gates, and anti-analysis
+JavaScript.  Falls back gracefully when the ``camoufox`` package is not
+installed.
+
+Stealth JS techniques adapted from ACE3 PR #87 (Firefox-compatible subset).
 
 Requires the optional ``browser`` dependency group::
 
@@ -16,6 +19,84 @@ import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Stealth JS — injected via page.add_init_script() before navigation.
+# Covers signals that Camoufox doesn't handle natively: WebGL renderer
+# strings in Docker, screen.availHeight in Xvfb, matchMedia for virtual
+# displays, and generic bot-marker properties that custom gates check.
+# Adapted from ACE3 PR #87 for Firefox/Playwright.
+# ---------------------------------------------------------------------------
+_STEALTH_JS = """
+(() => {
+  // 1. WebGL renderer spoofing — Docker Xvfb exposes llvmpipe/Mesa which
+  //    is a known headless signal.  Spoof to a common integrated GPU.
+  const VENDOR = 'Intel Inc.';
+  const RENDERER = 'Intel Iris OpenGL Engine';
+  const _getParam = WebGLRenderingContext.prototype.getParameter;
+  WebGLRenderingContext.prototype.getParameter = function(p) {
+    if (p === 0x9245 || p === 0x1F01) return VENDOR;
+    if (p === 0x9246 || p === 0x1F00) return RENDERER;
+    return _getParam.call(this, p);
+  };
+  if (typeof WebGL2RenderingContext !== 'undefined') {
+    const _getParam2 = WebGL2RenderingContext.prototype.getParameter;
+    WebGL2RenderingContext.prototype.getParameter = function(p) {
+      if (p === 0x9245 || p === 0x1F01) return VENDOR;
+      if (p === 0x9246 || p === 0x1F00) return RENDERER;
+      return _getParam2.call(this, p);
+    };
+  }
+
+  // 2. Screen.availHeight — full height == no taskbar == headless tell.
+  //    Subtract ~40px to simulate a Windows/Linux taskbar.
+  try {
+    const realHeight = screen.height;
+    Object.defineProperty(screen, 'availHeight', {
+      get: () => realHeight - 40,
+      configurable: true,
+    });
+  } catch {}
+
+  // 3. matchMedia overrides — Xvfb/virtual display reports no pointer and
+  //    no hover capability.  Override to look like a real desktop.
+  try {
+    const _mm = window.matchMedia.bind(window);
+    const overrides = [
+      [/\\(\\s*hover\\s*:\\s*none\\s*\\)/, false],
+      [/\\(\\s*hover\\s*:\\s*hover\\s*\\)/, true],
+      [/\\(\\s*any-hover\\s*:\\s*none\\s*\\)/, false],
+      [/\\(\\s*any-hover\\s*:\\s*hover\\s*\\)/, true],
+      [/\\(\\s*pointer\\s*:\\s*none\\s*\\)/, false],
+      [/\\(\\s*pointer\\s*:\\s*fine\\s*\\)/, true],
+      [/\\(\\s*any-pointer\\s*:\\s*none\\s*\\)/, false],
+      [/\\(\\s*any-pointer\\s*:\\s*fine\\s*\\)/, true],
+    ];
+    window.matchMedia = function(q) {
+      const r = _mm(q);
+      for (const [pat, m] of overrides) {
+        if (pat.test(q)) return Object.assign({}, r, {matches: m, media: q});
+      }
+      return r;
+    };
+  } catch {}
+
+  // 4. Bot-marker cleanup — Camoufox handles navigator.webdriver, but
+  //    custom gates check for other automation markers.
+  for (const prop of ['callPhantom', '_phantom', '__nightmare']) {
+    try { if (prop in window) delete window[prop]; } catch {}
+  }
+  // cdc_ array (Chrome DevTools flag) — not in Firefox but gates check generically
+  try {
+    for (const key of Object.keys(window)) {
+      if (key.startsWith('cdc_') || key.startsWith('$cdc_')) {
+        try { delete window[key]; } catch {}
+      }
+    }
+  } catch {}
+})();
+"""
 
 # Cloudflare challenge indicators in response bodies / error reasons
 _CF_CHALLENGE_MARKERS = (
@@ -127,6 +208,11 @@ async def _async_browser_download(
             page.set_default_timeout(timeout * 1000)
             page.set_default_navigation_timeout(timeout * 1000)
 
+            # Inject stealth JS before any page scripts run
+            await page.add_init_script(_STEALTH_JS)
+
+            start_time = asyncio.get_event_loop().time()
+
             logger.info("Browser navigating to %s", url)
             response = await page.goto(url, wait_until="domcontentloaded")
 
@@ -144,10 +230,26 @@ async def _async_browser_download(
             await _simulate_human_behavior(page)
 
             # Wait for any post-challenge redirect or content load
-            await page.wait_for_load_state("networkidle", timeout=15000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
 
             # Give anti-analysis JS time to run its scoring
             await asyncio.sleep(random.uniform(2.0, 4.0))
+
+            # Attempt to bypass custom anti-bot verification gates
+            elapsed = asyncio.get_event_loop().time() - start_time
+            timeout_remaining = timeout - elapsed
+            if timeout_remaining > 15:
+                gate_found = await _attempt_bot_gate_bypass(
+                    page, timeout_remaining,
+                )
+                if gate_found:
+                    logger.info(
+                        "Bot gate interaction completed, final URL: %s",
+                        page.url,
+                    )
 
             # Capture final page content
             content = await page.content()
@@ -302,6 +404,258 @@ async def _simulate_human_behavior(page) -> None:
     except Exception:
         # Non-fatal — page may not support these interactions
         pass
+
+
+async def _detect_bot_gate(page) -> dict | None:
+    """Detect common anti-bot verification gates on the page.
+
+    Scans for clickable elements with verify/check text and hidden challenge
+    form fields.  Returns gate metadata or None if no gate detected.
+    """
+    try:
+        return await page.evaluate("""
+            () => {
+                const candidates = [
+                    ...document.querySelectorAll(
+                        'button, a, input[type="button"], input[type="submit"], '
+                        + '[role="button"], [onclick], div[class*="btn"], span[class*="btn"]'
+                    )
+                ];
+
+                const verifyPatterns = [
+                    /^verify$/i, /^verify now$/i, /^verify you are human$/i,
+                    /^check$/i, /^continue$/i, /^i'?m not a robot$/i,
+                    /^press & hold$/i, /^click to continue$/i,
+                    /^confirm$/i, /^human verification$/i,
+                    /^click to verify/i, /^verify your browser/i,
+                ];
+
+                for (const el of candidates) {
+                    const text = (el.textContent || el.value || '').trim();
+                    if (text.length > 60 || text.length < 3) continue;
+                    for (const pat of verifyPatterns) {
+                        if (pat.test(text)) {
+                            let sel = null;
+                            if (el.id) {
+                                sel = '#' + CSS.escape(el.id);
+                            } else if (el.className && typeof el.className === 'string') {
+                                const cls = el.className.trim().split(/\\s+/)[0];
+                                if (cls) sel = el.tagName.toLowerCase() + '.' + CSS.escape(cls);
+                            }
+                            if (!sel) sel = el.tagName.toLowerCase();
+                            return {
+                                type: 'verify_button',
+                                selector: sel,
+                                text: text,
+                                tagName: el.tagName,
+                            };
+                        }
+                    }
+                }
+
+                // Fallback: hidden challenge fields with a single button
+                const challengeFields = document.querySelectorAll(
+                    'input[type="hidden"][name*="nonce"], input[type="hidden"][name*="token"], '
+                    + 'input[type="hidden"][name*="pow"], form[style*="display:none"]'
+                );
+                if (challengeFields.length > 0) {
+                    const btns = [...document.querySelectorAll(
+                        'button, input[type="submit"], [role="button"]'
+                    )].filter(b => {
+                        const r = b.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    });
+                    if (btns.length >= 1) {
+                        const el = btns[0];
+                        let sel = el.id ? '#' + CSS.escape(el.id) : null;
+                        if (!sel && el.className && typeof el.className === 'string') {
+                            const cls = el.className.trim().split(/\\s+/)[0];
+                            if (cls) sel = el.tagName.toLowerCase() + '.' + CSS.escape(cls);
+                        }
+                        if (!sel) sel = el.tagName.toLowerCase();
+                        return {
+                            type: 'challenge_form',
+                            selector: sel,
+                            text: (el.textContent || el.value || '').trim(),
+                            tagName: el.tagName,
+                        };
+                    }
+                }
+
+                return null;
+            }
+        """)
+    except Exception as e:
+        logger.debug("Bot gate detection error: %s", e)
+        return None
+
+
+async def _build_mouse_track(page) -> None:
+    """Generate realistic mouse movement to satisfy movement-tracking gates.
+
+    Produces 8-12 distinct mousemove events with natural timing and curved
+    paths.  Gates typically hash mouse positions; this ensures the tracking
+    buffer is well-populated before any verify click.
+    """
+    try:
+        viewport = page.viewport_size or {"width": 1280, "height": 800}
+        w, h = viewport["width"], viewport["height"]
+
+        # Start from a random position
+        cx = random.randint(int(w * 0.2), int(w * 0.5))
+        cy = random.randint(int(h * 0.2), int(h * 0.5))
+        await page.mouse.move(cx, cy)
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+
+        # 8-12 movements with natural-looking curves
+        for _ in range(random.randint(8, 12)):
+            cx += random.randint(-120, 120)
+            cy += random.randint(-80, 80)
+            cx = max(10, min(cx, w - 10))
+            cy = max(10, min(cy, h - 10))
+            await page.mouse.move(cx, cy)
+            await asyncio.sleep(random.uniform(0.05, 0.2))
+
+        # Small scroll for extra interaction data
+        await page.mouse.wheel(0, random.randint(30, 120))
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+
+    except Exception:
+        pass
+
+
+async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
+    """Detect and attempt to bypass a custom anti-bot verification gate.
+
+    Simulates realistic mouse movement to build a movement track, then
+    clicks the verify button and waits for the PoW challenge to resolve
+    and the page to navigate to the real content.
+
+    Returns True if a gate was detected and interaction attempted.
+    """
+    gate = await _detect_bot_gate(page)
+    if not gate:
+        return False
+
+    logger.info(
+        "Bot gate detected: type=%s text=%r selector=%s",
+        gate["type"], gate["text"], gate["selector"],
+    )
+
+    # Phase 1: Build mouse movement track — many gates require mousemove
+    # data before they'll accept a verify click.
+    await _build_mouse_track(page)
+
+    # Phase 2: Click the verify button with natural mouse approach
+    pre_click_url = page.url
+    try:
+        element = await page.query_selector(gate["selector"])
+        if not element:
+            # Fallback: find by visible text
+            for candidate in await page.query_selector_all(
+                "button, [role='button'], a"
+            ):
+                text = (await candidate.text_content() or "").strip()
+                if text and text.lower() == gate["text"].lower():
+                    element = candidate
+                    break
+
+        if not element:
+            logger.warning("Bot gate button not found after detection")
+            return True
+
+        box = await element.bounding_box()
+        if box:
+            viewport = page.viewport_size or {"width": 1280, "height": 800}
+            # Start from a random spot and approach the button with curve
+            sx = random.randint(
+                int(viewport["width"] * 0.3), int(viewport["width"] * 0.7),
+            )
+            sy = random.randint(
+                int(viewport["height"] * 0.3), int(viewport["height"] * 0.6),
+            )
+            tx = box["x"] + box["width"] / 2
+            ty = box["y"] + box["height"] / 2
+
+            steps = random.randint(3, 5)
+            for i in range(1, steps + 1):
+                frac = i / steps
+                mx = sx + (tx - sx) * frac + random.uniform(-8, 8)
+                my = sy + (ty - sy) * frac + random.uniform(-5, 5)
+                await page.mouse.move(mx, my)
+                await asyncio.sleep(random.uniform(0.04, 0.12))
+
+            await asyncio.sleep(random.uniform(0.15, 0.4))
+            await page.mouse.click(tx, ty)
+        else:
+            await element.click()
+
+        logger.info("Clicked bot gate button: %r", gate["text"])
+
+    except Exception as e:
+        logger.warning("Failed to click bot gate button: %s", e)
+        return True
+
+    # Phase 3: Wait for PoW resolution and navigation
+    await _wait_for_gate_resolution(page, pre_click_url, timeout_remaining)
+
+    return True
+
+
+async def _wait_for_gate_resolution(
+    page, pre_click_url: str, timeout_remaining: float,
+) -> None:
+    """Wait for bot gate challenge resolution and subsequent navigation.
+
+    After clicking verify, the gate typically fetches a nonce, runs a
+    SHA-256 PoW in WebWorkers, POSTs the solution, then auto-submits a
+    form which sets a cookie and redirects to the real phishing page.
+    """
+    gate_timeout = min(30.0, max(5.0, timeout_remaining - 10.0))
+    logger.info("Waiting up to %.0fs for bot gate resolution", gate_timeout)
+
+    try:
+        # Primary: wait for URL change (redirect after PoW success)
+        try:
+            await page.wait_for_url(
+                lambda url: url != pre_click_url,
+                timeout=gate_timeout * 1000,
+            )
+            logger.info("Bot gate navigated to %s", page.url)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+            return
+        except Exception:
+            pass
+
+        # Fallback: check if page content changed (SPA-style gate)
+        gate_gone = await page.evaluate("""
+            () => {
+                const btns = document.querySelectorAll(
+                    'button, input[type="submit"], [role="button"]'
+                );
+                const pat = /verify|check|continue|not a robot|confirm/i;
+                for (const b of btns) {
+                    if (pat.test(b.textContent || b.value || '')) return false;
+                }
+                return true;
+            }
+        """)
+        if gate_gone:
+            logger.info("Bot gate button disappeared — gate likely passed")
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        else:
+            logger.warning(
+                "Bot gate button still present after %.0fs — PoW may have "
+                "failed or timed out",
+                gate_timeout,
+            )
+
+    except Exception as e:
+        logger.warning("Error waiting for gate resolution: %s", e)
 
 
 def browser_download(
