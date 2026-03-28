@@ -7,8 +7,11 @@ separate entities with a parent→child relationship.
 """
 
 import logging
+import shutil
 import uuid
 from pathlib import Path
+
+from sqlalchemy import func
 
 from phishkiller.analysis.browser_downloader import browser_download
 from phishkiller.celery_app import celery_app
@@ -57,6 +60,25 @@ def browser_download_kit(self, kit_id: str) -> dict:
                         kit_id, parent_kit.chain_depth, max_depth,
                     )
                     return {"kit_id": kit_id, "status": "skipped", "reason": "max_depth"}
+
+        # Variation cap — limit total browser_render children per investigation
+        if parent_kit.investigation_id:
+            browser_child_count = db.query(func.count(Kit.id)).filter(
+                Kit.investigation_id == parent_kit.investigation_id,
+                Kit.discovery_method == "browser_render",
+            ).scalar()
+            if browser_child_count >= settings.browser_render_max_variations:
+                logger.info(
+                    "Investigation %s has %d browser_render kits (max %d), "
+                    "skipping",
+                    parent_kit.investigation_id, browser_child_count,
+                    settings.browser_render_max_variations,
+                )
+                return {
+                    "kit_id": kit_id,
+                    "status": "skipped",
+                    "reason": "max_variations",
+                }
 
         logger.info(
             "Browser downloading kit %s from %s", kit_id, parent_kit.source_url,
@@ -151,6 +173,61 @@ def browser_download_kit(self, kit_id: str) -> dict:
         # Mark parent as ANALYZED — it keeps its httpx-downloaded content
         # (the raw JS loader / first-stage payload)
         parent_kit.status = KitStatus.ANALYZED
+
+        # --- TLSH dedup against investigation siblings ---
+        # Compute hashes early so we can compare TLSH before wasting
+        # analysis pipeline time on duplicate content.
+        from phishkiller.analysis.hasher import (
+            compute_hashes as do_hash,
+            compute_tlsh_distance,
+        )
+
+        child_hashes = do_hash(filepath)
+        child_kit.sha256 = child_hashes.sha256
+        child_kit.md5 = child_hashes.md5
+        child_kit.sha1 = child_hashes.sha1
+        child_kit.tlsh = child_hashes.tlsh
+
+        if child_hashes.tlsh and child_kit.investigation_id:
+            siblings = db.query(Kit).filter(
+                Kit.investigation_id == child_kit.investigation_id,
+                Kit.id != child_kit.id,
+                Kit.tlsh.isnot(None),
+            ).all()
+
+            for sibling in siblings:
+                distance = compute_tlsh_distance(
+                    child_hashes.tlsh, sibling.tlsh,
+                )
+                if (
+                    distance is not None
+                    and distance <= settings.browser_dedup_tlsh_threshold
+                ):
+                    logger.info(
+                        "Kit %s is TLSH-duplicate of %s "
+                        "(distance=%d, threshold=%d) — removing child",
+                        child_id, sibling.id, distance,
+                        settings.browser_dedup_tlsh_threshold,
+                    )
+                    # Delete the duplicate child and clean up
+                    db.delete(child_kit)
+                    if parent_kit.investigation_id:
+                        from phishkiller.models.investigation import Investigation as Inv
+                        inv = db.query(Inv).filter(
+                            Inv.id == parent_kit.investigation_id
+                        ).first()
+                        if inv:
+                            inv.total_kits = max(0, inv.total_kits - 1)
+                    db.commit()
+                    shutil.rmtree(download_dir, ignore_errors=True)
+                    return {
+                        "kit_id": child_id,
+                        "parent_kit_id": kit_id,
+                        "status": "duplicate",
+                        "duplicate_of": str(sibling.id),
+                        "tlsh_distance": distance,
+                    }
+
         db.commit()
 
         logger.info(

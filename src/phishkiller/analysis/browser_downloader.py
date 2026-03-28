@@ -179,6 +179,34 @@ def _is_available() -> bool:
         return False
 
 
+async def _handle_ipinfo_route(route) -> None:
+    """Intercept ipinfo.io requests used by cloaking gates.
+
+    Returns a spoofed residential-looking response so IP-based cloaking
+    checks pass.  The phishing page sees a clean ISP name instead of a
+    cloud provider, allowing the real content to render.
+    """
+    import json as _json
+
+    spoofed = {
+        "ip": "73.162.19.42",
+        "hostname": "c-73-162-19-42.hsd1.ca.comcast.net",
+        "city": "San Jose",
+        "region": "California",
+        "country": "US",
+        "loc": "37.3382,-121.8863",
+        "org": "AS7922 Comcast Cable Communications, LLC",
+        "postal": "95113",
+        "timezone": "America/Los_Angeles",
+    }
+    logger.debug("Intercepted ipinfo request: %s", route.request.url)
+    await route.fulfill(
+        status=200,
+        content_type="application/json",
+        body=_json.dumps(spoofed),
+    )
+
+
 async def _async_browser_download(
     url: str,
     dest_dir: str,
@@ -210,6 +238,13 @@ async def _async_browser_download(
 
             # Inject stealth JS before any page scripts run
             await page.add_init_script(_STEALTH_JS)
+
+            # Intercept IP-info lookups used by cloaking gates.
+            # Many phishing kits fetch ipinfo.io/json and redirect to a
+            # dud site if the visitor's org matches a cloud provider.
+            # Return a clean residential-looking response so the page
+            # shows its real content.
+            await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
 
             start_time = asyncio.get_event_loop().time()
 
@@ -409,12 +444,27 @@ async def _simulate_human_behavior(page) -> None:
 async def _detect_bot_gate(page) -> dict | None:
     """Detect common anti-bot verification gates on the page.
 
-    Scans for clickable elements with verify/check text and hidden challenge
-    form fields.  Returns gate metadata or None if no gate detected.
+    Scans for:
+    1. Buttons/links with verify/check text (traditional gates)
+    2. Div/span checkbox-style clickables near verification text
+       (e.g. "Prove you are human", "Verify you're not a bot")
+    3. Hidden challenge form fields with a single prominent clickable
+
+    Returns gate metadata or None if no gate detected.
     """
     try:
         return await page.evaluate("""
             () => {
+                function makeSelector(el) {
+                    if (el.id) return '#' + CSS.escape(el.id);
+                    if (el.className && typeof el.className === 'string') {
+                        const cls = el.className.trim().split(/\\s+/)[0];
+                        if (cls) return el.tagName.toLowerCase() + '.' + CSS.escape(cls);
+                    }
+                    return el.tagName.toLowerCase();
+                }
+
+                // --- Strategy 1: clickable elements with verify text ---
                 const candidates = [
                     ...document.querySelectorAll(
                         'button, a, input[type="button"], input[type="submit"], '
@@ -435,17 +485,9 @@ async def _detect_bot_gate(page) -> dict | None:
                     if (text.length > 60 || text.length < 3) continue;
                     for (const pat of verifyPatterns) {
                         if (pat.test(text)) {
-                            let sel = null;
-                            if (el.id) {
-                                sel = '#' + CSS.escape(el.id);
-                            } else if (el.className && typeof el.className === 'string') {
-                                const cls = el.className.trim().split(/\\s+/)[0];
-                                if (cls) sel = el.tagName.toLowerCase() + '.' + CSS.escape(cls);
-                            }
-                            if (!sel) sel = el.tagName.toLowerCase();
                             return {
                                 type: 'verify_button',
-                                selector: sel,
+                                selector: makeSelector(el),
                                 text: text,
                                 tagName: el.tagName,
                             };
@@ -453,7 +495,73 @@ async def _detect_bot_gate(page) -> dict | None:
                     }
                 }
 
-                // Fallback: hidden challenge fields with a single button
+                // --- Strategy 2: div/span checkbox gates ---
+                // These use styled div checkboxes near text like "Prove you
+                // are human".  The clickable element is a small div with
+                // cursor:pointer, and the label is a sibling span/div.
+                const pageText = document.body ? document.body.innerText : '';
+                const gateTextPats = [
+                    /prove you are human/i,
+                    /verify you'?re not a bot/i,
+                    /confirm you'?re real/i,
+                    /human check/i,
+                    /bot protection/i,
+                    /security check/i,
+                    /checking.{0,10}browser/i,
+                ];
+                const hasGateText = gateTextPats.some(p => p.test(pageText));
+
+                if (hasGateText) {
+                    // Look for small clickable div/span elements (checkboxes)
+                    const clickables = [...document.querySelectorAll(
+                        'div[class*="check"], div[class*="target"], '
+                        + 'div[class*="circle"], div[class*="square"], '
+                        + 'span[class*="check"], span[class*="target"], '
+                        + '[style*="cursor: pointer"], [style*="cursor:pointer"]'
+                    )].filter(el => {
+                        const r = el.getBoundingClientRect();
+                        // Checkbox-like: small, roughly square, visible
+                        return r.width >= 12 && r.width <= 60
+                            && r.height >= 12 && r.height <= 60
+                            && r.width > 0 && r.height > 0;
+                    });
+
+                    // Also check computed cursor style for elements
+                    // inside verification-related containers
+                    if (clickables.length === 0) {
+                        const containers = document.querySelectorAll(
+                            '[class*="verif"], [class*="captcha"], [class*="check"], '
+                            + '[class*="human"], [class*="premium-card"]'
+                        );
+                        for (const container of containers) {
+                            const kids = container.querySelectorAll('div, span');
+                            for (const kid of kids) {
+                                const cs = window.getComputedStyle(kid);
+                                const r = kid.getBoundingClientRect();
+                                if (cs.cursor === 'pointer'
+                                    && r.width >= 12 && r.width <= 60
+                                    && r.height >= 12 && r.height <= 60) {
+                                    clickables.push(kid);
+                                }
+                            }
+                        }
+                    }
+
+                    if (clickables.length > 0) {
+                        const el = clickables[0];
+                        return {
+                            type: 'checkbox_gate',
+                            selector: makeSelector(el),
+                            text: pageText.substring(0, 80).trim(),
+                            tagName: el.tagName,
+                            hasAutoSubmitForm: !!document.querySelector(
+                                'form[method] input[type="hidden"]'
+                            ),
+                        };
+                    }
+                }
+
+                // --- Strategy 3: hidden challenge fields with a button ---
                 const challengeFields = document.querySelectorAll(
                     'input[type="hidden"][name*="nonce"], input[type="hidden"][name*="token"], '
                     + 'input[type="hidden"][name*="pow"], form[style*="display:none"]'
@@ -467,18 +575,41 @@ async def _detect_bot_gate(page) -> dict | None:
                     });
                     if (btns.length >= 1) {
                         const el = btns[0];
-                        let sel = el.id ? '#' + CSS.escape(el.id) : null;
-                        if (!sel && el.className && typeof el.className === 'string') {
-                            const cls = el.className.trim().split(/\\s+/)[0];
-                            if (cls) sel = el.tagName.toLowerCase() + '.' + CSS.escape(cls);
-                        }
-                        if (!sel) sel = el.tagName.toLowerCase();
                         return {
                             type: 'challenge_form',
-                            selector: sel,
+                            selector: makeSelector(el),
                             text: (el.textContent || el.value || '').trim(),
                             tagName: el.tagName,
                         };
+                    }
+                }
+
+                // --- Strategy 4: POST form with hidden input + gate page text ---
+                // Some gates have a hidden form that auto-submits after click,
+                // with the clickable being a generic div
+                if (hasGateText) {
+                    const form = document.querySelector('form[method]');
+                    const hiddenInput = form
+                        ? form.querySelector('input[type="hidden"]')
+                        : null;
+                    if (form && hiddenInput) {
+                        // Find the most prominent clickable in the page
+                        const allDivs = [...document.querySelectorAll('div, span')];
+                        for (const el of allDivs) {
+                            const cs = window.getComputedStyle(el);
+                            const r = el.getBoundingClientRect();
+                            if (cs.cursor === 'pointer'
+                                && r.width >= 12 && r.width <= 60
+                                && r.height >= 12 && r.height <= 60) {
+                                return {
+                                    type: 'checkbox_gate',
+                                    selector: makeSelector(el),
+                                    text: pageText.substring(0, 80).trim(),
+                                    tagName: el.tagName,
+                                    hasAutoSubmitForm: true,
+                                };
+                            }
+                        }
                     }
                 }
 
@@ -527,9 +658,10 @@ async def _build_mouse_track(page) -> None:
 async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
     """Detect and attempt to bypass a custom anti-bot verification gate.
 
-    Simulates realistic mouse movement to build a movement track, then
-    clicks the verify button and waits for the PoW challenge to resolve
-    and the page to navigate to the real content.
+    Supports two gate styles:
+    1. Button gates — click a "Verify Now" button, wait for PoW + redirect
+    2. Checkbox gates — click a styled div checkbox, wait for the page's
+       JS to auto-submit a hidden form, then capture the post-redirect content
 
     Returns True if a gate was detected and interaction attempted.
     """
@@ -546,28 +678,29 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
     # data before they'll accept a verify click.
     await _build_mouse_track(page)
 
-    # Phase 2: Click the verify button with natural mouse approach
+    # Phase 2: Click the gate element with natural mouse approach
     pre_click_url = page.url
     try:
         element = await page.query_selector(gate["selector"])
         if not element:
-            # Fallback: find by visible text
-            for candidate in await page.query_selector_all(
-                "button, [role='button'], a"
-            ):
-                text = (await candidate.text_content() or "").strip()
-                if text and text.lower() == gate["text"].lower():
-                    element = candidate
-                    break
+            # Fallback for button-type gates: find by visible text
+            if gate["type"] == "verify_button":
+                for candidate in await page.query_selector_all(
+                    "button, [role='button'], a"
+                ):
+                    text = (await candidate.text_content() or "").strip()
+                    if text and text.lower() == gate["text"].lower():
+                        element = candidate
+                        break
 
         if not element:
-            logger.warning("Bot gate button not found after detection")
+            logger.warning("Bot gate element not found after detection")
             return True
 
         box = await element.bounding_box()
         if box:
             viewport = page.viewport_size or {"width": 1280, "height": 800}
-            # Start from a random spot and approach the button with curve
+            # Start from a random spot and approach the element with curve
             sx = random.randint(
                 int(viewport["width"] * 0.3), int(viewport["width"] * 0.7),
             )
@@ -590,14 +723,20 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
         else:
             await element.click()
 
-        logger.info("Clicked bot gate button: %r", gate["text"])
+        logger.info("Clicked bot gate element: type=%s", gate["type"])
 
     except Exception as e:
-        logger.warning("Failed to click bot gate button: %s", e)
+        logger.warning("Failed to click bot gate element: %s", e)
         return True
 
-    # Phase 3: Wait for PoW resolution and navigation
-    await _wait_for_gate_resolution(page, pre_click_url, timeout_remaining)
+    # Phase 3: Wait for resolution — differs by gate type
+    if gate.get("hasAutoSubmitForm") or gate["type"] == "checkbox_gate":
+        # Checkbox gates auto-submit a hidden form after a short delay
+        # (typically 1.5-3s for the "Verified" animation, then form.submit())
+        await _wait_for_form_submit(page, pre_click_url, timeout_remaining)
+    else:
+        # Button gates do PoW + redirect
+        await _wait_for_gate_resolution(page, pre_click_url, timeout_remaining)
 
     return True
 
@@ -656,6 +795,68 @@ async def _wait_for_gate_resolution(
 
     except Exception as e:
         logger.warning("Error waiting for gate resolution: %s", e)
+
+
+async def _wait_for_form_submit(
+    page, pre_click_url: str, timeout_remaining: float,
+) -> None:
+    """Wait for a checkbox gate's auto-submit form to fire and navigate.
+
+    After clicking the checkbox, the gate JS typically:
+    1. Shows a spinner for 1.5-2s
+    2. Displays "Verified" for ~1s
+    3. Calls form.submit() which POSTs to the same URL
+    4. Server responds with a redirect or sets a cookie + new content
+
+    We wait for the form submission (navigation event) and then capture
+    the post-submit page content.
+    """
+    form_timeout = min(15.0, max(5.0, timeout_remaining - 10.0))
+    logger.info(
+        "Waiting up to %.0fs for checkbox gate form submission", form_timeout,
+    )
+
+    try:
+        # Wait for navigation triggered by form.submit()
+        # The form typically auto-submits 2-4s after the click.
+        # Playwright async API uses expect_navigation() context manager,
+        # but since the click already happened, we use wait_for_url or
+        # wait_for_load_state to detect the POST navigation.
+
+        # First, give the gate JS time to show "Verified" and fire submit
+        # (typically 1.5s animation + 3s delay before form.submit())
+        await asyncio.sleep(4.0)
+
+        # Check if URL changed (form POST may redirect)
+        if page.url != pre_click_url:
+            logger.info("Form POST navigated to %s", page.url)
+            try:
+                await page.wait_for_load_state(
+                    "networkidle", timeout=10000,
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+            return
+
+        # URL didn't change — form may have POSTed to same URL.
+        # Wait for the response to load (new page content from POST).
+        try:
+            await page.wait_for_load_state(
+                "networkidle", timeout=form_timeout * 1000,
+            )
+        except Exception:
+            pass
+
+        # Give post-submit content time to settle
+        await asyncio.sleep(random.uniform(2.0, 4.0))
+
+        logger.info(
+            "Checkbox gate form submitted, final URL: %s", page.url,
+        )
+
+    except Exception as e:
+        logger.warning("Error during form submit wait: %s", e)
 
 
 def browser_download(

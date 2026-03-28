@@ -80,6 +80,12 @@ def compute_hashes(self, prev_result: dict) -> dict:
         if not kit or not kit.local_path:
             return {**prev_result, "status": "failed", "error": "no_local_file"}
 
+        # If hashes were already computed (e.g. by browser_download_kit
+        # for TLSH dedup), skip re-computation.
+        if kit.sha256 and kit.tlsh:
+            logger.info("Kit %s: hashes already computed, skipping", kit_id)
+            return {**prev_result, "sha256": kit.sha256, "hashed": True}
+
         kit.status = KitStatus.ANALYZING
         db.commit()
 
