@@ -179,6 +179,34 @@ def _is_available() -> bool:
         return False
 
 
+async def _handle_ipinfo_route(route) -> None:
+    """Intercept ipinfo.io requests used by cloaking gates.
+
+    Returns a spoofed residential-looking response so IP-based cloaking
+    checks pass.  The phishing page sees a clean ISP name instead of a
+    cloud provider, allowing the real content to render.
+    """
+    import json as _json
+
+    spoofed = {
+        "ip": "73.162.19.42",
+        "hostname": "c-73-162-19-42.hsd1.ca.comcast.net",
+        "city": "San Jose",
+        "region": "California",
+        "country": "US",
+        "loc": "37.3382,-121.8863",
+        "org": "AS7922 Comcast Cable Communications, LLC",
+        "postal": "95113",
+        "timezone": "America/Los_Angeles",
+    }
+    logger.debug("Intercepted ipinfo request: %s", route.request.url)
+    await route.fulfill(
+        status=200,
+        content_type="application/json",
+        body=_json.dumps(spoofed),
+    )
+
+
 async def _async_browser_download(
     url: str,
     dest_dir: str,
@@ -210,6 +238,13 @@ async def _async_browser_download(
 
             # Inject stealth JS before any page scripts run
             await page.add_init_script(_STEALTH_JS)
+
+            # Intercept IP-info lookups used by cloaking gates.
+            # Many phishing kits fetch ipinfo.io/json and redirect to a
+            # dud site if the visitor's org matches a cloud provider.
+            # Return a clean residential-looking response so the page
+            # shows its real content.
+            await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
 
             start_time = asyncio.get_event_loop().time()
 
@@ -783,68 +818,45 @@ async def _wait_for_form_submit(
 
     try:
         # Wait for navigation triggered by form.submit()
-        # The form typically auto-submits 2-4s after the click
-        await page.wait_for_navigation(
-            timeout=form_timeout * 1000,
-            wait_until="domcontentloaded",
-        )
-        logger.info(
-            "Form submit navigated to %s", page.url,
-        )
+        # The form typically auto-submits 2-4s after the click.
+        # Playwright async API uses expect_navigation() context manager,
+        # but since the click already happened, we use wait_for_url or
+        # wait_for_load_state to detect the POST navigation.
 
-        # Wait for the post-submit page to settle
-        try:
-            await page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:
-            pass
-        await asyncio.sleep(random.uniform(1.5, 3.0))
+        # First, give the gate JS time to show "Verified" and fire submit
+        # (typically 1.5s animation + 3s delay before form.submit())
+        await asyncio.sleep(4.0)
 
-        # Check if we landed on another gate or the real content
-        # If it's another gate, try one more click
-        gate2 = await _detect_bot_gate(page)
-        if gate2:
-            logger.info(
-                "Second gate detected after form submit: type=%s",
-                gate2["type"],
-            )
-            element = await page.query_selector(gate2["selector"])
-            if element:
-                box = await element.bounding_box()
-                if box:
-                    await page.mouse.click(
-                        box["x"] + box["width"] / 2,
-                        box["y"] + box["height"] / 2,
-                    )
-                    logger.info("Clicked second gate element")
-                    try:
-                        await page.wait_for_navigation(
-                            timeout=10000,
-                            wait_until="domcontentloaded",
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await page.wait_for_load_state(
-                            "networkidle", timeout=10000,
-                        )
-                    except Exception:
-                        pass
-                    await asyncio.sleep(random.uniform(1.0, 2.0))
-
-    except Exception as e:
-        # Navigation didn't happen — form may not have submitted,
-        # or it was a same-page update.  Fall back to checking for
-        # content changes.
-        logger.info("No navigation after checkbox click: %s", e)
-
-        # Check if page URL changed via client-side redirect
+        # Check if URL changed (form POST may redirect)
         if page.url != pre_click_url:
-            logger.info("URL changed to %s after form submit", page.url)
+            logger.info("Form POST navigated to %s", page.url)
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
+                await page.wait_for_load_state(
+                    "networkidle", timeout=10000,
+                )
             except Exception:
                 pass
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+            return
+
+        # URL didn't change — form may have POSTed to same URL.
+        # Wait for the response to load (new page content from POST).
+        try:
+            await page.wait_for_load_state(
+                "networkidle", timeout=form_timeout * 1000,
+            )
+        except Exception:
+            pass
+
+        # Give post-submit content time to settle
+        await asyncio.sleep(random.uniform(2.0, 4.0))
+
+        logger.info(
+            "Checkbox gate form submitted, final URL: %s", page.url,
+        )
+
+    except Exception as e:
+        logger.warning("Error during form submit wait: %s", e)
 
 
 def browser_download(
