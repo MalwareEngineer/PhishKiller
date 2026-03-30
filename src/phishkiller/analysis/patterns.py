@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 # Increment when patterns, allowlists, or extraction logic change.
 # Used to identify kits that need re-analysis after updates.
-PATTERN_VERSION = 3
+PATTERN_VERSION = 4
 
 # ---------- Email addresses ----------
 EMAIL_PATTERN = re.compile(
@@ -284,6 +284,20 @@ BENIGN_URL_EXTENSIONS = frozenset({
     ".js",  # standalone .js files are library assets, not C2 endpoints
     ".mp3", ".mp4", ".webm", ".ogg",
     ".pdf",
+})
+
+# ---------- AiTM Auth Endpoints ----------
+# Real authentication endpoints that AiTM kits proxy through attacker domains.
+# If an HTML page on a non-Microsoft/Google domain references these, it's proxying.
+AITM_AUTH_ENDPOINTS = frozenset({
+    "login.microsoftonline.com",
+    "login.microsoft.com",
+    "accounts.google.com",
+    "login.live.com",
+    "login.windows.net",
+    "sts.windows.net",
+    "aadcdn.msauth.net",
+    "aadcdn.msftauth.net",
 })
 
 # C2/exfil keywords that boost confidence — must be specific to phishing

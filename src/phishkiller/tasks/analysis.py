@@ -240,19 +240,34 @@ def extract_archive(self, prev_result: dict) -> dict:
         db.close()
 
 
+def _looks_like_html(filepath: Path) -> bool:
+    """Sniff first 512 bytes for HTML markers (extension-agnostic)."""
+    try:
+        with open(filepath, "rb") as f:
+            head = f.read(512).lower()
+        return any(marker in head for marker in (
+            b"<!doctype", b"<html", b"<head", b"<body", b"<script",
+        ))
+    except Exception:
+        return False
+
+
 @celery_app.task(
     name="phishkiller.tasks.analysis.deobfuscate_files",
     bind=True,
     queue="analysis",
 )
 def deobfuscate_files(self, prev_result: dict) -> dict:
-    """Deobfuscate PHP files in the extracted kit directory."""
+    """Deobfuscate PHP and HTML files in the kit directory."""
     kit_id = prev_result["kit_id"]
     if prev_result.get("status") == "failed":
         return prev_result
 
     extract_dir = prev_result.get("extract_dir")
-    if not extract_dir:
+    filepath = prev_result.get("filepath")
+
+    # Need at least one source of files to process
+    if not extract_dir and not filepath:
         return {**prev_result, "deobfuscated": False}
 
     db = get_sync_db()
@@ -263,28 +278,62 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
         if not kit:
             return {**prev_result, "status": "failed", "error": "kit_not_found"}
 
-        from phishkiller.analysis.deobfuscator import PHPDeobfuscator
+        from phishkiller.analysis.deobfuscator import (
+            HTMLDeobfuscator,
+            PHPDeobfuscator,
+        )
 
-        deobfuscator = PHPDeobfuscator()
+        php_deobfuscator = PHPDeobfuscator()
+        html_deobfuscator = HTMLDeobfuscator()
         deob_results = []
         files_processed = 0
 
-        for php_file in Path(extract_dir).rglob("*.php"):
+        # Collect all candidate files
+        candidates: list[Path] = []
+        base_dir: Path | None = None
+
+        if extract_dir:
+            base_dir = Path(extract_dir)
+            candidates.extend(base_dir.rglob("*"))
+        elif filepath:
+            base_dir = Path(filepath).parent
+            candidates.append(Path(filepath))
+
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
             try:
-                result = deobfuscator.deobfuscate_file(str(php_file))
-                if result.layers_unwrapped > 0:
-                    # Overwrite the file with deobfuscated content
-                    php_file.write_text(
-                        result.deobfuscated_content, encoding="utf-8"
+                # PHP deobfuscation — match by extension
+                if candidate.suffix.lower() == ".php":
+                    result = php_deobfuscator.deobfuscate_file(str(candidate))
+                    if result.layers_unwrapped > 0:
+                        candidate.write_text(
+                            result.deobfuscated_content, encoding="utf-8",
+                        )
+                        deob_results.append({
+                            "file": str(candidate.relative_to(base_dir)),
+                            "layers": result.layers_unwrapped,
+                            "techniques": result.techniques_found,
+                        })
+                    files_processed += 1
+
+                # HTML deobfuscation — sniff content for HTML markers
+                if _looks_like_html(candidate):
+                    result = html_deobfuscator.deobfuscate_file(
+                        str(candidate),
                     )
-                    deob_results.append({
-                        "file": str(php_file.relative_to(extract_dir)),
-                        "layers": result.layers_unwrapped,
-                        "techniques": result.techniques_found,
-                    })
-                files_processed += 1
+                    if result.layers_unwrapped > 0:
+                        candidate.write_text(
+                            result.deobfuscated_content, encoding="utf-8",
+                        )
+                        deob_results.append({
+                            "file": str(candidate.relative_to(base_dir)),
+                            "layers": result.layers_unwrapped,
+                            "techniques": result.techniques_found,
+                        })
+                    files_processed += 1
             except Exception as e:
-                logger.debug("Failed to deobfuscate %s: %s", php_file, e)
+                logger.debug("Failed to deobfuscate %s: %s", candidate, e)
 
         duration = time.time() - start
 

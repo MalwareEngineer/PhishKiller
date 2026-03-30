@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from phishkiller.analysis.patterns import (
     _JS_OBJECT_PREFIXES,
     _JS_PRONE_TLDS,
+    AITM_AUTH_ENDPOINTS,
     BENIGN_DOMAINS,
     BENIGN_URL_EXTENSIONS,
     BITCOIN_PATTERN,
@@ -162,6 +163,7 @@ class IOCExtractor:
             iocs.extend(self._extract_smtp_creds(line, source_file, line_num))
             iocs.extend(self._extract_crypto_wallets(line, source_file, line_num))
             iocs.extend(self._extract_phone_numbers(line, source_file, line_num))
+            iocs.extend(self._extract_aitm_indicators(line, source_file, line_num))
 
         return self._deduplicate(iocs)
 
@@ -719,6 +721,32 @@ class IOCExtractor:
                 context=line[:200],
                 confidence=70,
             ))
+        return results
+
+    def _extract_aitm_indicators(
+        self, line: str, source_file: str, line_num: int
+    ) -> list[ExtractedIOC]:
+        """Detect AiTM proxy indicators — attacker domain referencing real auth endpoints."""
+        if not self._source_root_domain:
+            return []
+        # Skip if the kit itself IS a legitimate auth domain
+        if self._source_root_domain in {
+            extract_root_domain(ep) for ep in AITM_AUTH_ENDPOINTS
+        }:
+            return []
+
+        results = []
+        line_lower = line.lower()
+        for endpoint in AITM_AUTH_ENDPOINTS:
+            if endpoint in line_lower:
+                results.append(ExtractedIOC(
+                    type=IndicatorType.C2_URL,
+                    value=f"https://{endpoint}",
+                    source_file=source_file,
+                    line_number=line_num,
+                    context=f"AiTM proxy: {self._source_root_domain} proxying {endpoint}",
+                    confidence=90,
+                ))
         return results
 
     def _deduplicate(self, iocs: list[ExtractedIOC]) -> list[ExtractedIOC]:
