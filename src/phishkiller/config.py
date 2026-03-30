@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     browser_render_on_thin_results: bool = True
     browser_dedup_tlsh_threshold: int = 30
     browser_render_max_variations: int = 20
+    browser_render_pool_stop: int = 3  # consecutive TLSH dupes before stopping re-render loop
 
     # Chain crawling
     chain_max_depth: int = 5

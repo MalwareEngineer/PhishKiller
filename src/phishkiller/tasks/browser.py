@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
     max_retries=0,
     queue="browser",
 )
-def browser_download_kit(self, kit_id: str) -> dict:
+def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
     """Download a kit using the Camoufox stealth browser.
 
     Called by download_kit when it detects a Cloudflare challenge.
@@ -36,6 +36,10 @@ def browser_download_kit(self, kit_id: str) -> dict:
     then dispatches the post-download analysis chain for the child.
     The parent kit is marked ANALYZED with its original JS loader content
     preserved — both artifacts exist as separate linked entities.
+
+    Re-dispatches itself after each render to enumerate relay domain pools.
+    Stops after ``browser_render_pool_stop`` consecutive TLSH duplicates
+    (pool exhausted) or when ``browser_render_max_variations`` is reached.
     """
     settings = get_settings()
     db = get_sync_db()
@@ -44,6 +48,18 @@ def browser_download_kit(self, kit_id: str) -> dict:
         parent_kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
         if not parent_kit:
             raise ValueError(f"Kit {kit_id} not found")
+
+        # Pool exhaustion — N consecutive renders matched existing siblings
+        if consecutive_dupes >= settings.browser_render_pool_stop:
+            logger.info(
+                "Kit %s: relay pool exhausted (%d consecutive dupes, threshold %d)",
+                kit_id, consecutive_dupes, settings.browser_render_pool_stop,
+            )
+            return {
+                "kit_id": kit_id,
+                "status": "pool_exhausted",
+                "consecutive_dupes": consecutive_dupes,
+            }
 
         # Depth guard — refuse to create another child beyond max_depth
         if parent_kit.investigation_id:
@@ -118,7 +134,7 @@ def browser_download_kit(self, kit_id: str) -> dict:
         download_dir = Path(settings.kit_download_dir) / child_id
         download_dir.mkdir(parents=True, exist_ok=True)
 
-        filepath, reason = browser_download(
+        filepath, reason, final_url = browser_download(
             parent_kit.source_url,
             str(download_dir),
             timeout=settings.browser_download_timeout,
@@ -127,11 +143,13 @@ def browser_download_kit(self, kit_id: str) -> dict:
         if not filepath:
             child_kit.status = KitStatus.FAILED
             child_kit.error_message = f"Browser fallback failed: {reason}"
-            # Mark parent as FAILED too — both httpx and browser paths exhausted
-            parent_kit.status = KitStatus.FAILED
-            parent_kit.error_message = (
-                f"httpx: ConnectError → browser: {reason}"[:500]
-            )
+            # Mark parent as FAILED only if it hasn't already been analyzed
+            # (re-renders may fail after first successful render)
+            if parent_kit.status != KitStatus.ANALYZED:
+                parent_kit.status = KitStatus.FAILED
+                parent_kit.error_message = (
+                    f"httpx: ConnectError → browser: {reason}"[:500]
+                )
             db.commit()
 
             # Check investigation completion (both kits are now terminal)
@@ -170,9 +188,61 @@ def browser_download_kit(self, kit_id: str) -> dict:
         }
         child_kit.mime_type = mime_map.get(suffix, "text/html")
 
-        # Mark parent as ANALYZED — it keeps its httpx-downloaded content
-        # (the raw JS loader / first-stage payload)
-        parent_kit.status = KitStatus.ANALYZED
+        # Update child source_url to the browser's final URL (relay domain)
+        # so each child reflects where its content actually came from.
+        if final_url and final_url != parent_kit.source_url:
+            child_kit.source_url = final_url
+
+        # Mark parent as ANALYZED (first render only) — it keeps its
+        # httpx-downloaded content (the raw JS loader / first-stage payload)
+        if parent_kit.status != KitStatus.ANALYZED:
+            parent_kit.status = KitStatus.ANALYZED
+
+        # --- Relay domain dedup ---
+        # PhaaS kits rotate relay domains per-visit, but the same domain
+        # can repeat.  Dedup on the final URL's domain before running the
+        # full analysis pipeline.
+        if final_url and child_kit.investigation_id:
+            from urllib.parse import urlparse
+
+            child_domain = urlparse(final_url).hostname
+            if child_domain:
+                siblings = db.query(Kit).filter(
+                    Kit.investigation_id == child_kit.investigation_id,
+                    Kit.id != child_kit.id,
+                    Kit.discovery_method == "browser_render",
+                ).all()
+
+                for sibling in siblings:
+                    sib_domain = urlparse(sibling.source_url).hostname
+                    if sib_domain == child_domain:
+                        logger.info(
+                            "Kit %s relay domain %s already captured by %s "
+                            "— removing duplicate child",
+                            child_id, child_domain, sibling.id,
+                        )
+                        db.delete(child_kit)
+                        if parent_kit.investigation_id:
+                            from phishkiller.models.investigation import Investigation as Inv
+                            inv = db.query(Inv).filter(
+                                Inv.id == parent_kit.investigation_id
+                            ).first()
+                            if inv:
+                                inv.total_kits = max(0, inv.total_kits - 1)
+                        db.commit()
+                        shutil.rmtree(download_dir, ignore_errors=True)
+
+                        browser_download_kit.apply_async(
+                            args=[kit_id, consecutive_dupes + 1],
+                        )
+                        return {
+                            "kit_id": child_id,
+                            "parent_kit_id": kit_id,
+                            "status": "duplicate",
+                            "duplicate_of": str(sibling.id),
+                            "relay_domain": child_domain,
+                            "rerender_scheduled": True,
+                        }
 
         # --- TLSH dedup against investigation siblings ---
         # Compute hashes early so we can compare TLSH before wasting
@@ -220,12 +290,19 @@ def browser_download_kit(self, kit_id: str) -> dict:
                             inv.total_kits = max(0, inv.total_kits - 1)
                     db.commit()
                     shutil.rmtree(download_dir, ignore_errors=True)
+
+                    # Re-render to discover more relay variations
+                    browser_download_kit.apply_async(
+                        args=[kit_id, consecutive_dupes + 1],
+                    )
+
                     return {
                         "kit_id": child_id,
                         "parent_kit_id": kit_id,
                         "status": "duplicate",
                         "duplicate_of": str(sibling.id),
                         "tlsh_distance": distance,
+                        "rerender_scheduled": True,
                     }
 
         db.commit()
@@ -248,7 +325,10 @@ def browser_download_kit(self, kit_id: str) -> dict:
 
         build_post_download_chain(download_result).apply_async()
 
-        return download_result
+        # Re-render to discover more relay variations (reset dupe counter)
+        browser_download_kit.apply_async(args=[kit_id, 0])
+
+        return {**download_result, "rerender_scheduled": True}
 
     except Exception as e:
         logger.exception("Browser download error for kit %s: %s", kit_id, e)

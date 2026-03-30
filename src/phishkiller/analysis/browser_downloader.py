@@ -119,14 +119,27 @@ _JS_LOADER_MARKERS = (
     "decodeURIComponent(",
 )
 
+# JS patterns that redirect/reload the page — bot check gates that need a
+# real browser to pass (cookie-set-then-reload, navigator.webdriver checks,
+# window.location assignments, meta refresh).
+_JS_REDIRECT_MARKERS = (
+    "location.reload(",
+    "location.href",
+    "location.replace(",
+    "document.location",
+    "window.location",
+    'http-equiv="refresh"',
+    "http-equiv='refresh'",
+)
+
 
 def is_js_loader(filepath: Path, max_check_size: int = 50_000) -> bool:
     """Detect if a downloaded HTML file is a JS-only loader with no real content.
 
     Returns True when the file has JS execution markers (eval, atob, etc.)
-    but no ``<form>``, ``<input>``, or credential fields — indicating a
-    multi-stage loader that needs browser rendering to reveal the actual
-    phishing page.
+    or JS redirect/reload patterns (bot check gates) but no ``<form>``,
+    ``<input>``, or credential fields — indicating a multi-stage page that
+    needs browser rendering to reveal the actual phishing content.
     """
     try:
         content = filepath.read_text(
@@ -141,8 +154,10 @@ def is_js_loader(filepath: Path, max_check_size: int = 50_000) -> bool:
     if not any(tag in lower for tag in ("<html", "<script", "<!doctype")):
         return False
 
-    # Needs JS execution/deobfuscation markers
-    if not any(m.lower() in lower for m in _JS_LOADER_MARKERS):
+    # Needs JS execution/deobfuscation markers OR JS redirect/reload patterns
+    has_js_loader = any(m.lower() in lower for m in _JS_LOADER_MARKERS)
+    has_js_redirect = any(m.lower() in lower for m in _JS_REDIRECT_MARKERS)
+    if not has_js_loader and not has_js_redirect:
         return False
 
     # Lacks real HTML content (forms, inputs, credential fields)
@@ -211,12 +226,12 @@ async def _async_browser_download(
     url: str,
     dest_dir: str,
     timeout: int = 60,
-) -> tuple[Path | None, str]:
+) -> tuple[Path | None, str, str | None]:
     """Internal async implementation of the browser download."""
     try:
         from camoufox.async_api import AsyncCamoufox
     except ImportError:
-        return None, "camoufox not installed (pip install phishkiller[browser])"
+        return None, "camoufox not installed (pip install phishkiller[browser])", None
 
     dest_path = Path(dest_dir)
     dest_path.mkdir(parents=True, exist_ok=True)
@@ -230,7 +245,7 @@ async def _async_browser_download(
             i_know_what_im_doing=True,
             geoip=True,
         ) as browser:
-            page = await browser.new_page()
+            page = await browser.new_page(ignore_https_errors=True)
 
             # Set a realistic navigation timeout
             page.set_default_timeout(timeout * 1000)
@@ -252,7 +267,7 @@ async def _async_browser_download(
             response = await page.goto(url, wait_until="domcontentloaded")
 
             if not response:
-                return None, "Browser navigation returned no response"
+                return None, "Browser navigation returned no response", None
 
             # Give JS deobfuscation / eval layers time to execute
             # Many kits have multi-stage loaders that inject content via eval()
@@ -291,7 +306,7 @@ async def _async_browser_download(
             final_url = page.url
 
             if not content or len(content) < 100:
-                return None, "Browser captured empty or minimal page content"
+                return None, "Browser captured empty or minimal page content", None
 
             # Save HTML to disk
             filename = "page.html"
@@ -302,11 +317,11 @@ async def _async_browser_download(
                 "Browser captured %d bytes from %s (final URL: %s)",
                 len(content), url, final_url,
             )
-            return filepath, "ok"
+            return filepath, "ok", final_url
 
     except Exception as e:
         logger.error("Browser download failed for %s: %s", url, e)
-        return None, f"Browser error: {type(e).__name__}: {e}"
+        return None, f"Browser error: {type(e).__name__}: {e}", None
 
 
 async def _wait_for_turnstile(page) -> None:
@@ -863,15 +878,15 @@ def browser_download(
     url: str,
     dest_dir: str,
     timeout: int = 60,
-) -> tuple[Path | None, str]:
+) -> tuple[Path | None, str, str | None]:
     """Download a URL using a stealth browser (Camoufox).
 
     Synchronous wrapper around the async implementation for use in
-    Celery tasks.  Returns ``(filepath, reason)`` matching the same
-    interface as :func:`~phishkiller.utils.http_client.download_file`.
+    Celery tasks.  Returns ``(filepath, reason, final_url)`` — the
+    final URL is the browser's location after all redirects/gates.
     """
     if not _is_available():
-        return None, "camoufox not installed (pip install phishkiller[browser])"
+        return None, "camoufox not installed (pip install phishkiller[browser])", None
 
     start = time.monotonic()
     try:
@@ -885,6 +900,6 @@ def browser_download(
     except Exception as e:
         elapsed = time.monotonic() - start
         logger.error("Browser download wrapper failed after %.1fs: %s", elapsed, e)
-        return None, f"Browser error: {type(e).__name__}: {e}"
+        return None, f"Browser error: {type(e).__name__}: {e}", None
     finally:
         loop.close()

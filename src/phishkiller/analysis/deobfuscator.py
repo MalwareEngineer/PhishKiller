@@ -201,3 +201,52 @@ class PHPDeobfuscator:
 
         result = self.CHR_CONCAT_PATTERN.sub(replace_chr_chain, content)
         return result, changed
+
+
+class HTMLDeobfuscator:
+    """Strip empty inline HTML tags used for string-splitting obfuscation.
+
+    AiTM PhaaS kits insert empty tags between characters to defeat
+    text-based IOC extraction and YARA rules::
+
+        P<b></b>a<b></b>ss<b></b>wo<b></b>rd  →  Password
+
+    Only activates when 10+ empty tags are found (legitimate HTML rarely
+    has that many).
+    """
+
+    # Match empty inline tags — allows optional attributes and whitespace.
+    EMPTY_INLINE_TAG = re.compile(
+        r"<(b|i|em|strong|span|u|s|small|mark|abbr|cite|code|sub|sup)"
+        r"(?:\s+[^>]*)?\s*>\s*</\1\s*>",
+        re.IGNORECASE,
+    )
+
+    MIN_OCCURRENCES = 10
+
+    def deobfuscate(self, content: str) -> DeobfuscationResult:
+        """Strip empty inline tags if the file looks obfuscated."""
+        matches = self.EMPTY_INLINE_TAG.findall(content)
+        if len(matches) < self.MIN_OCCURRENCES:
+            return DeobfuscationResult(
+                original_content=content[:1000],
+                deobfuscated_content=content,
+                layers_unwrapped=0,
+                techniques_found=[],
+                success=True,
+            )
+
+        cleaned = self.EMPTY_INLINE_TAG.sub("", content)
+        return DeobfuscationResult(
+            original_content=content[:1000],
+            deobfuscated_content=cleaned,
+            layers_unwrapped=1,
+            techniques_found=["empty_tag_splitting"],
+            success=True,
+        )
+
+    def deobfuscate_file(self, filepath: str) -> DeobfuscationResult:
+        """Deobfuscate a file by path."""
+        with open(filepath, encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        return self.deobfuscate(content)
