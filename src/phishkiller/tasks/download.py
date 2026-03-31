@@ -55,6 +55,7 @@ def download_kit(self, kit_id: str) -> dict:
                 ".gif": "image/gif",
                 ".bmp": "image/bmp",
                 ".webp": "image/webp",
+                ".eml": "message/rfc822",
             }
             kit.mime_type = mime_map.get(suffix, "application/octet-stream")
             db.commit()

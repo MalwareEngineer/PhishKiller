@@ -80,6 +80,22 @@ class _LinkExtractor(HTMLParser):
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
+def _walk_skip_rfc822(msg):
+    """Like msg.walk() but does not descend into message/rfc822 parts.
+
+    We handle message/rfc822 via explicit recursion in parse_bytes(),
+    so the default walk() would double-process inner parts.
+    """
+    yield msg
+    # If this part IS message/rfc822, don't descend — children are
+    # handled by recursive parse_bytes() call in the walk loop.
+    if msg.get_content_type() == "message/rfc822":
+        return
+    if msg.is_multipart():
+        for part in msg.get_payload():
+            yield from _walk_skip_rfc822(part)
+
+
 class EMLParser:
     """Parse .eml files to extract headers, body, links, attachments, and images."""
 
@@ -114,10 +130,41 @@ class EMLParser:
         if received:
             result.headers["Received-All"] = "\n".join(str(r) for r in received)
 
-        # Walk MIME parts
-        for part in msg.walk():
+        # Walk MIME parts (skip into message/rfc822 — handled via recursion)
+        for part in _walk_skip_rfc822(msg):
             content_type = part.get_content_type()
             disposition = str(part.get("Content-Disposition", ""))
+
+            # Nested EML (message/rfc822) — recurse into inner message
+            if content_type == "message/rfc822":
+                inner_payloads = part.get_payload()
+                if isinstance(inner_payloads, list):
+                    for inner_msg in inner_payloads:
+                        try:
+                            inner_bytes = inner_msg.as_bytes()
+                            inner_result = self.parse_bytes(inner_bytes)
+                            result.attachments.extend(inner_result.attachments)
+                            result.embedded_images.extend(inner_result.embedded_images)
+                            result.links.extend(inner_result.links)
+                            if not result.body_html and inner_result.body_html:
+                                result.body_html = inner_result.body_html
+                            if not result.body_text and inner_result.body_text:
+                                result.body_text = inner_result.body_text
+                            result.errors.extend(inner_result.errors)
+                            # Save inner EML as attachment
+                            fname = part.get_filename()
+                            if not fname:
+                                subj = inner_msg.get("Subject", "inner")
+                                fname = str(subj).replace("/", "_")[:80] + ".eml"
+                            result.attachments.append(AttachmentInfo(
+                                filename=fname,
+                                content_type="message/rfc822",
+                                data=inner_bytes,
+                                size=len(inner_bytes),
+                            ))
+                        except Exception as e:
+                            result.errors.append(f"inner_eml_error: {e}")
+                continue
 
             # Embedded images (inline with Content-ID)
             if content_type in IMAGE_TYPES:
@@ -223,5 +270,11 @@ class EMLParser:
                 continue
             dest.write_bytes(img.data)
             saved.append(str(dest))
+
+        # Save HTML body to disk for downstream YARA/IOC/deobfuscation
+        if result.body_html:
+            html_dest = out / "body.html"
+            html_dest.write_text(result.body_html, encoding="utf-8")
+            saved.append(str(html_dest))
 
         return saved

@@ -1,6 +1,7 @@
 """Chain crawling tasks — EML parsing, QR decoding, and link-following."""
 
 import logging
+import re
 import time
 import uuid
 from pathlib import Path
@@ -79,12 +80,183 @@ def parse_eml(self, prev_result: dict) -> dict:
             files_processed=len(result.attachments) + len(result.embedded_images),
         )
         db.add(analysis)
+
+        # Extract IOCs from EML headers (sender domain, Return-Path, IPs)
+        from phishkiller.models.indicator import Indicator, IndicatorType
+        from phishkiller.analysis.patterns import BENIGN_DOMAINS, extract_root_domain
+
+        eml_iocs_added = 0
+
+        # Guard: skip if EML header IOCs already exist (reanalysis / retry)
+        _has_eml_iocs = db.query(Indicator.id).filter(
+            Indicator.kit_id == kit.id,
+            Indicator.context.like("eml_%"),
+        ).first()
+
+        if not _has_eml_iocs:
+            sender_domain = None
+
+            # Sender domain from From header
+            from_header = result.headers.get("From", "")
+            email_match = re.search(r"<([^>]+@([^>]+))>", from_header)
+            if not email_match:
+                email_match = re.search(r"([^\s]+@([^\s>]+))", from_header)
+            if email_match:
+                sender_email = email_match.group(1).lower()
+                sender_domain = email_match.group(2).lower()
+                sender_root = extract_root_domain(sender_domain)
+                if sender_root not in BENIGN_DOMAINS:
+                    db.add(Indicator(
+                        type=IndicatorType.EMAIL,
+                        value=sender_email,
+                        context="eml_from_header",
+                        source_file=filepath,
+                        confidence=90,
+                        kit_id=kit.id,
+                    ))
+                    db.add(Indicator(
+                        type=IndicatorType.DOMAIN,
+                        value=sender_domain,
+                        context="eml_sender_domain",
+                        source_file=filepath,
+                        confidence=90,
+                        kit_id=kit.id,
+                    ))
+                    eml_iocs_added += 2
+
+            # Return-Path domain
+            return_path = result.headers.get("Return-Path", "")
+            rp_match = re.search(r"@([^\s>]+)", return_path)
+            if rp_match:
+                rp_domain = rp_match.group(1).lower()
+                rp_root = extract_root_domain(rp_domain)
+                if rp_root not in BENIGN_DOMAINS and rp_domain != sender_domain:
+                    db.add(Indicator(
+                        type=IndicatorType.DOMAIN,
+                        value=rp_domain,
+                        context="eml_return_path",
+                        source_file=filepath,
+                        confidence=85,
+                        kit_id=kit.id,
+                    ))
+                    eml_iocs_added += 1
+
+            # Sending IPs from Received headers
+            received_all = result.headers.get("Received-All", "")
+            ip_re = re.compile(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
+            seen_ips = set()
+            for ip in ip_re.findall(received_all):
+                if ip in seen_ips:
+                    continue
+                # Skip private/internal IPs
+                if ip.startswith(("10.", "192.168.", "127.", "172.16.",
+                                  "172.17.", "172.18.", "172.19.",
+                                  "172.2", "172.30.", "172.31.")):
+                    continue
+                seen_ips.add(ip)
+                db.add(Indicator(
+                    type=IndicatorType.IP_ADDRESS,
+                    value=ip,
+                    context="eml_received_header",
+                    source_file=filepath,
+                    confidence=80,
+                    kit_id=kit.id,
+                ))
+                eml_iocs_added += 1
+
+        if eml_iocs_added:
+            logger.info(
+                "EML header IOCs for kit %s: %d indicators",
+                kit_id, eml_iocs_added,
+            )
+
         db.commit()
 
+        # JS loader detection on extracted HTML attachments
+        browser_renders_dispatched = []
+        if settings.browser_download_enabled and saved_files:
+            from phishkiller.analysis.browser_downloader import is_js_loader
+            from phishkiller.models.kit import Kit as KitModel, KitStatus
+
+            for fpath in saved_files:
+                p = Path(fpath)
+                if p.suffix.lower() not in (".html", ".htm"):
+                    continue
+                if not is_js_loader(p):
+                    continue
+
+                # Guard: skip if a child already exists for this file
+                # (prevents duplicates on reanalysis or task retry)
+                existing = db.query(KitModel).filter(
+                    KitModel.parent_kit_id == kit.id,
+                    KitModel.local_path == str(p),
+                ).first()
+                if existing:
+                    logger.info(
+                        "Kit %s: child for %s already exists (%s), skipping",
+                        kit_id, p.name, existing.id,
+                    )
+                    continue
+
+                logger.info(
+                    "Kit %s: EML attachment %s is JS loader, "
+                    "dispatching browser render",
+                    kit_id, p.name,
+                )
+                # Use file:// URL so browser_download_kit opens the
+                # local JS loader in the browser, follows the redirect,
+                # and captures the actual phishing page.
+                file_url = p.resolve().as_uri()
+                child = KitModel(
+                    source_url=file_url,
+                    source_feed=kit.source_feed,
+                    status=KitStatus.DOWNLOADED,
+                    parent_kit_id=kit.id,
+                    investigation_id=kit.investigation_id,
+                    chain_depth=kit.chain_depth + 1,
+                    discovery_method="eml_attachment",
+                    local_path=str(p),
+                    filename=p.name,
+                    file_size=p.stat().st_size,
+                    mime_type="text/html",
+                )
+                db.add(child)
+                db.flush()
+
+                if kit.investigation_id:
+                    from phishkiller.models.investigation import Investigation
+
+                    inv = db.query(Investigation).filter(
+                        Investigation.id == kit.investigation_id
+                    ).first()
+                    if inv:
+                        inv.total_kits += 1
+
+                db.commit()
+
+                # Dispatch analysis chain for the JS loader itself
+                from phishkiller.tasks.analysis import build_post_download_chain
+
+                child_result = {
+                    "kit_id": str(child.id),
+                    "status": "downloaded",
+                    "filepath": str(p),
+                    "file_size": child.file_size,
+                }
+                build_post_download_chain(child_result).apply_async()
+
+                # Also dispatch browser render to follow the JS redirect
+                from phishkiller.tasks.browser import browser_download_kit
+
+                browser_download_kit.apply_async(args=[str(child.id)])
+                browser_renders_dispatched.append(str(child.id))
+
         logger.info(
-            "EML parse for kit %s: %d links, %d attachments, %d images",
+            "EML parse for kit %s: %d links, %d attachments, %d images%s",
             kit_id, len(result.links), len(result.attachments),
             len(result.embedded_images),
+            f", {len(browser_renders_dispatched)} browser renders dispatched"
+            if browser_renders_dispatched else "",
         )
 
         return {
@@ -93,6 +265,7 @@ def parse_eml(self, prev_result: dict) -> dict:
             "eml_headers": result.headers,
             "eml_attachment_count": len(result.attachments),
             "eml_image_count": len(result.embedded_images),
+            "eml_browser_renders": browser_renders_dispatched,
             # If we extracted attachments, set extract_dir for downstream
             "extract_dir": extract_dir if saved_files else prev_result.get("extract_dir"),
             "extracted": True if saved_files else prev_result.get("extracted", False),
