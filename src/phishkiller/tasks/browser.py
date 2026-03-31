@@ -325,10 +325,19 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
 
         build_post_download_chain(download_result).apply_async()
 
-        # Re-render to discover more relay variations (reset dupe counter)
-        browser_download_kit.apply_async(args=[kit_id, 0])
+        # Re-render to discover more relay variations (reset dupe counter),
+        # but only if the browser redirected to a different domain (relay
+        # rotation).  If the final URL stays on the lure domain there's no
+        # relay pool to enumerate.
+        from urllib.parse import urlparse as _urlparse
 
-        return {**download_result, "rerender_scheduled": True}
+        lure_domain = _urlparse(parent_kit.source_url).hostname
+        final_domain = _urlparse(final_url).hostname if final_url else None
+        if final_domain and final_domain != lure_domain:
+            browser_download_kit.apply_async(args=[kit_id, 0])
+            return {**download_result, "rerender_scheduled": True}
+
+        return download_result
 
     except Exception as e:
         logger.exception("Browser download error for kit %s: %s", kit_id, e)
