@@ -404,9 +404,9 @@ class IOCExtractor:
             if "==" in url_lower or "==" in (parsed.hostname or ""):
                 continue
 
-            # Skip static asset URLs
-            if any(url_path.endswith(ext) for ext in BENIGN_URL_EXTENSIONS):
-                continue
+            is_static_asset = any(
+                url_path.endswith(ext) for ext in BENIGN_URL_EXTENSIONS
+            )
 
             # Skip URLs on the same root domain as the kit's source URL.
             # These are internal kit links (cloned login page paths, OAuth
@@ -417,14 +417,15 @@ class IOCExtractor:
                 if url_root == self._source_root_domain:
                     continue
 
-            # Only extract URLs with strong C2/exfil signals
+            # Extract URLs with strong C2/exfil signals as C2_URL
+            # (but not static assets like .js/.css).
             url_lower = url.lower()
             line_lower = line.lower()
             has_c2_signal = any(
                 kw in url_lower or kw in line_lower for kw in C2_KEYWORDS
             )
 
-            if has_c2_signal:
+            if has_c2_signal and not is_static_asset:
                 results.append(ExtractedIOC(
                     type=IndicatorType.C2_URL,
                     value=url,
@@ -433,6 +434,19 @@ class IOCExtractor:
                     context=line[:200],
                     confidence=85,
                 ))
+            else:
+                # No C2 signal or static asset — still capture the domain
+                # so phishing infrastructure isn't silently dropped.
+                _domain = (parsed.hostname or "").lower()
+                if _domain and "." in _domain:
+                    results.append(ExtractedIOC(
+                        type=IndicatorType.DOMAIN,
+                        value=_domain,
+                        source_file=source_file,
+                        line_number=line_num,
+                        context=line[:200],
+                        confidence=50,
+                    ))
         return results
 
     def _extract_ips(

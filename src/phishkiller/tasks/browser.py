@@ -266,6 +266,8 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
             ).all()
 
             for sibling in siblings:
+                if not sibling.tlsh:
+                    continue
                 distance = compute_tlsh_distance(
                     child_hashes.tlsh, sibling.tlsh,
                 )

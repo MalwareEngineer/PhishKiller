@@ -263,10 +263,11 @@ async def _async_browser_download(
 
             start_time = asyncio.get_event_loop().time()
 
+            is_file_url = url.startswith("file://")
             logger.info("Browser navigating to %s", url)
             response = await page.goto(url, wait_until="domcontentloaded")
 
-            if not response:
+            if not response and not is_file_url:
                 return None, "Browser navigation returned no response", None
 
             # Give JS deobfuscation / eval layers time to execute
