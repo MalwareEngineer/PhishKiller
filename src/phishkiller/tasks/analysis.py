@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 from celery import chain
 from celery.exceptions import SoftTimeLimitExceeded
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
@@ -19,6 +21,32 @@ from phishkiller.models.indicator import Indicator
 from phishkiller.models.kit import Kit, KitStatus
 
 logger = logging.getLogger(__name__)
+
+
+def upsert_analysis_result(db, **kwargs) -> None:
+    """Insert or update an AnalysisResult, deduplicating on (kit_id, analysis_type).
+
+    Accepts the same keyword arguments as ``AnalysisResult(...)``.
+    On conflict the existing row is updated with the new data.
+    """
+    import uuid as _uuid
+
+    values = {**kwargs}
+    if "id" not in values:
+        values["id"] = _uuid.uuid4()
+
+    stmt = pg_insert(AnalysisResult).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_kit_analysis_type",
+        set_={
+            "result_data": stmt.excluded.result_data,
+            "duration_seconds": stmt.excluded.duration_seconds,
+            "files_processed": stmt.excluded.files_processed,
+            "error": stmt.excluded.error,
+            "updated_at": stmt.excluded.updated_at,
+        },
+    )
+    db.execute(stmt)
 
 
 def _post_download_steps() -> list:
@@ -33,6 +61,7 @@ def _post_download_steps() -> list:
         parse_eml.s(),
         deobfuscate_files.s(),
         decrypt_html_payloads.s(),
+        fetch_external_js.s(),
         yara_scan.s(),
         extract_iocs.s(),
         decode_qr_codes.s(),
@@ -116,7 +145,8 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
         duration = time.time() - start
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.HASH,
             result_data={
@@ -128,7 +158,6 @@ def compute_hashes(self, prev_result: dict) -> dict:
             },
             duration_seconds=round(duration, 3),
         )
-        db.add(analysis)
         db.commit()
 
         logger.info("Hashes computed for kit %s: sha256=%s", kit_id, result.sha256[:16])
@@ -198,7 +227,8 @@ def extract_archive(self, prev_result: dict) -> dict:
 
         duration = time.time() - start
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.IOC_EXTRACTION,
             result_data={
@@ -210,7 +240,6 @@ def extract_archive(self, prev_result: dict) -> dict:
             duration_seconds=round(duration, 3),
             files_processed=result.file_count,
         )
-        db.add(analysis)
         db.commit()
 
         logger.info(
@@ -280,11 +309,13 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
 
         from phishkiller.analysis.deobfuscator import (
             HTMLDeobfuscator,
+            JSDeobfuscator,
             PHPDeobfuscator,
         )
 
         php_deobfuscator = PHPDeobfuscator()
         html_deobfuscator = HTMLDeobfuscator()
+        js_deobfuscator = JSDeobfuscator()
         deob_results = []
         files_processed = 0
 
@@ -332,12 +363,30 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
                             "techniques": result.techniques_found,
                         })
                     files_processed += 1
+
+                # JS XOR+base64 deobfuscation — HTML/JS files with eval chains
+                if candidate.suffix.lower() in (".js", ".html", ".htm") or _looks_like_html(candidate):
+                    result = js_deobfuscator.deobfuscate_file(str(candidate))
+                    if result.layers_unwrapped > 0:
+                        # Write decoded output as companion file (preserve original)
+                        deob_path = candidate.with_suffix(".deob.js")
+                        deob_path.write_text(
+                            result.deobfuscated_content, encoding="utf-8",
+                        )
+                        deob_results.append({
+                            "file": str(candidate.relative_to(base_dir)),
+                            "layers": result.layers_unwrapped,
+                            "techniques": result.techniques_found,
+                            "deob_file": str(deob_path.relative_to(base_dir)),
+                        })
+                    files_processed += 1
             except Exception as e:
                 logger.debug("Failed to deobfuscate %s: %s", candidate, e)
 
         duration = time.time() - start
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.DEOBFUSCATION,
             result_data={
@@ -347,7 +396,6 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
             duration_seconds=round(duration, 3),
             files_processed=files_processed,
         )
-        db.add(analysis)
         db.commit()
 
         logger.info(
@@ -648,7 +696,8 @@ def extract_iocs(self, prev_result: dict) -> dict:
             ioc_summary["source_url"] = ioc_summary.get("source_url", 0) + 1
             total_iocs += 1
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.IOC_EXTRACTION,
             result_data={
@@ -662,7 +711,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
             duration_seconds=round(duration, 3),
             files_processed=result.files_processed,
         )
-        db.add(analysis)
         db.commit()
 
         logger.info(
@@ -685,7 +733,8 @@ def extract_iocs(self, prev_result: dict) -> dict:
         try:
             kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
             if kit:
-                analysis = AnalysisResult(
+                upsert_analysis_result(
+                    db,
                     kit_id=kit.id,
                     analysis_type=AnalysisType.IOC_EXTRACTION,
                     result_data={
@@ -699,7 +748,6 @@ def extract_iocs(self, prev_result: dict) -> dict:
                     duration_seconds=round(duration, 3),
                     files_processed=0,
                 )
-                db.add(analysis)
                 db.commit()
         except Exception as exc:
             logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
@@ -721,6 +769,131 @@ def extract_iocs(self, prev_result: dict) -> dict:
         except Exception as exc:
             logger.debug("Failed to mark kit as FAILED during error handling: %s", exc)
         return {**prev_result, "status": "failed", "error": str(e)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# External JS Fetching
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="phishkiller.tasks.analysis.fetch_external_js",
+    bind=True,
+    queue="analysis",
+    soft_time_limit=120,
+    time_limit=150,
+)
+def fetch_external_js(self, prev_result: dict) -> dict:
+    """Fetch external JS sources referenced in <script src> tags.
+
+    Follows external script references in rendered phishing pages to capture
+    backend infrastructure (C2 URLs, Telegram exfil channels, credential
+    relay endpoints) that live in external JS files.
+    """
+    kit_id = prev_result["kit_id"]
+    if prev_result.get("status") == "failed":
+        return prev_result
+
+    settings = get_settings()
+    if not settings.external_js_fetch_enabled:
+        return prev_result
+
+    extract_dir = prev_result.get("extract_dir")
+    filepath = prev_result.get("filepath")
+
+    if not extract_dir and not filepath:
+        return prev_result
+
+    db = get_sync_db()
+    start = time.time()
+
+    try:
+        kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+        if not kit:
+            return {**prev_result, "status": "failed", "error": "kit_not_found"}
+
+        from phishkiller.analysis.js_fetcher import ExternalJSFetcher
+
+        fetcher = ExternalJSFetcher(
+            source_url=kit.source_url,
+            max_depth=settings.external_js_fetch_max_depth,
+            max_files=settings.external_js_fetch_max_files,
+            max_size_kb=settings.external_js_fetch_max_size_kb,
+            timeout=settings.external_js_fetch_timeout,
+        )
+
+        # For single-file kits, create an extract_dir so fetched JS has a home
+        # and copy the main file in so fetch_from_directory can scan it.
+        if not extract_dir and filepath:
+            ext_path = Path(settings.kit_extract_dir) / kit_id
+            ext_path.mkdir(parents=True, exist_ok=True)
+            import shutil
+            dest = ext_path / Path(filepath).name
+            if not dest.exists():
+                shutil.copy2(filepath, dest)
+            extract_dir = str(ext_path)
+            prev_result = {**prev_result, "extract_dir": extract_dir}
+
+        if extract_dir:
+            result = fetcher.fetch_from_directory(extract_dir)
+        else:
+            result = fetcher.fetch_from_file(filepath)
+
+        duration = time.time() - start
+
+        upsert_analysis_result(
+            db,
+            kit_id=kit.id,
+            analysis_type=AnalysisType.EXTERNAL_JS_FETCH,
+            result_data={
+                "files_fetched": result.files_fetched,
+                "files_skipped_benign": result.files_skipped_benign,
+                "files_skipped_error": result.files_skipped_error,
+                "urls_discovered": result.urls_discovered[:50],
+                "urls_fetched": result.urls_fetched[:50],
+                "urls_skipped": result.urls_skipped[:50],
+                "errors": result.errors[:20],
+                "php_sources_found": result.php_sources_found,
+            },
+            duration_seconds=round(duration, 3),
+            files_processed=result.files_fetched,
+        )
+        db.commit()
+
+        if result.files_fetched:
+            logger.info(
+                "External JS fetch for kit %s: %d fetched, %d skipped (benign), "
+                "%d errors, %d PHP sources",
+                kit_id, result.files_fetched, result.files_skipped_benign,
+                result.files_skipped_error, result.php_sources_found,
+            )
+
+        return {
+            **prev_result,
+            "external_js_fetched": result.files_fetched,
+            "external_js_urls": result.urls_fetched,
+        }
+
+    except Exception as e:
+        logger.exception("External JS fetch failed for kit %s", kit_id)
+        duration = time.time() - start
+        try:
+            if kit:
+                upsert_analysis_result(
+                    db,
+                    kit_id=kit.id,
+                    analysis_type=AnalysisType.EXTERNAL_JS_FETCH,
+                    result_data={"error": str(e)},
+                    duration_seconds=round(duration, 3),
+                    error=str(e),
+                )
+                db.commit()
+        except Exception:
+            pass
+        # Non-fatal: don't fail the pipeline if JS fetch fails
+        return {**prev_result, "external_js_fetched": 0}
     finally:
         db.close()
 
@@ -799,7 +972,8 @@ def yara_scan(self, prev_result: dict) -> dict:
                 seen_rules.add(m["rule"])
                 unique_matches.append(m)
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.YARA_SCAN,
             result_data={
@@ -812,7 +986,6 @@ def yara_scan(self, prev_result: dict) -> dict:
             duration_seconds=round(duration, 3),
             files_processed=result.files_scanned,
         )
-        db.add(analysis)
         db.commit()
 
         if unique_matches:
@@ -889,7 +1062,8 @@ def compute_similarity(self, prev_result: dict) -> dict:
 
         duration = time.time() - start
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.SIMILARITY,
             result_data={
@@ -900,7 +1074,6 @@ def compute_similarity(self, prev_result: dict) -> dict:
             },
             duration_seconds=round(duration, 3),
         )
-        db.add(analysis)
         db.commit()
 
         if similar:
