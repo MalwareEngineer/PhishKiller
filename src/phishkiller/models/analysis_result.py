@@ -6,7 +6,7 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, Float, ForeignKey, Integer, Text
+from sqlalchemy import Enum, Float, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,10 +26,14 @@ class AnalysisType(enum.StrEnum):
     QR_DECODE = "qr_decode"
     LINK_SCORE = "link_score"
     REDIRECT_CHAIN = "redirect_chain"
+    EXTERNAL_JS_FETCH = "external_js_fetch"
 
 
 class AnalysisResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "analysis_results"
+    __table_args__ = (
+        UniqueConstraint("kit_id", "analysis_type", name="uq_kit_analysis_type"),
+    )
 
     kit_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("kits.id"), nullable=False, index=True

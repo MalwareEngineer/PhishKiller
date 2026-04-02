@@ -11,7 +11,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
-from phishkiller.models.analysis_result import AnalysisResult, AnalysisType
+from phishkiller.models.analysis_result import AnalysisType
+from phishkiller.tasks.analysis import upsert_analysis_result
 from phishkiller.models.kit import Kit
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,8 @@ def parse_eml(self, prev_result: dict) -> dict:
 
         duration = time.time() - start
 
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.EML_PARSE,
             result_data={
@@ -79,7 +81,6 @@ def parse_eml(self, prev_result: dict) -> dict:
             duration_seconds=round(duration, 3),
             files_processed=len(result.attachments) + len(result.embedded_images),
         )
-        db.add(analysis)
 
         # Extract IOCs from EML headers (sender domain, Return-Path, IPs)
         from phishkiller.models.indicator import Indicator, IndicatorType
@@ -329,7 +330,8 @@ def decode_qr_codes(self, prev_result: dict) -> dict:
         duration = time.time() - start
 
         if result.qr_count > 0:
-            analysis = AnalysisResult(
+            upsert_analysis_result(
+                db,
                 kit_id=kit.id,
                 analysis_type=AnalysisType.QR_DECODE,
                 result_data={
@@ -339,7 +341,6 @@ def decode_qr_codes(self, prev_result: dict) -> dict:
                 },
                 duration_seconds=round(duration, 3),
             )
-            db.add(analysis)
             db.commit()
 
         logger.info(
@@ -472,7 +473,8 @@ def crawl_chain(self, prev_result: dict) -> dict:
 
         # Record link scoring results
         start = time.time()
-        analysis = AnalysisResult(
+        upsert_analysis_result(
+            db,
             kit_id=kit.id,
             analysis_type=AnalysisType.LINK_SCORE,
             result_data={
@@ -485,7 +487,6 @@ def crawl_chain(self, prev_result: dict) -> dict:
             },
             duration_seconds=round(time.time() - start, 3),
         )
-        db.add(analysis)
         db.commit()
 
         logger.info(

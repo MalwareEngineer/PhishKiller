@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     browser_render_max_variations: int = 50
     browser_render_pool_stop: int = 3  # consecutive TLSH dupes before stopping re-render loop
 
+    # External JS fetching (follow <script src="..."> in rendered pages)
+    external_js_fetch_enabled: bool = True
+    external_js_fetch_timeout: int = 15        # per-request timeout (seconds)
+    external_js_fetch_max_depth: int = 2       # recursive JS→JS following depth
+    external_js_fetch_max_files: int = 10      # max files to fetch per kit
+    external_js_fetch_max_size_kb: int = 512   # max individual JS file size
+
     # Chain crawling
     chain_max_depth: int = 5
     chain_max_children_per_kit: int = 10

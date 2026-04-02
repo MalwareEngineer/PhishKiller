@@ -8,7 +8,8 @@ from phishkiller.analysis.redirect_tracker import RedirectTracker
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
-from phishkiller.models.analysis_result import AnalysisResult, AnalysisType
+from phishkiller.models.analysis_result import AnalysisType
+from phishkiller.tasks.analysis import upsert_analysis_result
 from phishkiller.models.kit import Kit, KitStatus
 from phishkiller.utils.http_client import download_file
 
@@ -89,12 +90,12 @@ def download_kit(self, kit_id: str) -> dict:
             if redirect_chain.total_redirects > 0:
                 redirect_chain_data = redirect_chain.to_dict()
                 # Store redirect chain as an analysis result
-                result = AnalysisResult(
+                upsert_analysis_result(
+                    db,
                     kit_id=kit.id,
                     analysis_type=AnalysisType.REDIRECT_CHAIN,
                     result_data=redirect_chain_data,
                 )
-                db.add(result)
         else:
             filepath, reason = download_file(
                 kit.source_url,
