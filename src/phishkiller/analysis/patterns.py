@@ -51,6 +51,10 @@ C2_URL_PATTERN = re.compile(
     r"https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]{10,500}",
     re.IGNORECASE,
 )
+WEBSOCKET_URL_PATTERN = re.compile(
+    r"wss?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]{10,500}",
+    re.IGNORECASE,
+)
 # Strip trailing syntax junk that the broad regex consumes
 URL_TRAILING_JUNK = re.compile(r"['\";,)\]}>\\]+$")
 

@@ -1,88 +1,274 @@
 # PhishKiller
 
-Phishing kit analysis platform. Downloads, extracts, decrypts, and scans
-phishing kits to extract IOCs, classify kit families, correlate threat actors,
-and group campaigns — all through a Celery-driven analysis pipeline.
+Automated phishing kit analysis platform. Submit a URL, EML, or archive and PhishKiller downloads, extracts, deobfuscates, renders, and scans the kit end-to-end — extracting IOCs, following redirect chains, fetching external JS infrastructure, and correlating threat actors across campaigns.
 
-Designed for manual/API-only intake: every kit traces back to an analyst
-submission (GUI/CLI) or API integration (email gateway, SOAR playbook).
-
-## Features
-
-- **14-step analysis pipeline** — download, extract, decrypt, scan, correlate, and discover linked kits automatically
-- **React dashboard** — kit triage, investigation trees, indicator search, content viewer, campaign/actor management
-- **YARA scanning** — 890+ t4d PhishingKit rules plus custom rules for kit families, evasion techniques, and credential exfiltration
-- **Network-layer IOC extraction** — domains from redirect chain URLs, IPs from DNS resolution, source URLs deduplicated per investigation
-- **Content-based IOC extraction** — C2 URLs, emails, crypto wallets, Telegram bot tokens/chat IDs, SMTP credentials, phone numbers
-- **AES-GCM decryption** — decrypt encrypted phishing pages (device code kits, self-decrypting HTML)
-- **QR code detection** — extract and decode QR codes from phishing images (quishing)
-- **TLSH similarity clustering** — fuzzy-hash kits to find related variants and group kit families
-- **Redirect chain crawling** — follow HTTP redirects and email/QR links to discover child kits; C2 URLs stay as indicators
-- **Actor correlation** — auto-create threat actors from high-confidence IOCs (email, Telegram, crypto wallets)
-- **Campaign grouping** — automatically group kits sharing actors and TLSH similarity into campaigns
-- **Stealth browser fallback** — Camoufox (anti-detect Firefox) for Cloudflare-protected pages
-- **CLI + REST API** — command line and HTTP API for submissions, search, and management
-
-## Architecture
-
-Eight Docker Compose services:
-
-| Service | Role |
-|---------|------|
-| `postgres` | Primary database (PostgreSQL 16) |
-| `redis` | Caching and Celery result backend |
-| `rabbitmq` | Celery message broker |
-| `api` | FastAPI REST API (uvicorn) |
-| `worker-beat` | Celery beat scheduler (stuck-kit recovery) |
-| `worker-downloads` | Download worker (prefork, 4 processes) |
-| `worker-analysis` | Analysis pipeline worker (prefork, 10 processes) |
-| `worker-browser` | Stealth browser worker (Camoufox, solo pool) |
-
-## Setup
+## Quick Start
 
 ```bash
-cp .env.example .env
+git clone https://github.com/MalwareEngineer/PhishKiller.git
+cd PhishKiller
+cp .env.example .env        # edit credentials if needed
 docker compose up -d
 docker compose exec api alembic upgrade head
 ```
+
+Verify everything is running:
+
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
+### YARA Rules
+
+```bash
+./scripts/update_yara_rules.sh
+```
+
+Downloads 890+ [t4d PhishingKit-Yara-Rules](https://github.com/t4d/PhishingKit-Yara-Rules) into `rules/t4d/`. Custom rules go anywhere in `rules/` — the directory is mounted read-only into workers. YARA scanning is optional; the pipeline runs without rules.
 
 ### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev       # dev server on :5173
-npm run build     # production bundle
+npm run dev       # http://localhost:5173
 ```
 
-### YARA Rules
+React + Vite + TailwindCSS dashboard for kit triage, investigation trees, indicator search, and campaign/actor management. Talks to the API at `:8000`.
 
-Download the [t4d PhishingKit-Yara-Rules](https://github.com/t4d/PhishingKit-Yara-Rules)
-into `rules/t4d/`:
+## Architecture
+
+```
+                    ┌─────────────┐
+                    │  React UI   │ :5173
+                    └──────┬──────┘
+                           │
+                    ┌──────▼──────┐
+                    │  FastAPI    │ :8000
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+        ┌─────▼─────┐ ┌───▼───┐ ┌─────▼─────┐
+        │ PostgreSQL │ │ Redis │ │ RabbitMQ  │
+        │    :5432   │ │ :6379 │ │   :5672   │
+        └────────────┘ └───────┘ └─────┬─────┘
+                                       │
+                    ┌──────────────────┤
+                    │                  │
+         ┌─────────▼──────────┐  ┌────▼────────────┐
+         │  worker-analysis   │  │ worker-downloads │
+         │  worker-browser    │  │ worker-beat      │
+         └────────────────────┘  └─────────────────┘
+```
+
+| Service | Image | Role |
+|---------|-------|------|
+| `postgres` | postgres:16-alpine | Primary database |
+| `redis` | redis:7-alpine | Cache + Celery result backend |
+| `rabbitmq` | rabbitmq:3.13-management | Celery message broker (management UI at `:15672`) |
+| `api` | phishkiller-api | FastAPI REST API |
+| `worker-analysis` | phishkiller-worker-analysis | Analysis pipeline (prefork, 10 processes) |
+| `worker-downloads` | phishkiller-worker-downloads | Kit downloads (prefork, 4 processes) |
+| `worker-browser` | phishkiller-worker-browser | Camoufox stealth browser (solo pool) |
+| `worker-beat` | phishkiller-worker-beat | Celery beat scheduler + stuck-kit recovery |
+
+### Volumes
+
+- `downloads` — raw downloaded kit files
+- `extracted` — extracted/decompressed kit contents
+- `./rules` — YARA rules (read-only mount)
+- `./private` — private config files (read-only mount)
+
+## Project Structure
+
+```
+src/phishkiller/
+├── api/              # FastAPI routes and dependencies
+├── analysis/         # Core analysis logic
+│   ├── deobfuscator.py   # PHP/HTML/JS deobfuscation
+│   ├── extractor.py      # Archive extraction (ZIP/RAR/TAR)
+│   ├── ioc_engine.py     # IOC extraction patterns and engine
+│   ├── js_fetcher.py     # External JS fetching (<script src="...">)
+│   └── patterns.py       # Regex patterns, benign domain lists, C2 keywords
+├── models/           # SQLAlchemy ORM models
+├── schemas/          # Pydantic request/response schemas
+├── services/         # Business logic layer
+├── tasks/            # Celery task definitions
+│   ├── analysis.py       # 14-step analysis pipeline
+│   ├── chain.py          # Redirect chain crawling, EML parsing, QR decode
+│   ├── download.py       # Kit download + browser fallback
+│   └── recovery.py       # Stuck-kit recovery
+├── utils/            # HTTP client, helpers
+├── main.py           # FastAPI app factory
+├── celery_app.py     # Celery app initialization
+├── config.py         # pydantic-settings (PK_ env prefix)
+├── database.py       # Async SQLAlchemy engine + session
+└── cli.py            # Typer CLI
+```
+
+## Analysis Pipeline
+
+Each submitted kit runs through a 15-step Celery chain:
+
+```
+download → hash → extract → parse_eml → deobfuscate → decrypt_html →
+fetch_external_js → yara_scan → extract_iocs → decode_qr → similarity →
+correlate_actors → auto_assign_campaign → crawl_chain → finalize
+```
+
+| Step | What It Does |
+|------|-------------|
+| **download** | Fetch URL with redirect tracking, or store uploaded file |
+| **hash** | SHA256, MD5, SHA1, TLSH |
+| **extract** | ZIP, RAR, TAR, GZ with path traversal protection |
+| **parse_eml** | Extract URLs, attachments, nested EMLs from email files |
+| **deobfuscate** | PHP `eval(base64_decode(...))`, HTML entity encoding, JS XOR+base64+eval chains |
+| **decrypt_html** | AES-GCM encrypted phishing pages (device code kits) |
+| **fetch_external_js** | Follow `<script src="...">` to fetch external JS; CDN filtering, SSRF prevention, PHP source probing |
+| **yara_scan** | t4d + custom rules on raw downloads, extracted files, and fetched JS |
+| **extract_iocs** | C2 URLs (HTTP + WebSocket), emails, Telegram bots, SMTP creds, crypto wallets, domains, IPs, phone numbers |
+| **decode_qr** | QR code extraction from images (quishing) |
+| **similarity** | TLSH fuzzy hashing to find related kit variants |
+| **correlate_actors** | Auto-create threat actors from high-confidence IOCs |
+| **auto_assign_campaign** | Group kits by shared actors + TLSH similarity |
+| **crawl_chain** | Follow redirects, email links, QR targets as child kits; browser render for JS-heavy pages |
+
+### Chain Crawling
+
+When a kit contains links (redirects, email URLs, QR codes), the pipeline spawns child kits that go through the same 15 steps. This creates an investigation tree:
+
+```
+EML (root kit)
+├── nested_attachment.eml
+│   └── obfuscated_loader.html
+│       └── page.html (browser render)
+│           └── _external_js/u1i2k.js (fetched)
+```
+
+## Configuration
+
+All settings use the `PK_` env prefix. Key variables in `.env`:
 
 ```bash
-./scripts/update_yara_rules.sh
+# Infrastructure
+POSTGRES_USER=phishkiller
+POSTGRES_PASSWORD=changeme
+RABBITMQ_USER=phishkiller
+RABBITMQ_PASS=changeme
+
+# Database
+PK_DATABASE_URL=postgresql+asyncpg://...
+PK_SYNC_DATABASE_URL=postgresql+psycopg2://...
+
+# Analysis tuning
+PK_MAX_KIT_SIZE_MB=50
+PK_DOWNLOAD_TIMEOUT=30
+PK_CHAIN_MAX_DEPTH=5
+PK_EXTERNAL_JS_FETCH_ENABLED=true
+PK_EXTERNAL_JS_FETCH_MAX_DEPTH=2
+PK_EXTERNAL_JS_FETCH_MAX_FILES=10
+
+# Browser rendering
+PK_BROWSER_DOWNLOAD_ENABLED=true
+PK_BROWSER_RENDER_ON_THIN_RESULTS=true
 ```
 
-Custom rules in `rules/` are mounted read-only into Docker containers.
-YARA scanning is optional — the pipeline runs without rules.
+Full settings reference: `src/phishkiller/config.py`
+
+## Database Migrations
+
+```bash
+# Apply all migrations
+docker compose exec api alembic upgrade head
+
+# Create a new migration after model changes
+docker compose exec api alembic revision --autogenerate -m "description"
+
+# Check current revision
+docker compose exec api alembic current
+```
+
+## API
+
+Base URL: `http://localhost:8000/api/v1/`
+
+### Submitting Kits
+
+```bash
+# URL submission (creates investigation + chain crawl)
+curl -X POST http://localhost:8000/api/v1/investigations \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://suspicious-site.com/login"}'
+
+# File upload (EML, ZIP, RAR, HTML)
+curl -X POST http://localhost:8000/api/v1/kits/upload \
+  -F "file=@phish.eml"
+
+# Bulk file upload (max 50)
+curl -X POST http://localhost:8000/api/v1/kits/upload/bulk \
+  -F "files=@kit1.zip" -F "files=@kit2.zip"
+
+# Reanalyze an existing kit
+curl -X POST http://localhost:8000/api/v1/kits/{kit_id}/reanalyze
+```
+
+### Querying Results
+
+```bash
+# Kit details (includes children, campaigns, IOCs)
+curl http://localhost:8000/api/v1/kits/{kit_id}
+
+# Investigation tree
+curl http://localhost:8000/api/v1/investigations/{id}/tree
+
+# Search indicators
+curl "http://localhost:8000/api/v1/indicators/search?query=cheacker.store"
+
+# Find similar kits by TLSH
+curl http://localhost:8000/api/v1/kits/{kit_id}/similar
+
+# Analysis results for a kit
+curl "http://localhost:8000/api/v1/analysis/results?kit_id={kit_id}"
+```
+
+### Key Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/kits` | Submit URL |
+| POST | `/kits/upload` | Upload file |
+| POST | `/kits/upload/bulk` | Bulk upload (max 50) |
+| POST | `/investigations` | Create investigation from URL |
+| GET | `/kits` | List kits (paginated, filterable) |
+| GET | `/kits/{id}` | Kit detail |
+| GET | `/kits/{id}/content` | View kit file content |
+| GET | `/kits/{id}/similar` | TLSH similarity search |
+| DELETE | `/kits/{id}` | Delete kit (cascades) |
+| POST | `/kits/{id}/reanalyze` | Re-run analysis pipeline |
+| GET | `/investigations/{id}/tree` | Investigation kit tree |
+| GET | `/indicators` | List IOCs |
+| GET | `/indicators/search` | Search IOCs by value |
+| GET | `/indicators/stats` | IOC stats by type |
+| GET | `/actors` | List threat actors |
+| GET | `/campaigns` | List campaigns |
+| GET | `/campaigns/{id}` | Campaign detail |
+| GET | `/analysis/results` | Analysis results |
 
 ## CLI
 
 ```bash
-# Submit a URL or local file
+# Submit
 phishkiller submit https://suspicious-site.com/login
 phishkiller submit phish.eml
 phishkiller submit kit.zip
 phishkiller submit --batch urls.txt
 
-# Watch analysis progress
+# Monitor
 phishkiller watch <kit_id>
-
-# Kit details
 phishkiller status <kit_id>
 
-# List / search
+# Search
 phishkiller kits list --status analyzed
 phishkiller kits similar <kit_id>
 phishkiller iocs list --type domain
@@ -92,75 +278,75 @@ phishkiller iocs search "example.com"
 phishkiller investigations create https://suspicious-site.com/login
 phishkiller investigations tree <investigation_id>
 
-# Campaigns & actors
+# Management
 phishkiller campaigns list
 phishkiller actors list
-
-# Maintenance
 phishkiller health
 phishkiller worker recover
 ```
 
-## API
+## Development
 
-REST API at `http://localhost:8000/api/v1/`.
+### Prerequisites
+
+- Docker + Docker Compose
+- Python 3.12+ (for local dev outside Docker)
+- Node.js 18+ (for frontend)
+
+### Local Dev Setup
 
 ```bash
-# URL submission (creates investigation with chain crawling)
-curl -X POST http://localhost:8000/api/v1/investigations \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://suspicious-site.com/login"}'
+# Create virtualenv
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 
-# File upload (EML, ZIP, RAR, HTML)
-curl -X POST http://localhost:8000/api/v1/kits/upload -F "file=@phish.eml"
+# Install with all extras
+pip install -e ".[dev,tlsh,yara,qr,browser]"
 
-# Bulk file upload
-curl -X POST http://localhost:8000/api/v1/kits/upload/bulk \
-  -F "files=@kit1.zip" -F "files=@kit2.zip"
+# Start infrastructure only
+docker compose up -d postgres redis rabbitmq
+
+# Run API locally
+uvicorn phishkiller.main:app --reload --port 8000
+
+# Run worker locally
+celery -A phishkiller.celery_app worker -l info -Q analysis
 ```
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/v1/kits` | Submit URL |
-| `POST /api/v1/kits/upload` | Upload file |
-| `POST /api/v1/kits/upload/bulk` | Bulk file upload |
-| `POST /api/v1/investigations` | Start investigation |
-| `GET /api/v1/kits` | List kits |
-| `GET /api/v1/kits/{id}` | Kit detail with children, campaigns, IOCs |
-| `GET /api/v1/kits/{id}/content` | Kit file content (text/HTML viewer) |
-| `GET /api/v1/kits/{id}/similar` | Find similar kits by TLSH |
-| `GET /api/v1/kits/{id}/delete-preview` | Preview cascade deletion impact |
-| `DELETE /api/v1/kits/{id}` | Delete kit (cascades to children, indicators, results) |
-| `GET /api/v1/investigations` | List investigations |
-| `GET /api/v1/investigations/{id}/tree` | Kit chain tree |
-| `GET /api/v1/indicators` | List IOCs |
-| `GET /api/v1/indicators/search` | Search IOCs |
-| `GET /api/v1/actors` | List actors |
-| `GET /api/v1/campaigns` | List campaigns |
-| `GET /api/v1/campaigns/{id}` | Campaign detail with linked kits and actors |
+### Tests
 
-## Analysis Pipeline
-
-Each sample runs through a 14-step Celery chain:
-
-```
-download → hash → extract → parse_eml → deobfuscate → decrypt_html →
-yara_scan → extract_iocs → decode_qr → similarity → correlate_actors →
-auto_assign_campaign → crawl_chain → finalize
+```bash
+pytest
+pytest tests/test_analysis/ -v
+pytest --cov=phishkiller
 ```
 
-- **download** — fetch URL with redirect tracking, or store uploaded file
-- **extract** — ZIP, RAR, TAR, GZ archives with path traversal protection
-- **parse_eml** — extract URLs, attachments, and headers from email files
-- **deobfuscate** — PHP `eval(base64_decode(...))` unwrapping
-- **decrypt_html** — AES-GCM encrypted phishing pages (device code kits)
-- **yara_scan** — t4d PhishingKit rules on raw downloads and extracted files
-- **extract_iocs** — network-layer domains/IPs from redirect chain + DNS, content-based C2 URLs/emails/wallets
-- **decode_qr** — QR code extraction from images (quishing attacks)
-- **similarity** — TLSH fuzzy hashing for kit family clustering
-- **correlate_actors** — auto-create threat actors from high-confidence IOCs
-- **auto_assign_campaign** — group kits by shared actor + TLSH similarity
-- **crawl_chain** — follow redirects, email links, and QR targets as child kits (browser_render children skip chain crawl)
+### Rebuilding Workers After Code Changes
+
+```bash
+docker compose build worker-analysis
+docker compose up -d worker-analysis
+```
+
+Workers bake source code into the Docker image. After editing analysis logic, you must rebuild and restart. Verify the worker picked up changes:
+
+```bash
+docker compose logs worker-analysis --tail 5  # look for "celery@... ready."
+```
+
+### Adding a New Pipeline Step
+
+1. Add a Celery task in `src/phishkiller/tasks/analysis.py`
+2. Add it to the chain in `_post_download_steps()`
+3. If it needs a new `AnalysisType`, add the enum value and create an Alembic migration
+4. Use `upsert_analysis_result()` for DB writes (handles dedup on reanalysis)
+5. Return `{**prev_result, "your_key": value}` to pass data through the chain
+
+### Adding IOC Patterns
+
+1. Add regex to `src/phishkiller/analysis/patterns.py`
+2. Add extraction logic in `src/phishkiller/analysis/ioc_engine.py` (`_extract_urls()` or new method)
+3. Use existing `IndicatorType` enum values, or add a new one with a migration
 
 ## License
 

@@ -41,6 +41,7 @@ from phishkiller.analysis.patterns import (
     TELEGRAM_HANDLE_PATTERN,
     URL_TRAILING_JUNK,
     VALID_TLDS,
+    WEBSOCKET_URL_PATTERN,
     extract_root_domain,
     is_benign_url,
 )
@@ -339,6 +340,38 @@ class IOCExtractor:
                 line_number=line_num,
                 context=line[:200],
                 confidence=95,
+            ))
+
+        # WebSocket URLs — always C2 infrastructure in phishing kits.
+        # AiTM kits use wss:// for real-time credential relay.
+        websocket_hosts: set[str] = set()
+        for match in WEBSOCKET_URL_PATTERN.finditer(line):
+            url = URL_TRAILING_JUNK.sub("", match.group(0))
+            js_break = JS_CONCAT_BOUNDARY.search(url)
+            if js_break:
+                url = url[:js_break.start()]
+            try:
+                _ws_host = urlparse(url).hostname
+                if not _ws_host or "." not in _ws_host:
+                    continue
+                _ws_host_lower = _ws_host.lower()
+                if _ws_host_lower in ("localhost", "127.0.0.1"):
+                    continue
+                if is_benign_url(url.replace("wss://", "https://").replace("ws://", "http://")):
+                    continue
+                if self._source_root_domain:
+                    if extract_root_domain(_ws_host_lower) == self._source_root_domain:
+                        continue
+            except Exception:
+                continue
+            websocket_hosts.add(_ws_host.lower())
+            results.append(ExtractedIOC(
+                type=IndicatorType.C2_URL,
+                value=url,
+                source_file=source_file,
+                line_number=line_num,
+                context=line[:200],
+                confidence=90,
             ))
 
         # General URL extraction — only classify as C2_URL if there are
