@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from celery import chain
 from celery.exceptions import SoftTimeLimitExceeded
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from phishkiller.celery_app import celery_app
@@ -1117,11 +1118,23 @@ def _try_complete_investigation(db, investigation_id: uuid.UUID) -> None:
         ).count()
 
         if pending_count == 0:
+            # Recompute counters from actual data — incremental updates
+            # from chain.py/browser.py are fragile across reanalysis and
+            # deletion.
+            actual_count = db.query(Kit).filter(
+                Kit.investigation_id == investigation_id,
+            ).count()
+            actual_depth = db.query(func.coalesce(func.max(Kit.chain_depth), 0)).filter(
+                Kit.investigation_id == investigation_id,
+            ).scalar()
+
+            investigation.total_kits = actual_count
+            investigation.total_depth_reached = actual_depth
             investigation.status = InvestigationStatus.COMPLETED
             db.commit()
             logger.info(
-                "Investigation %s completed (all %d kits terminal)",
-                investigation_id, investigation.total_kits,
+                "Investigation %s completed (%d kits, depth %d)",
+                investigation_id, actual_count, actual_depth,
             )
         else:
             # Ensure it's marked IN_PROGRESS
