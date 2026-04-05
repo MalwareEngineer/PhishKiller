@@ -75,12 +75,13 @@ class KitService:
         return result.scalar_one_or_none()
 
     async def submit_kit(
-        self, url: str, source_feed: str | None = None
+        self, url: str, source_feed: str | None = None, force: bool = False,
     ) -> tuple[Kit, str, bool]:
         # URL dedup: return existing kit if already tracked
-        existing = await self._find_existing_kit(url)
-        if existing:
-            return existing, "", True
+        if not force:
+            existing = await self._find_existing_kit(url)
+            if existing:
+                return existing, "", True
 
         kit = Kit(
             id=uuid.uuid4(),
@@ -94,7 +95,7 @@ class KitService:
         # Dispatch Celery task
         from phishkiller.tasks.analysis import build_analysis_chain
 
-        chain = build_analysis_chain(str(kit.id))
+        chain = build_analysis_chain(str(kit.id), force=force)
         result = chain.apply_async()
         task_id = result.id
 

@@ -138,6 +138,7 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
             parent_kit.source_url,
             str(download_dir),
             timeout=settings.browser_download_timeout,
+            turnstile_timeout=settings.browser_turnstile_timeout,
         )
 
         if not filepath:
@@ -314,13 +315,16 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
             child_id, kit_id, filepath.name, child_kit.file_size,
         )
 
-        # Dispatch post-download analysis chain for the child kit
+        # Dispatch post-download analysis chain for the child kit.
+        # Set extract_dir to the download dir so the pipeline walks all
+        # captured sub-resources (_browser_resources/) alongside page.html.
         download_result = {
             "kit_id": child_id,
             "parent_kit_id": kit_id,
             "status": "downloaded",
             "filepath": str(filepath),
             "file_size": child_kit.file_size,
+            "extract_dir": str(download_dir),
         }
 
         from phishkiller.tasks.analysis import build_post_download_chain

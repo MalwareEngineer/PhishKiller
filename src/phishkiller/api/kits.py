@@ -47,7 +47,7 @@ async def list_kits(
 async def create_kit(payload: KitCreate, db: DbSession) -> KitSubmitResponse:
     service = KitService(db)
     kit, task_id, duplicate = await service.submit_kit(
-        str(payload.url), payload.source_feed
+        str(payload.url), payload.source_feed, force=payload.force,
     )
 
     # Auto-create investigation for manual submissions so crawl_chain fires

@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # Browser-based downloading (Camoufox stealth browser fallback)
     browser_download_enabled: bool = False
     browser_download_timeout: int = 60
+    browser_turnstile_timeout: int = 30  # seconds before retrying Turnstile with fresh context
     browser_render_on_thin_results: bool = True
     browser_dedup_tlsh_threshold: int = 30
     browser_render_max_variations: int = 50

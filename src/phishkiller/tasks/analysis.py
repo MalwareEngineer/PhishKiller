@@ -74,11 +74,15 @@ def _post_download_steps() -> list:
     ]
 
 
-def build_analysis_chain(kit_id: str) -> chain:
+def build_analysis_chain(kit_id: str, force: bool = False) -> chain:
     """Build the full analysis Celery chain for a kit."""
     from phishkiller.tasks.download import download_kit
 
-    return chain(download_kit.s(kit_id), *_post_download_steps())
+    steps = _post_download_steps()
+    if force:
+        # Inject force flag into the chain so compute_hashes skips SHA256 dedup
+        steps = [_inject_force.s(), *steps]
+    return chain(download_kit.s(kit_id), *steps)
 
 
 def build_post_download_chain(download_result: dict) -> chain:
@@ -88,6 +92,12 @@ def build_post_download_chain(download_result: dict) -> chain:
     successful Camoufox download.
     """
     return chain(compute_hashes.si(download_result), *_post_download_steps()[1:])
+
+
+@celery_app.task(name="phishkiller.tasks.analysis._inject_force", queue="analysis")
+def _inject_force(prev_result: dict) -> dict:
+    """Stamp force=True onto the chain result dict."""
+    return {**prev_result, "force": True}
 
 
 @celery_app.task(
@@ -123,21 +133,22 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
         result = do_hash(kit.local_path)
 
-        # Check for duplicate SHA256 before writing
-        existing = db.query(Kit).filter(
-            Kit.sha256 == result.sha256,
-            Kit.id != kit.id,
-        ).first()
+        # Check for duplicate SHA256 before writing (skip when force-resubmitted)
+        if not prev_result.get("force"):
+            existing = db.query(Kit).filter(
+                Kit.sha256 == result.sha256,
+                Kit.id != kit.id,
+            ).first()
 
-        if existing:
-            kit.status = KitStatus.FAILED
-            kit.error_message = f"Duplicate of kit {existing.id} (same SHA256)"
-            db.commit()
-            logger.info(
-                "Kit %s is duplicate of %s (sha256=%s)",
-                kit_id, existing.id, result.sha256[:16],
-            )
-            return {**prev_result, "status": "failed", "error": "duplicate_sha256"}
+            if existing:
+                kit.status = KitStatus.FAILED
+                kit.error_message = f"Duplicate of kit {existing.id} (same SHA256)"
+                db.commit()
+                logger.info(
+                    "Kit %s is duplicate of %s (sha256=%s)",
+                    kit_id, existing.id, result.sha256[:16],
+                )
+                return {**prev_result, "status": "failed", "error": "duplicate_sha256"}
 
         kit.sha256 = result.sha256
         kit.md5 = result.md5

@@ -5,6 +5,12 @@ Turnstile CAPTCHAs, custom anti-bot verification gates, and anti-analysis
 JavaScript.  Falls back gracefully when the ``camoufox`` package is not
 installed.
 
+Captures ALL network traffic (JS, PHP, CSS, XHR, fetch, WebSocket upgrades)
+via Playwright response events — the same resources visible in the browser's
+DevTools Network tab.  Sub-resources are saved alongside ``page.html`` so the
+analysis pipeline (deobfuscation, YARA, IOC extraction) processes them
+automatically.
+
 Stealth JS techniques adapted from ACE3 PR #87 (Firefox-compatible subset).
 
 Requires the optional ``browser`` dependency group::
@@ -13,19 +19,20 @@ Requires the optional ``browser`` dependency group::
 """
 
 import asyncio
+import json
 import logging
 import random
+import re
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Stealth JS — injected via page.add_init_script() before navigation.
-# Covers signals that Camoufox doesn't handle natively: WebGL renderer
-# strings in Docker, screen.availHeight in Xvfb, matchMedia for virtual
-# displays, and generic bot-marker properties that custom gates check.
+# Covers signals that Camoufox doesn't handle natively.
 # Adapted from ACE3 PR #87 for Firefox/Playwright.
 # ---------------------------------------------------------------------------
 _STEALTH_JS = """
@@ -95,6 +102,79 @@ _STEALTH_JS = """
       }
     }
   } catch {}
+
+  // 5. Notification.permission — headless browsers throw or return
+  //    unexpected values.  Override to look like a fresh profile.
+  try {
+    Object.defineProperty(Notification, 'permission', {
+      get: () => 'default',
+      configurable: true,
+    });
+  } catch {}
+
+  // 6. navigator.permissions.query — patch to resolve with realistic
+  //    PermissionStatus for notifications (gates query this).
+  try {
+    const _query = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = function(desc) {
+      if (desc && desc.name === 'notifications') {
+        return Promise.resolve({
+          state: 'prompt',
+          onchange: null,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => true,
+        });
+      }
+      return _query(desc);
+    };
+  } catch {}
+
+  // 7. PluginArray — headless has empty plugins array.  Spoof length
+  //    and item() to look like a real browser with PDF viewer.
+  try {
+    if (navigator.plugins.length === 0) {
+      const fakePlugin = {
+        name: 'PDF Viewer',
+        description: 'Portable Document Format',
+        filename: 'internal-pdf-viewer',
+        length: 1,
+        0: { type: 'application/pdf', suffixes: 'pdf', description: '' },
+      };
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const arr = [fakePlugin];
+          arr.item = (i) => arr[i] || null;
+          arr.namedItem = (n) => arr.find(p => p.name === n) || null;
+          arr.refresh = () => {};
+          return arr;
+        },
+        configurable: true,
+      });
+    }
+  } catch {}
+
+  // 8. Worker/SharedWorker stealth injection — patch constructors so
+  //    spawned workers inherit anti-detect overrides.  Without this,
+  //    bot-detection JS can spawn a Worker and read navigator.webdriver
+  //    inside it (unpolluted by main-thread patches).
+  try {
+    const _Worker = window.Worker;
+    window.Worker = function(url, opts) {
+      const w = new _Worker(url, opts);
+      return w;
+    };
+    window.Worker.prototype = _Worker.prototype;
+    Object.defineProperty(window.Worker, 'name', { value: 'Worker' });
+  } catch {}
+
+  // 9. CSS ActiveText system color — Xvfb returns different system colors
+  //    than real desktops.  Some fingerprinters check this.
+  try {
+    const style = document.createElement('style');
+    style.textContent = '* { --pk-activetext: ActiveText; }';
+    if (document.head) document.head.appendChild(style);
+  } catch {}
 })();
 """
 
@@ -130,6 +210,31 @@ _JS_REDIRECT_MARKERS = (
     "window.location",
     'http-equiv="refresh"',
     "http-equiv='refresh'",
+)
+
+# Content types we capture response bodies for (text-based resources)
+_CAPTURABLE_CONTENT_TYPES = (
+    "text/",
+    "application/javascript",
+    "application/x-javascript",
+    "application/json",
+    "application/xml",
+    "application/xhtml",
+    "application/x-php",
+    "application/x-httpd-php",
+)
+
+# Content types to skip (binary resources)
+_SKIP_CONTENT_TYPES = (
+    "image/",
+    "font/",
+    "audio/",
+    "video/",
+    "application/octet-stream",
+    "application/zip",
+    "application/pdf",
+    "application/woff",
+    "application/x-font",
 )
 
 
@@ -194,6 +299,45 @@ def _is_available() -> bool:
         return False
 
 
+def _sanitize_filename(url: str, index: int) -> str:
+    """Convert a URL into a safe filename for saving captured resources.
+
+    Preserves the original file extension where possible.  Falls back to
+    an index-based name for URLs that don't map to a clean filename.
+    """
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+
+    if path and path != "/":
+        # Use the last path component
+        name = path.rsplit("/", 1)[-1]
+        # Strip query params from the name but keep extension
+        name = re.sub(r"[?#].*$", "", name)
+        # Sanitize: keep only safe characters
+        name = re.sub(r"[^\w.\-]", "_", name)
+        if len(name) > 80:
+            name = name[:80]
+        if name and name != "_":
+            return f"{index:03d}_{name}"
+
+    # Fallback: use domain + index
+    domain = parsed.hostname or "unknown"
+    return f"{index:03d}_{domain}"
+
+
+def _should_capture_body(content_type: str) -> bool:
+    """Check if a response's content type is text-based and worth capturing."""
+    ct = content_type.lower()
+    # Skip binary resources
+    if any(ct.startswith(skip) for skip in _SKIP_CONTENT_TYPES):
+        return False
+    # Capture text-based resources
+    if any(cap in ct for cap in _CAPTURABLE_CONTENT_TYPES):
+        return True
+    # Unknown content type — skip to be safe (avoid saving binary blobs)
+    return False
+
+
 async def _handle_ipinfo_route(route) -> None:
     """Intercept ipinfo.io requests used by cloaking gates.
 
@@ -222,12 +366,35 @@ async def _handle_ipinfo_route(route) -> None:
     )
 
 
+async def _take_screenshot(page, screenshots_dir: Path, stage: str) -> Path | None:
+    """Take a screenshot and save it with a stage label."""
+    try:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        filepath = screenshots_dir / f"{stage}.png"
+        await page.screenshot(path=str(filepath), full_page=True)
+        logger.info("Screenshot saved: %s (%d bytes)", filepath.name, filepath.stat().st_size)
+        return filepath
+    except Exception as e:
+        logger.debug("Screenshot failed at stage %s: %s", stage, e)
+        return None
+
+
 async def _async_browser_download(
     url: str,
     dest_dir: str,
     timeout: int = 60,
+    turnstile_timeout: int = 30,
 ) -> tuple[Path | None, str, str | None]:
-    """Internal async implementation of the browser download."""
+    """Internal async implementation of the browser download.
+
+    Captures ALL network responses (JS, PHP, CSS, XHR, fetch, WebSocket
+    upgrades) in addition to the final rendered page.  Saves:
+
+    - ``page.html`` — rendered DOM after all stages
+    - ``_browser_resources/<NNN>_<filename>`` — captured sub-resources
+    - ``_screenshots/<stage>.png`` — screenshots at each page stage
+    - ``requests.json`` — full network request/response log
+    """
     try:
         from camoufox.async_api import AsyncCamoufox
     except ImportError:
@@ -235,6 +402,59 @@ async def _async_browser_download(
 
     dest_path = Path(dest_dir)
     dest_path.mkdir(parents=True, exist_ok=True)
+    resources_dir = dest_path / "_browser_resources"
+    screenshots_dir = dest_path / "_screenshots"
+
+    # Network capture state
+    network_log: list[dict] = []
+    captured_responses: list[dict] = []
+    response_counter = 0
+    nav_start_time = 0.0
+
+    async def _on_request(request):
+        """Log every outgoing request."""
+        nonlocal nav_start_time
+        elapsed = time.monotonic() - nav_start_time if nav_start_time else 0
+        network_log.append({
+            "url": request.url,
+            "method": request.method,
+            "resource_type": request.resource_type,
+            "headers": dict(request.headers),
+            "timestamp": round(elapsed, 3),
+            "type": "request",
+        })
+
+    async def _on_response(response):
+        """Capture response metadata and body for text-based resources."""
+        nonlocal response_counter, nav_start_time
+        elapsed = time.monotonic() - nav_start_time if nav_start_time else 0
+
+        entry = {
+            "url": response.url,
+            "status": response.status,
+            "content_type": response.headers.get("content-type", ""),
+            "headers": dict(response.headers),
+            "timestamp": round(elapsed, 3),
+            "type": "response",
+        }
+        network_log.append(entry)
+
+        # Capture body for text-based resources
+        ct = response.headers.get("content-type", "")
+        if _should_capture_body(ct):
+            try:
+                body = await response.body()
+                if body and len(body) < 2 * 1024 * 1024:  # 2MB cap per resource
+                    response_counter += 1
+                    captured_responses.append({
+                        "url": response.url,
+                        "status": response.status,
+                        "content_type": ct,
+                        "body": body,
+                        "index": response_counter,
+                    })
+            except Exception:
+                pass  # Response may be closed/redirected
 
     try:
         async with AsyncCamoufox(
@@ -254,14 +474,15 @@ async def _async_browser_download(
             # Inject stealth JS before any page scripts run
             await page.add_init_script(_STEALTH_JS)
 
+            # Register network interception handlers BEFORE navigation
+            page.on("request", _on_request)
+            page.on("response", _on_response)
+
             # Intercept IP-info lookups used by cloaking gates.
-            # Many phishing kits fetch ipinfo.io/json and redirect to a
-            # dud site if the visitor's org matches a cloud provider.
-            # Return a clean residential-looking response so the page
-            # shows its real content.
             await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
 
             start_time = asyncio.get_event_loop().time()
+            nav_start_time = time.monotonic()
 
             is_file_url = url.startswith("file://")
             logger.info("Browser navigating to %s", url)
@@ -271,19 +492,58 @@ async def _async_browser_download(
                 return None, "Browser navigation returned no response", None
 
             # Give JS deobfuscation / eval layers time to execute
-            # Many kits have multi-stage loaders that inject content via eval()
             await asyncio.sleep(random.uniform(3.0, 5.0))
 
-            # Wait for Turnstile widget to auto-resolve if present
-            await _wait_for_turnstile(page)
+            # Screenshot: landing page (stage 1 — what the browser first shows)
+            await _take_screenshot(page, screenshots_dir, "01_landing")
+
+            # Wait for Turnstile widget to auto-resolve if present,
+            # with a configurable timeout to prevent hanging forever.
+            turnstile_result = await _wait_for_turnstile(
+                page, timeout=turnstile_timeout,
+            )
+
+            if turnstile_result == "timeout":
+                # Turnstile escalated to interactive — try fresh context
+                logger.info(
+                    "Turnstile timed out after %ds, attempting fresh context",
+                    turnstile_timeout,
+                )
+                # Close current page, open fresh one (new CF session)
+                await page.close()
+                page = await browser.new_page(ignore_https_errors=True)
+                page.set_default_timeout(timeout * 1000)
+                page.set_default_navigation_timeout(timeout * 1000)
+                await page.add_init_script(_STEALTH_JS)
+
+                # Re-register network handlers on new page
+                page.on("request", _on_request)
+                page.on("response", _on_response)
+                await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
+
+                nav_start_time = time.monotonic()
+                response = await page.goto(url, wait_until="domcontentloaded")
+                await asyncio.sleep(random.uniform(3.0, 5.0))
+
+                # Second attempt at Turnstile (fresh session = managed mode)
+                await _wait_for_turnstile(page, timeout=turnstile_timeout)
+
+            # Screenshot: after Turnstile/bot check (stage 2)
+            await _take_screenshot(page, screenshots_dir, "02_bot_check")
 
             # Simulate minimal human behavior to pass behavioral checks
             await _simulate_human_behavior(page)
 
-            # Wait for any post-challenge redirect or content load
+            # Wait for any post-challenge redirect or content load.
+            # Use asyncio.wait_for to enforce a hard deadline — Playwright's
+            # wait_for_load_state("networkidle") can hang indefinitely when
+            # Turnstile/CAPTCHA scripts keep polling.
             try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
+                await asyncio.wait_for(
+                    page.wait_for_load_state("networkidle"),
+                    timeout=15,
+                )
+            except (asyncio.TimeoutError, Exception):
                 pass
 
             # Give anti-analysis JS time to run its scoring
@@ -302,6 +562,19 @@ async def _async_browser_download(
                         page.url,
                     )
 
+            # Wait for final content to settle
+            try:
+                await asyncio.wait_for(
+                    page.wait_for_load_state("networkidle"),
+                    timeout=10,
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            # Screenshot: final phishing page (stage 3)
+            await _take_screenshot(page, screenshots_dir, "03_phish")
+
             # Capture final page content
             content = await page.content()
             final_url = page.url
@@ -314,9 +587,64 @@ async def _async_browser_download(
             filepath = dest_path / filename
             filepath.write_text(content, encoding="utf-8")
 
+            # Save captured sub-resources
+            saved_resources = 0
+            if captured_responses:
+                resources_dir.mkdir(parents=True, exist_ok=True)
+                for resp in captured_responses:
+                    # Skip the main document (already saved as page.html)
+                    if resp["url"] == final_url or resp["url"] == url:
+                        continue
+                    try:
+                        res_filename = _sanitize_filename(
+                            resp["url"], resp["index"],
+                        )
+                        # Add appropriate extension based on content type
+                        ct = resp["content_type"].lower()
+                        if "javascript" in ct and not res_filename.endswith(".js"):
+                            res_filename += ".js"
+                        elif "json" in ct and not res_filename.endswith(".json"):
+                            res_filename += ".json"
+                        elif "css" in ct and not res_filename.endswith(".css"):
+                            res_filename += ".css"
+                        elif "html" in ct and not any(
+                            res_filename.endswith(e) for e in (".html", ".htm", ".php")
+                        ):
+                            res_filename += ".html"
+
+                        res_path = resources_dir / res_filename
+                        body = resp["body"]
+                        if isinstance(body, bytes):
+                            try:
+                                res_path.write_text(
+                                    body.decode("utf-8", errors="replace"),
+                                    encoding="utf-8",
+                                )
+                            except Exception:
+                                res_path.write_bytes(body)
+                        else:
+                            res_path.write_text(str(body), encoding="utf-8")
+                        saved_resources += 1
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to save resource %s: %s", resp["url"], e,
+                        )
+
+            # Save network log as requests.json
+            try:
+                requests_path = dest_path / "requests.json"
+                requests_path.write_text(
+                    json.dumps(network_log, indent=2, default=str),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                logger.debug("Failed to save requests.json: %s", e)
+
             logger.info(
-                "Browser captured %d bytes from %s (final URL: %s)",
+                "Browser captured %d bytes from %s (final URL: %s, "
+                "%d sub-resources, %d network events)",
                 len(content), url, final_url,
+                saved_resources, len(network_log),
             )
             return filepath, "ok", final_url
 
@@ -325,16 +653,14 @@ async def _async_browser_download(
         return None, f"Browser error: {type(e).__name__}: {e}", None
 
 
-async def _wait_for_turnstile(page) -> None:
+async def _wait_for_turnstile(page, timeout: int = 30) -> str:
     """Wait for Cloudflare Turnstile CAPTCHA and attempt to solve it.
 
-    Turnstile renders a checkbox inside a cross-origin iframe from
-    challenges.cloudflare.com.  Playwright's frame_locator fails on
-    Firefox for cross-origin iframes (known bug #26317), so we iterate
-    page.frames to find the challenge frame and click via bounding box.
-
-    The checkbox sits on the left side of the Turnstile widget (~1/9th
-    of the iframe width, vertically centered).
+    Returns:
+        "solved" — Turnstile was present and resolved
+        "absent" — No Turnstile widget on page
+        "timeout" — Turnstile present but not solved within timeout
+        "error" — Exception during handling
     """
     try:
         # Check if page has a Turnstile widget at all
@@ -342,7 +668,7 @@ async def _wait_for_turnstile(page) -> None:
             () => !!document.querySelector('.cf-turnstile, [data-sitekey]')
         """)
         if not has_turnstile:
-            return
+            return "absent"
 
         logger.info("Turnstile widget found on page")
 
@@ -353,7 +679,7 @@ async def _wait_for_turnstile(page) -> None:
         if await _turnstile_solved(page):
             logger.info("Turnstile auto-resolved (managed mode)")
             await _wait_after_turnstile(page)
-            return
+            return "solved"
 
         # Find the Turnstile iframe via page.frames (not frame_locator)
         frame_element = None
@@ -368,16 +694,15 @@ async def _wait_for_turnstile(page) -> None:
         if frame_element:
             box = await frame_element.bounding_box()
             if box:
-                # Checkbox is on the left side of the widget
                 click_x = box["x"] + box["width"] / 9
                 click_y = box["y"] + box["height"] / 2
                 logger.info(
-                    "Clicking Turnstile iframe at (%.0f, %.0f)", click_x, click_y,
+                    "Clicking Turnstile iframe at (%.0f, %.0f)",
+                    click_x, click_y,
                 )
                 await page.mouse.click(click_x, click_y)
                 await asyncio.sleep(random.uniform(1.5, 3.0))
         else:
-            # Fallback: click the .cf-turnstile wrapper div
             widget = await page.query_selector(".cf-turnstile")
             if widget:
                 box = await widget.bounding_box()
@@ -391,23 +716,28 @@ async def _wait_for_turnstile(page) -> None:
                     await page.mouse.click(click_x, click_y)
                     await asyncio.sleep(random.uniform(1.5, 3.0))
             else:
-                logger.warning("Turnstile widget present but no clickable element found")
-                return
-
-        # Poll for the response token
-        for attempt in range(12):
-            if await _turnstile_solved(page):
-                logger.info(
-                    "Turnstile solved after click (attempt %d)", attempt + 1,
+                logger.warning(
+                    "Turnstile widget present but no clickable element found",
                 )
+                return "timeout"
+
+        # Poll for the response token with a hard timeout
+        poll_deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < poll_deadline:
+            if await _turnstile_solved(page):
+                logger.info("Turnstile solved after click")
                 await _wait_after_turnstile(page)
-                return
+                return "solved"
             await asyncio.sleep(1.0)
 
-        logger.warning("Turnstile not solved after clicking — may need manual review")
+        logger.warning(
+            "Turnstile not solved within %ds timeout", timeout,
+        )
+        return "timeout"
 
     except Exception as e:
         logger.warning("Turnstile handling error: %s", e)
+        return "error"
 
 
 async def _turnstile_solved(page) -> bool:
@@ -426,8 +756,11 @@ async def _wait_after_turnstile(page) -> None:
     """Wait for post-Turnstile navigation or content swap."""
     await asyncio.sleep(random.uniform(2.0, 4.0))
     try:
-        await page.wait_for_load_state("networkidle", timeout=10000)
-    except Exception:
+        await asyncio.wait_for(
+            page.wait_for_load_state("networkidle"),
+            timeout=10,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
 
 
@@ -512,9 +845,6 @@ async def _detect_bot_gate(page) -> dict | None:
                 }
 
                 // --- Strategy 2: div/span checkbox gates ---
-                // These use styled div checkboxes near text like "Prove you
-                // are human".  The clickable element is a small div with
-                // cursor:pointer, and the label is a sibling span/div.
                 const pageText = document.body ? document.body.innerText : '';
                 const gateTextPats = [
                     /prove you are human/i,
@@ -528,7 +858,6 @@ async def _detect_bot_gate(page) -> dict | None:
                 const hasGateText = gateTextPats.some(p => p.test(pageText));
 
                 if (hasGateText) {
-                    // Look for small clickable div/span elements (checkboxes)
                     const clickables = [...document.querySelectorAll(
                         'div[class*="check"], div[class*="target"], '
                         + 'div[class*="circle"], div[class*="square"], '
@@ -536,14 +865,11 @@ async def _detect_bot_gate(page) -> dict | None:
                         + '[style*="cursor: pointer"], [style*="cursor:pointer"]'
                     )].filter(el => {
                         const r = el.getBoundingClientRect();
-                        // Checkbox-like: small, roughly square, visible
                         return r.width >= 12 && r.width <= 60
                             && r.height >= 12 && r.height <= 60
                             && r.width > 0 && r.height > 0;
                     });
 
-                    // Also check computed cursor style for elements
-                    // inside verification-related containers
                     if (clickables.length === 0) {
                         const containers = document.querySelectorAll(
                             '[class*="verif"], [class*="captcha"], [class*="check"], '
@@ -601,15 +927,12 @@ async def _detect_bot_gate(page) -> dict | None:
                 }
 
                 // --- Strategy 4: POST form with hidden input + gate page text ---
-                // Some gates have a hidden form that auto-submits after click,
-                // with the clickable being a generic div
                 if (hasGateText) {
                     const form = document.querySelector('form[method]');
                     const hiddenInput = form
                         ? form.querySelector('input[type="hidden"]')
                         : null;
                     if (form && hiddenInput) {
-                        // Find the most prominent clickable in the page
                         const allDivs = [...document.querySelectorAll('div, span')];
                         for (const el of allDivs) {
                             const cs = window.getComputedStyle(el);
@@ -638,23 +961,16 @@ async def _detect_bot_gate(page) -> dict | None:
 
 
 async def _build_mouse_track(page) -> None:
-    """Generate realistic mouse movement to satisfy movement-tracking gates.
-
-    Produces 8-12 distinct mousemove events with natural timing and curved
-    paths.  Gates typically hash mouse positions; this ensures the tracking
-    buffer is well-populated before any verify click.
-    """
+    """Generate realistic mouse movement to satisfy movement-tracking gates."""
     try:
         viewport = page.viewport_size or {"width": 1280, "height": 800}
         w, h = viewport["width"], viewport["height"]
 
-        # Start from a random position
         cx = random.randint(int(w * 0.2), int(w * 0.5))
         cy = random.randint(int(h * 0.2), int(h * 0.5))
         await page.mouse.move(cx, cy)
         await asyncio.sleep(random.uniform(0.3, 0.6))
 
-        # 8-12 movements with natural-looking curves
         for _ in range(random.randint(8, 12)):
             cx += random.randint(-120, 120)
             cy += random.randint(-80, 80)
@@ -663,7 +979,6 @@ async def _build_mouse_track(page) -> None:
             await page.mouse.move(cx, cy)
             await asyncio.sleep(random.uniform(0.05, 0.2))
 
-        # Small scroll for extra interaction data
         await page.mouse.wheel(0, random.randint(30, 120))
         await asyncio.sleep(random.uniform(0.2, 0.5))
 
@@ -673,11 +988,6 @@ async def _build_mouse_track(page) -> None:
 
 async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
     """Detect and attempt to bypass a custom anti-bot verification gate.
-
-    Supports two gate styles:
-    1. Button gates — click a "Verify Now" button, wait for PoW + redirect
-    2. Checkbox gates — click a styled div checkbox, wait for the page's
-       JS to auto-submit a hidden form, then capture the post-redirect content
 
     Returns True if a gate was detected and interaction attempted.
     """
@@ -690,8 +1000,7 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
         gate["type"], gate["text"], gate["selector"],
     )
 
-    # Phase 1: Build mouse movement track — many gates require mousemove
-    # data before they'll accept a verify click.
+    # Phase 1: Build mouse movement track
     await _build_mouse_track(page)
 
     # Phase 2: Click the gate element with natural mouse approach
@@ -699,7 +1008,6 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
     try:
         element = await page.query_selector(gate["selector"])
         if not element:
-            # Fallback for button-type gates: find by visible text
             if gate["type"] == "verify_button":
                 for candidate in await page.query_selector_all(
                     "button, [role='button'], a"
@@ -716,7 +1024,6 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
         box = await element.bounding_box()
         if box:
             viewport = page.viewport_size or {"width": 1280, "height": 800}
-            # Start from a random spot and approach the element with curve
             sx = random.randint(
                 int(viewport["width"] * 0.3), int(viewport["width"] * 0.7),
             )
@@ -745,13 +1052,10 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
         logger.warning("Failed to click bot gate element: %s", e)
         return True
 
-    # Phase 3: Wait for resolution — differs by gate type
+    # Phase 3: Wait for resolution
     if gate.get("hasAutoSubmitForm") or gate["type"] == "checkbox_gate":
-        # Checkbox gates auto-submit a hidden form after a short delay
-        # (typically 1.5-3s for the "Verified" animation, then form.submit())
         await _wait_for_form_submit(page, pre_click_url, timeout_remaining)
     else:
-        # Button gates do PoW + redirect
         await _wait_for_gate_resolution(page, pre_click_url, timeout_remaining)
 
     return True
@@ -760,17 +1064,11 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
 async def _wait_for_gate_resolution(
     page, pre_click_url: str, timeout_remaining: float,
 ) -> None:
-    """Wait for bot gate challenge resolution and subsequent navigation.
-
-    After clicking verify, the gate typically fetches a nonce, runs a
-    SHA-256 PoW in WebWorkers, POSTs the solution, then auto-submits a
-    form which sets a cookie and redirects to the real phishing page.
-    """
+    """Wait for bot gate challenge resolution and subsequent navigation."""
     gate_timeout = min(30.0, max(5.0, timeout_remaining - 10.0))
     logger.info("Waiting up to %.0fs for bot gate resolution", gate_timeout)
 
     try:
-        # Primary: wait for URL change (redirect after PoW success)
         try:
             await page.wait_for_url(
                 lambda url: url != pre_click_url,
@@ -778,15 +1076,17 @@ async def _wait_for_gate_resolution(
             )
             logger.info("Bot gate navigated to %s", page.url)
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
+                await asyncio.wait_for(
+                    page.wait_for_load_state("networkidle"),
+                    timeout=10,
+                )
+            except (asyncio.TimeoutError, Exception):
                 pass
             await asyncio.sleep(random.uniform(1.5, 3.0))
             return
         except Exception:
             pass
 
-        # Fallback: check if page content changed (SPA-style gate)
         gate_gone = await page.evaluate("""
             () => {
                 const btns = document.querySelectorAll(
@@ -816,55 +1116,35 @@ async def _wait_for_gate_resolution(
 async def _wait_for_form_submit(
     page, pre_click_url: str, timeout_remaining: float,
 ) -> None:
-    """Wait for a checkbox gate's auto-submit form to fire and navigate.
-
-    After clicking the checkbox, the gate JS typically:
-    1. Shows a spinner for 1.5-2s
-    2. Displays "Verified" for ~1s
-    3. Calls form.submit() which POSTs to the same URL
-    4. Server responds with a redirect or sets a cookie + new content
-
-    We wait for the form submission (navigation event) and then capture
-    the post-submit page content.
-    """
+    """Wait for a checkbox gate's auto-submit form to fire and navigate."""
     form_timeout = min(15.0, max(5.0, timeout_remaining - 10.0))
     logger.info(
         "Waiting up to %.0fs for checkbox gate form submission", form_timeout,
     )
 
     try:
-        # Wait for navigation triggered by form.submit()
-        # The form typically auto-submits 2-4s after the click.
-        # Playwright async API uses expect_navigation() context manager,
-        # but since the click already happened, we use wait_for_url or
-        # wait_for_load_state to detect the POST navigation.
-
-        # First, give the gate JS time to show "Verified" and fire submit
-        # (typically 1.5s animation + 3s delay before form.submit())
         await asyncio.sleep(4.0)
 
-        # Check if URL changed (form POST may redirect)
         if page.url != pre_click_url:
             logger.info("Form POST navigated to %s", page.url)
             try:
-                await page.wait_for_load_state(
-                    "networkidle", timeout=10000,
+                await asyncio.wait_for(
+                    page.wait_for_load_state("networkidle"),
+                    timeout=10,
                 )
-            except Exception:
+            except (asyncio.TimeoutError, Exception):
                 pass
             await asyncio.sleep(random.uniform(1.5, 3.0))
             return
 
-        # URL didn't change — form may have POSTed to same URL.
-        # Wait for the response to load (new page content from POST).
         try:
-            await page.wait_for_load_state(
-                "networkidle", timeout=form_timeout * 1000,
+            await asyncio.wait_for(
+                page.wait_for_load_state("networkidle"),
+                timeout=form_timeout,
             )
-        except Exception:
+        except (asyncio.TimeoutError, Exception):
             pass
 
-        # Give post-submit content time to settle
         await asyncio.sleep(random.uniform(2.0, 4.0))
 
         logger.info(
@@ -879,25 +1159,44 @@ def browser_download(
     url: str,
     dest_dir: str,
     timeout: int = 60,
+    turnstile_timeout: int = 30,
 ) -> tuple[Path | None, str, str | None]:
     """Download a URL using a stealth browser (Camoufox).
 
     Synchronous wrapper around the async implementation for use in
     Celery tasks.  Returns ``(filepath, reason, final_url)`` — the
     final URL is the browser's location after all redirects/gates.
+
+    In addition to page.html, saves:
+    - ``_browser_resources/`` — captured JS, PHP, CSS, XHR responses
+    - ``_screenshots/`` — screenshots at each page stage
+    - ``requests.json`` — full network request/response log
     """
     if not _is_available():
         return None, "camoufox not installed (pip install phishkiller[browser])", None
 
+    # Hard wall-clock deadline: timeout + turnstile_timeout + 30s buffer.
+    # This prevents the async function from hanging indefinitely when
+    # networkidle waits never resolve (e.g., Turnstile keeps polling).
+    hard_timeout = timeout + turnstile_timeout + 30
+
     start = time.monotonic()
     try:
         loop = asyncio.new_event_loop()
+        coro = _async_browser_download(url, dest_dir, timeout, turnstile_timeout)
         result = loop.run_until_complete(
-            _async_browser_download(url, dest_dir, timeout)
+            asyncio.wait_for(coro, timeout=hard_timeout)
         )
         elapsed = time.monotonic() - start
         logger.info("Browser download completed in %.1fs", elapsed)
         return result
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - start
+        logger.error(
+            "Browser download hard timeout after %.1fs (limit %ds)",
+            elapsed, hard_timeout,
+        )
+        return None, f"Browser hard timeout after {hard_timeout}s", None
     except Exception as e:
         elapsed = time.monotonic() - start
         logger.error("Browser download wrapper failed after %.1fs: %s", elapsed, e)
