@@ -11,6 +11,7 @@ from phishkiller.models.kit import KitStatus
 class KitCreate(BaseModel):
     url: HttpUrl
     source_feed: str | None = None
+    force: bool = False
 
 
 class KitSummary(BaseModel):
