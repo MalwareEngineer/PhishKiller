@@ -145,3 +145,48 @@ class KitContentFile(BaseModel):
 class KitContentResponse(BaseModel):
     kit_id: uuid.UUID
     files: list[KitContentFile]
+
+
+# ── Browser artifacts ──
+
+
+class ScreenshotItem(BaseModel):
+    filename: str
+    stage: str
+    data_uri: str
+
+
+class ScreenshotsResponse(BaseModel):
+    screenshots: list[ScreenshotItem]
+
+
+class NetworkLogResponse(BaseModel):
+    events: list[dict]
+    total: int
+
+
+class BrowserResourceItem(BaseModel):
+    filename: str
+    size: int
+    mime_type: str | None = None
+    content: str | None = None
+    truncated: bool = False
+
+
+class BrowserResourcesResponse(BaseModel):
+    resources: list[BrowserResourceItem]
+
+
+class DeobfuscationPairItem(BaseModel):
+    file: str
+    deob_file: str
+    layers: int = 0
+    techniques: list[str] = []
+    original_content: str | None = None
+    original_truncated: bool = False
+    deob_content: str | None = None
+    deob_truncated: bool = False
+
+
+class DeobfuscationPreviewResponse(BaseModel):
+    pairs: list[DeobfuscationPairItem]

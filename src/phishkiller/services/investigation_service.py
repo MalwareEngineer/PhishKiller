@@ -107,6 +107,31 @@ class InvestigationService:
         await self.db.flush()
         return investigation
 
+    async def delete_investigation(self, investigation_id: uuid.UUID) -> bool:
+        """Delete an investigation.
+
+        DB cascades handle cleanup:
+        - root_kit CASCADE deletes (and its child kits cascade too)
+        - Other linked kits get investigation_id SET NULL (preserved)
+        """
+        investigation = await self.get_investigation(investigation_id)
+        if not investigation:
+            return False
+
+        # Clean up root kit's local files before deletion
+        if investigation.root_kit and investigation.root_kit.local_path:
+            import shutil
+            from pathlib import Path
+
+            from phishkiller.services.kit_service import KitService
+
+            kit_service = KitService(self.db)
+            # Use kit service to do a thorough delete (handles descendants + files)
+            await kit_service.delete_kit(investigation.root_kit.id)
+
+        await self.db.delete(investigation)
+        return True
+
     async def get_kit_tree(self, investigation_id: uuid.UUID) -> list[Kit]:
         """Get all kits in an investigation, ordered by depth then created_at."""
         query = (

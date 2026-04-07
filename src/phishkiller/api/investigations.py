@@ -92,6 +92,38 @@ async def update_investigation(
     return detail
 
 
+@router.delete("/{investigation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_investigation(investigation_id: uuid.UUID, db: DbSession) -> None:
+    service = InvestigationService(db)
+    deleted = await service.delete_investigation(investigation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    await db.commit()
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_investigations(
+    payload: dict,
+    db: DbSession,
+):
+    """Delete multiple investigations by ID."""
+    ids = payload.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    service = InvestigationService(db)
+    deleted = 0
+    for raw_id in ids:
+        try:
+            inv_id = uuid.UUID(str(raw_id))
+        except ValueError:
+            continue
+        if await service.delete_investigation(inv_id):
+            deleted += 1
+    await db.commit()
+    return {"deleted": deleted}
+
+
 @router.get("/{investigation_id}/tree", response_model=list[InvestigationTreeNode])
 async def get_investigation_tree(
     investigation_id: uuid.UUID,

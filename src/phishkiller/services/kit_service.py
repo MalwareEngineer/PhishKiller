@@ -1,5 +1,7 @@
 """Kit business logic."""
 
+import base64
+import json
 import logging
 import mimetypes
 import shutil
@@ -398,6 +400,241 @@ class KitService:
                     files.append(entry)
 
         return files
+
+    def _resolve_download_dir(self, kit: Kit) -> Path | None:
+        """Resolve the download directory for a kit from its local_path.
+
+        Falls back to the kit ID directory under kit_download_dir when
+        local_path is not set (e.g. browser download failed mid-process
+        but partial artifacts like screenshots were already saved).
+        """
+        if kit.local_path:
+            download_dir = Path(kit.local_path).parent
+            if download_dir.is_dir():
+                return download_dir
+
+        # Fallback: check if a directory named after the kit ID exists
+        settings = get_settings()
+        fallback_dir = Path(settings.kit_download_dir) / str(kit.id)
+        if fallback_dir.is_dir():
+            return fallback_dir
+
+        return None
+
+    async def get_kit_screenshots(self, kit_id: uuid.UUID) -> list[dict] | None:
+        """Read base64-encoded screenshots from the kit's download directory."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        download_dir = self._resolve_download_dir(kit)
+        if not download_dir:
+            return []
+
+        screenshots_dir = download_dir / "_screenshots"
+        if not screenshots_dir.is_dir():
+            return []
+
+        results: list[dict] = []
+        for fp in sorted(screenshots_dir.iterdir()):
+            if not fp.is_file() or fp.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                continue
+            if fp.stat().st_size > 10 * 1024 * 1024:  # 10MB cap
+                continue
+            if len(results) >= 20:
+                break
+            try:
+                data = fp.read_bytes()
+                ext = fp.suffix.lower().lstrip(".")
+                mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+                data_uri = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+                # Parse stage from filename: "01_landing.png" → "landing"
+                stage = fp.stem
+                parts = stage.split("_", 1)
+                if len(parts) == 2 and parts[0].isdigit():
+                    stage = parts[1]
+                results.append({
+                    "filename": fp.name,
+                    "stage": stage.replace("_", " ").title(),
+                    "data_uri": data_uri,
+                })
+            except OSError:
+                continue
+        return results
+
+    async def get_kit_network_log(self, kit_id: uuid.UUID) -> dict | None:
+        """Read requests.json network log from the kit's download directory."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        download_dir = self._resolve_download_dir(kit)
+        if not download_dir:
+            return {"events": [], "total": 0}
+
+        requests_file = download_dir / "requests.json"
+        if not requests_file.is_file():
+            return {"events": [], "total": 0}
+
+        try:
+            data = json.loads(requests_file.read_text(errors="replace"))
+            if not isinstance(data, list):
+                return {"events": [], "total": 0}
+            events = data[:5000]
+            return {"events": events, "total": len(data)}
+        except (OSError, json.JSONDecodeError):
+            return {"events": [], "total": 0}
+
+    async def get_kit_browser_resources(self, kit_id: uuid.UUID) -> list[dict] | None:
+        """Read captured browser sub-resources from the kit's download directory."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        download_dir = self._resolve_download_dir(kit)
+        if not download_dir:
+            return []
+
+        resources_dir = download_dir / "_browser_resources"
+        if not resources_dir.is_dir():
+            return []
+
+        # Text extensions for content preview
+        text_exts = {
+            ".html", ".htm", ".php", ".js", ".css", ".json", ".xml",
+            ".txt", ".svg", ".yml", ".yaml",
+        }
+        text_mimes = {
+            "text/html", "text/plain", "text/css", "text/xml", "text/javascript",
+            "application/json", "application/xml", "application/javascript",
+            "application/x-php",
+        }
+
+        # Fallback MIME map for extensions mimetypes may not know
+        ext_mime_fallback = {
+            ".js": "application/javascript",
+            ".mjs": "application/javascript",
+            ".cjs": "application/javascript",
+            ".ts": "text/typescript",
+            ".jsx": "text/jsx",
+            ".tsx": "text/tsx",
+            ".php": "application/x-php",
+            ".svg": "image/svg+xml",
+            ".woff2": "font/woff2",
+            ".woff": "font/woff",
+        }
+
+        results: list[dict] = []
+        for fp in sorted(resources_dir.iterdir()):
+            if not fp.is_file():
+                continue
+            if len(results) >= 50:
+                break
+            try:
+                size = fp.stat().st_size
+                mime, _ = mimetypes.guess_type(fp.name)
+                if not mime:
+                    mime = ext_mime_fallback.get(fp.suffix.lower())
+                is_text = (
+                    fp.suffix.lower() in text_exts
+                    or (mime and mime in text_mimes)
+                )
+                content = None
+                truncated = False
+                max_size = 500 * 1024  # 500KB
+                if is_text and size <= max_size:
+                    try:
+                        content = fp.read_text(errors="replace")
+                    except OSError:
+                        pass
+                elif is_text and size > max_size:
+                    try:
+                        content = fp.read_text(errors="replace")[:max_size]
+                        truncated = True
+                    except OSError:
+                        pass
+                results.append({
+                    "filename": fp.name,
+                    "size": size,
+                    "mime_type": mime,
+                    "content": content,
+                    "truncated": truncated,
+                })
+            except OSError:
+                continue
+        return results
+
+    async def get_kit_deobfuscation_preview(self, kit_id: uuid.UUID) -> list[dict] | None:
+        """Read original and deobfuscated file pairs from the kit's download directory."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        download_dir = self._resolve_download_dir(kit)
+        if not download_dir:
+            return []
+
+        # Get deobfuscation details from analysis results
+        result = (
+            await self.db.execute(
+                select(AnalysisResult)
+                .where(AnalysisResult.kit_id == kit_id)
+                .where(AnalysisResult.analysis_type == AnalysisType.DEOBFUSCATION)
+            )
+        ).scalar_one_or_none()
+
+        if not result or not result.result_data:
+            return []
+
+        details = result.result_data.get("details", [])
+        if not details:
+            return []
+
+        max_content = 500 * 1024  # 500KB per file
+        pairs: list[dict] = []
+        for d in details[:20]:  # Cap at 20 pairs
+            original_path = download_dir / d.get("file", "")
+            deob_path = download_dir / d.get("deob_file", "")
+
+            original_content = None
+            deob_content = None
+            original_truncated = False
+            deob_truncated = False
+
+            if original_path.is_file():
+                try:
+                    raw = original_path.read_text(errors="replace")
+                    if len(raw) > max_content:
+                        original_content = raw[:max_content]
+                        original_truncated = True
+                    else:
+                        original_content = raw
+                except OSError:
+                    pass
+
+            if deob_path.is_file():
+                try:
+                    raw = deob_path.read_text(errors="replace")
+                    if len(raw) > max_content:
+                        deob_content = raw[:max_content]
+                        deob_truncated = True
+                    else:
+                        deob_content = raw
+                except OSError:
+                    pass
+
+            pairs.append({
+                "file": d.get("file", ""),
+                "deob_file": d.get("deob_file", ""),
+                "layers": d.get("layers", 0),
+                "techniques": d.get("techniques", []),
+                "original_content": original_content,
+                "original_truncated": original_truncated,
+                "deob_content": deob_content,
+                "deob_truncated": deob_truncated,
+            })
+
+        return pairs
 
     async def search_kits(
         self,
