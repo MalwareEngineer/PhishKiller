@@ -8,6 +8,10 @@ import type {
   KitBulkResponse,
   KitBulkUploadResponse,
   SimilarKit,
+  ScreenshotsResponse,
+  NetworkLogResponse,
+  BrowserResourcesResponse,
+  DeobfuscationPreviewResponse,
   InvestigationSummary,
   InvestigationDetail,
   InvestigationTreeNode,
@@ -51,10 +55,10 @@ export const kits = {
     return request<PaginatedResponse<KitSummary>>(`/kits?${q}`);
   },
   get: (id: string) => request<KitDetail>(`/kits/${id}`),
-  submit: (url: string, source_feed?: string) =>
+  submit: (url: string, source_feed?: string, force?: boolean) =>
     request<KitSubmitResponse>("/kits", {
       method: "POST",
-      body: JSON.stringify({ url, source_feed }),
+      body: JSON.stringify({ url, source_feed, force }),
     }),
   upload: async (file: File, source_feed?: string) => {
     const form = new FormData();
@@ -89,6 +93,10 @@ export const kits = {
   delete: (id: string) => request<void>(`/kits/${id}`, { method: "DELETE" }),
   deletePreview: (id: string) => request<KitDeletePreview>(`/kits/${id}/delete-preview`),
   content: (id: string) => request<KitContentResponse>(`/kits/${id}/content`),
+  screenshots: (id: string) => request<ScreenshotsResponse>(`/kits/${id}/screenshots`),
+  networkLog: (id: string) => request<NetworkLogResponse>(`/kits/${id}/network-log`),
+  browserResources: (id: string) => request<BrowserResourcesResponse>(`/kits/${id}/browser-resources`),
+  deobfuscationPreview: (id: string) => request<DeobfuscationPreviewResponse>(`/kits/${id}/deobfuscation-preview`),
   addToCampaign: (kitId: string, campaignId: string) =>
     request<{ added: number; kit_id: string; used_root: boolean; message: string }>(
       `/kits/${kitId}/add-to-campaign`,
@@ -99,6 +107,11 @@ export const kits = {
       `/kits/${kitId}/add-to-actor`,
       { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
     ),
+  bulkDelete: (ids: string[]) =>
+    request<{ deleted: number }>("/kits/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
   search: (params: { q?: string; yara_rule?: string; tlsh?: string; tlsh_threshold?: number; offset?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (params.q) q.set("q", params.q);
@@ -129,6 +142,12 @@ export const investigations = {
     request<InvestigationDetail>(`/investigations/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
+    }),
+  delete: (id: string) => request<void>(`/investigations/${id}`, { method: "DELETE" }),
+  bulkDelete: (ids: string[]) =>
+    request<{ deleted: number }>("/investigations/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
     }),
 };
 

@@ -972,17 +972,30 @@ def yara_scan(self, prev_result: dict) -> dict:
                 "namespace": m.namespace,
                 "tags": m.tags,
                 "meta": m.meta,
+                "strings": m.strings,
+                "source_file": m.meta.get("source_file"),
             }
             for m in result.matches
         ]
 
-        # Deduplicate by rule name (same rule may match multiple files)
-        seen_rules = set()
+        # Deduplicate by rule name — aggregate source_files and strings
+        seen_rules: dict[str, dict] = {}
         unique_matches = []
         for m in match_data:
             if m["rule"] not in seen_rules:
-                seen_rules.add(m["rule"])
+                m["source_files"] = [m["source_file"]] if m["source_file"] else []
+                seen_rules[m["rule"]] = m
                 unique_matches.append(m)
+            else:
+                existing = seen_rules[m["rule"]]
+                if m["source_file"] and m["source_file"] not in existing["source_files"]:
+                    existing["source_files"].append(m["source_file"])
+                # Merge unique strings
+                existing_strings = set(existing.get("strings", []))
+                for s in m.get("strings", []):
+                    if s not in existing_strings:
+                        existing["strings"].append(s)
+                        existing_strings.add(s)
 
         upsert_analysis_result(
             db,

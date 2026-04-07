@@ -99,6 +99,46 @@ export function useKitContent(id: string, enabled: boolean) {
   });
 }
 
+export function useKitScreenshots(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-screenshots", id],
+    queryFn: () => kits.screenshots(id),
+    enabled: !!id && enabled,
+  });
+}
+
+export function useKitNetworkLog(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-network-log", id],
+    queryFn: () => kits.networkLog(id),
+    enabled: !!id && enabled,
+  });
+}
+
+export function useKitBrowserResources(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-browser-resources", id],
+    queryFn: () => kits.browserResources(id),
+    enabled: !!id && enabled,
+  });
+}
+
+export function useKitDeobfuscationPreview(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["kit-deob-preview", id],
+    queryFn: () => kits.deobfuscationPreview(id),
+    enabled: !!id && enabled,
+  });
+}
+
+export function useForceRedownload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ url }: { url: string }) => kits.submit(url, undefined, true),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
+  });
+}
+
 export function useSearchKits(params: {
   q?: string;
   yara_rule?: string;
@@ -118,6 +158,17 @@ export function useDeleteKit() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => kits.delete(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["kits"] });
+      qc.invalidateQueries({ queryKey: ["investigations"] });
+    },
+  });
+}
+
+export function useBulkDeleteKits() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => kits.bulkDelete(ids),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kits"] });
       qc.invalidateQueries({ queryKey: ["investigations"] });

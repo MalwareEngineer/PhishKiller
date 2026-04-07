@@ -1,37 +1,88 @@
-import { useParams, Link } from "react-router-dom";
-import { useInvestigation, useInvestigationTree, useUpdateInvestigation } from "@/hooks/use-investigations";
+import { useState } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useInvestigation, useInvestigationTree, useUpdateInvestigation, useDeleteInvestigation } from "@/hooks/use-investigations";
 import { EditableDescription } from "@/components/shared/editable-description";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { PageLoading } from "@/components/shared/loading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { InvestigationTreeNode } from "@/types/api";
 
 export function InvestigationDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: inv, isLoading } = useInvestigation(id!);
   const { data: tree } = useInvestigationTree(id!);
   const updateMutation = useUpdateInvestigation();
+  const deleteMutation = useDeleteInvestigation();
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (isLoading || !inv) return <PageLoading />;
 
+  const handleDelete = () => {
+    deleteMutation.mutate(id!, {
+      onSuccess: () => {
+        toast.success("Investigation deleted");
+        navigate("/investigations");
+      },
+      onError: (err) => toast.error(err.message),
+    });
+  };
+
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">
-          {inv.name ?? `Investigation ${inv.id.slice(0, 8)}`}
-        </h1>
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <Badge variant={inv.status === "completed" ? "default" : "secondary"}>
-            {inv.status}
-          </Badge>
-          <span>{inv.total_kits} kits</span>
-          <span>depth {inv.total_depth_reached}/{inv.max_depth}</span>
-          <span>{new Date(inv.created_at).toLocaleString()}</span>
+      <div className="flex items-start justify-between">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold tracking-tight">
+            {inv.name ?? `Investigation ${inv.id.slice(0, 8)}`}
+          </h1>
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <Badge variant={inv.status === "completed" ? "default" : "secondary"}>
+              {inv.status}
+            </Badge>
+            <span>{inv.total_kits} kits</span>
+            <span>depth {inv.total_depth_reached}/{inv.max_depth}</span>
+            <span>{new Date(inv.created_at).toLocaleString()}</span>
+          </div>
         </div>
+        <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
+          <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+          Delete
+        </Button>
       </div>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete investigation?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will permanently delete this investigation. The root kit and all its
+            descendant kits will be cascade-deleted along with their indicators and
+            analysis results. Other linked kits will be preserved but unlinked.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete Investigation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <EditableDescription
         value={inv.description}

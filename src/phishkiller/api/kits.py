@@ -8,6 +8,8 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 from phishkiller.api.deps import DbSession, Pagination
 from phishkiller.config import get_settings
 from phishkiller.schemas.kit import (
+    BrowserResourcesResponse,
+    DeobfuscationPreviewResponse,
     KitBulkCreate,
     KitBulkResponse,
     KitBulkResult,
@@ -19,6 +21,8 @@ from phishkiller.schemas.kit import (
     KitDetail,
     KitListResponse,
     KitSubmitResponse,
+    NetworkLogResponse,
+    ScreenshotsResponse,
     SimilarKit,
 )
 from phishkiller.services.kit_service import KitService
@@ -274,6 +278,26 @@ async def search_kits(
     return {"items": items, "total": total}
 
 
+@router.post("/bulk-delete")
+async def bulk_delete_kits(payload: dict, db: DbSession):
+    """Delete multiple kits by ID."""
+    ids = payload.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    service = KitService(db)
+    deleted = 0
+    for raw_id in ids:
+        try:
+            kit_id = uuid.UUID(str(raw_id))
+        except ValueError:
+            continue
+        if await service.delete_kit(kit_id):
+            deleted += 1
+    await db.commit()
+    return {"deleted": deleted}
+
+
 @router.get("/{kit_id}", response_model=KitDetail)
 async def get_kit(kit_id: uuid.UUID, db: DbSession) -> KitDetail:
     service = KitService(db)
@@ -340,6 +364,42 @@ async def get_kit_content(kit_id: uuid.UUID, db: DbSession) -> KitContentRespons
     if files is None:
         raise HTTPException(status_code=404, detail="Kit not found")
     return KitContentResponse(kit_id=kit_id, files=files)
+
+
+@router.get("/{kit_id}/screenshots", response_model=ScreenshotsResponse)
+async def get_kit_screenshots(kit_id: uuid.UUID, db: DbSession) -> ScreenshotsResponse:
+    service = KitService(db)
+    screenshots = await service.get_kit_screenshots(kit_id)
+    if screenshots is None:
+        raise HTTPException(status_code=404, detail="Kit not found")
+    return ScreenshotsResponse(screenshots=screenshots)
+
+
+@router.get("/{kit_id}/network-log", response_model=NetworkLogResponse)
+async def get_kit_network_log(kit_id: uuid.UUID, db: DbSession) -> NetworkLogResponse:
+    service = KitService(db)
+    result = await service.get_kit_network_log(kit_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Kit not found")
+    return NetworkLogResponse(**result)
+
+
+@router.get("/{kit_id}/browser-resources", response_model=BrowserResourcesResponse)
+async def get_kit_browser_resources(kit_id: uuid.UUID, db: DbSession) -> BrowserResourcesResponse:
+    service = KitService(db)
+    resources = await service.get_kit_browser_resources(kit_id)
+    if resources is None:
+        raise HTTPException(status_code=404, detail="Kit not found")
+    return BrowserResourcesResponse(resources=resources)
+
+
+@router.get("/{kit_id}/deobfuscation-preview", response_model=DeobfuscationPreviewResponse)
+async def get_kit_deobfuscation_preview(kit_id: uuid.UUID, db: DbSession) -> DeobfuscationPreviewResponse:
+    service = KitService(db)
+    pairs = await service.get_kit_deobfuscation_preview(kit_id)
+    if pairs is None:
+        raise HTTPException(status_code=404, detail="Kit not found")
+    return DeobfuscationPreviewResponse(pairs=pairs)
 
 
 @router.post("/{kit_id}/reanalyze", status_code=status.HTTP_202_ACCEPTED)

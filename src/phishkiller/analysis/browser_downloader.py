@@ -526,10 +526,11 @@ async def _async_browser_download(
                 await asyncio.sleep(random.uniform(3.0, 5.0))
 
                 # Second attempt at Turnstile (fresh session = managed mode)
-                await _wait_for_turnstile(page, timeout=turnstile_timeout)
+                turnstile_result = await _wait_for_turnstile(page, timeout=turnstile_timeout)
 
-            # Screenshot: after Turnstile/bot check (stage 2)
-            await _take_screenshot(page, screenshots_dir, "02_bot_check")
+            # Screenshot: after Turnstile/bot check (stage 2) — only if Turnstile was present
+            if turnstile_result != "absent":
+                await _take_screenshot(page, screenshots_dir, "02_bot_check")
 
             # Simulate minimal human behavior to pass behavioral checks
             await _simulate_human_behavior(page)
@@ -703,7 +704,9 @@ async def _wait_for_turnstile(page, timeout: int = 30) -> str:
                 await page.mouse.click(click_x, click_y)
                 await asyncio.sleep(random.uniform(1.5, 3.0))
         else:
-            widget = await page.query_selector(".cf-turnstile")
+            widget = await page.query_selector(
+                ".cf-turnstile, [data-sitekey]"
+            )
             if widget:
                 box = await widget.bounding_box()
                 if box:
@@ -715,11 +718,16 @@ async def _wait_for_turnstile(page, timeout: int = 30) -> str:
                     )
                     await page.mouse.click(click_x, click_y)
                     await asyncio.sleep(random.uniform(1.5, 3.0))
+                else:
+                    logger.warning(
+                        "Turnstile widget found but has no bounding box — "
+                        "will poll for auto-resolve",
+                    )
             else:
                 logger.warning(
-                    "Turnstile widget present but no clickable element found",
+                    "Turnstile widget present but no clickable element found — "
+                    "will poll for auto-resolve",
                 )
-                return "timeout"
 
         # Poll for the response token with a hard timeout
         poll_deadline = asyncio.get_event_loop().time() + timeout

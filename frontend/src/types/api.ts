@@ -30,7 +30,8 @@ export type AnalysisType =
   | "eml_parse"
   | "qr_decode"
   | "link_score"
-  | "redirect_chain";
+  | "redirect_chain"
+  | "external_js_fetch";
 
 // ── Paginated response ──
 
@@ -248,6 +249,61 @@ export interface KitContentFile {
 export interface KitContentResponse {
   kit_id: string;
   files: KitContentFile[];
+}
+
+// ── Browser Artifacts ──
+
+export interface ScreenshotItem {
+  filename: string;
+  stage: string;
+  data_uri: string;
+}
+
+export interface ScreenshotsResponse {
+  screenshots: ScreenshotItem[];
+}
+
+export interface NetworkEvent {
+  url: string;
+  method?: string;
+  status?: number;
+  resource_type?: string;
+  content_type?: string;
+  headers?: Record<string, string>;
+  timestamp?: number;
+  type: "request" | "response";
+}
+
+export interface NetworkLogResponse {
+  events: NetworkEvent[];
+  total: number;
+}
+
+export interface BrowserResourceItem {
+  filename: string;
+  size: number;
+  mime_type?: string;
+  content?: string;
+  truncated: boolean;
+}
+
+export interface BrowserResourcesResponse {
+  resources: BrowserResourceItem[];
+}
+
+export interface DeobfuscationPairItem {
+  file: string;
+  deob_file: string;
+  layers: number;
+  techniques: string[];
+  original_content?: string;
+  original_truncated: boolean;
+  deob_content?: string;
+  deob_truncated: boolean;
+}
+
+export interface DeobfuscationPreviewResponse {
+  pairs: DeobfuscationPairItem[];
 }
 
 // ── Health ──

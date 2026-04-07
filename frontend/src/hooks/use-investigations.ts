@@ -52,3 +52,25 @@ export function useUpdateInvestigation() {
     },
   });
 }
+
+export function useDeleteInvestigation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => investigations.delete(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investigations"] });
+      qc.invalidateQueries({ queryKey: ["kits"] });
+    },
+  });
+}
+
+export function useBulkDeleteInvestigations() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => investigations.bulkDelete(ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investigations"] });
+      qc.invalidateQueries({ queryKey: ["kits"] });
+    },
+  });
+}

@@ -7,6 +7,7 @@ separate entities with a parent→child relationship.
 """
 
 import logging
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -20,6 +21,43 @@ from phishkiller.database import get_sync_db
 from phishkiller.models.kit import Kit, KitStatus
 
 logger = logging.getLogger(__name__)
+
+# Patterns that identify a bot-challenge / interstitial page rather than
+# real phishing content.  Checked against the sibling's page.html so we
+# can decide whether a new render should supersede it.
+_CHALLENGE_PATTERNS = [
+    # Cloudflare Turnstile / "Checking your browser"
+    re.compile(r"challenges\.cloudflare\.com", re.IGNORECASE),
+    re.compile(r"cdn-cgi/challenge-platform", re.IGNORECASE),
+    re.compile(r'class="cf-turnstile"', re.IGNORECASE),
+    re.compile(r"data-sitekey=", re.IGNORECASE),
+    # Common interstitial titles
+    re.compile(r"<title>\s*(Just a moment|Attention Required|Almost ready)", re.IGNORECASE),
+    # Generic "checking your browser" gates
+    re.compile(r"Checking your browser before accessing", re.IGNORECASE),
+    re.compile(r"DDoS protection by", re.IGNORECASE),
+]
+
+
+def _is_challenge_page(kit: Kit, settings) -> bool:
+    """Return True if the kit's page.html matches known challenge patterns."""
+    if not kit.local_path:
+        # Try fallback directory
+        page_path = Path(settings.kit_download_dir) / str(kit.id) / "page.html"
+    else:
+        page_path = Path(kit.local_path)
+
+    if not page_path.is_file():
+        return False
+
+    try:
+        # Only need the first ~50KB to check for challenge markers
+        with open(page_path, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(50_000)
+    except OSError:
+        return False
+
+    return any(pat.search(head) for pat in _CHALLENGE_PATTERNS)
 
 
 @celery_app.task(
@@ -203,6 +241,12 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
         # PhaaS kits rotate relay domains per-visit, but the same domain
         # can repeat.  Dedup on the final URL's domain before running the
         # full analysis pipeline.
+        #
+        # Edge case: a sibling may have captured only a bot-challenge page
+        # (Cloudflare Turnstile, generic "checking your browser" interstitial)
+        # while the new child got past it.  Detect this by inspecting the
+        # sibling's page.html for known challenge markers rather than relying
+        # on file-size heuristics.
         if final_url and child_kit.investigation_id:
             from urllib.parse import urlparse
 
@@ -217,6 +261,22 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
                 for sibling in siblings:
                     sib_domain = urlparse(sibling.source_url).hostname
                     if sib_domain == child_domain:
+                        # Check whether the existing sibling is just a
+                        # challenge/interstitial page that never reached
+                        # the real content.
+                        if _is_challenge_page(sibling, settings):
+                            logger.info(
+                                "Kit %s supersedes challenge-page sibling "
+                                "%s on domain %s",
+                                child_id, sibling.id, child_domain,
+                            )
+                            sib_dir = Path(settings.kit_download_dir) / str(sibling.id)
+                            db.delete(sibling)
+                            db.commit()
+                            shutil.rmtree(sib_dir, ignore_errors=True)
+                            # Fall through to TLSH dedup / analysis
+                            break
+
                         logger.info(
                             "Kit %s relay domain %s already captured by %s "
                             "— removing duplicate child",

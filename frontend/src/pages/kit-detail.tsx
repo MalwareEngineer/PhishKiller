@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useKit, useKitSimilar, useKitActors, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor } from "@/hooks/use-kits";
+import { useKit, useKitSimilar, useKitActors, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor, useKitScreenshots, useKitNetworkLog, useKitBrowserResources, useForceRedownload } from "@/hooks/use-kits";
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useActors } from "@/hooks/use-actors";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
@@ -32,9 +32,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus } from "lucide-react";
+import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus, Download } from "lucide-react";
 import { toast } from "sonner";
 import type { AnalysisResultBrief } from "@/types/api";
+import { TabScreenshots } from "@/components/kit-detail/tab-screenshots";
+import { TabNetwork } from "@/components/kit-detail/tab-network";
+import { TabResources } from "@/components/kit-detail/tab-resources";
+import { AnalysisResultView } from "@/components/kit-detail/analysis-result-view";
+import { AnalysisPipeline } from "@/components/kit-detail/analysis-pipeline";
 
 // ── Helpers ──
 
@@ -149,6 +154,11 @@ export function KitDetailPage() {
   const { data: kitActors } = useKitActors(id!);
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
+  const { data: screenshotsData } = useKitScreenshots(id!, activeTab === "screenshots");
+  const { data: networkData } = useKitNetworkLog(id!, activeTab === "network");
+  const { data: resourcesData } = useKitBrowserResources(id!, activeTab === "resources");
+  const forceRedownload = useForceRedownload();
+  const [redownloadOpen, setRedownloadOpen] = useState(false);
 
   if (isLoading || !kit) return <PageLoading />;
 
@@ -159,6 +169,24 @@ export function KitDetailPage() {
       onSuccess: () => toast.success("Re-analysis started"),
       onError: (err) => toast.error(err.message),
     });
+  };
+
+  const handleRedownload = () => {
+    forceRedownload.mutate(
+      { url: kit.source_url },
+      {
+        onSuccess: (data) => {
+          setRedownloadOpen(false);
+          toast.success("Re-download started", {
+            action: {
+              label: "View Kit",
+              onClick: () => navigate(`/kits/${data.kit_id}`),
+            },
+          });
+        },
+        onError: (err) => toast.error(err.message),
+      }
+    );
   };
 
   const handleDelete = () => {
@@ -193,6 +221,12 @@ export function KitDetailPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          {kit.source_url && !kit.source_url.startsWith("file://") && (
+            <Button variant="outline" size="sm" onClick={() => setRedownloadOpen(true)} disabled={forceRedownload.isPending}>
+              <Download className="mr-2 h-4 w-4" />
+              Re-download
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={handleReanalyze} disabled={reanalyze.isPending}>
             <RefreshCw className="mr-2 h-4 w-4" />
             Reanalyze
@@ -244,6 +278,11 @@ export function KitDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Pipeline progress */}
+      {["analyzing", "analyzed", "failed"].includes(kit.status) && kit.analysis_results.length > 0 && (
+        <AnalysisPipeline results={kit.analysis_results} status={kit.status} />
+      )}
+
       {kit.error_message && (
         <Card className="border-red-500/30">
           <CardContent className="p-4">
@@ -254,7 +293,7 @@ export function KitDetailPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
+        <TabsList className="overflow-x-auto">
           <TabsTrigger value="indicators">
             Indicators ({kit.indicators.length})
           </TabsTrigger>
@@ -263,6 +302,15 @@ export function KitDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="analysis">
             Analysis ({kit.analysis_results.length})
+          </TabsTrigger>
+          <TabsTrigger value="screenshots">
+            Screenshots ({screenshotsData?.screenshots.length ?? 0})
+          </TabsTrigger>
+          <TabsTrigger value="network">
+            Network ({networkData?.total ?? 0})
+          </TabsTrigger>
+          <TabsTrigger value="resources">
+            Resources ({resourcesData?.resources.length ?? 0})
           </TabsTrigger>
           <TabsTrigger value="content">
             Content
@@ -388,14 +436,27 @@ export function KitDetailPage() {
                     {result.error && (
                       <p className="text-sm text-red-400 font-mono mb-2">{result.error}</p>
                     )}
-                    <pre className="text-xs font-mono bg-muted/50 p-3 rounded-md overflow-auto max-h-64">
-                      {JSON.stringify(result.result_data ?? {}, null, 2)}
-                    </pre>
+                    <AnalysisResultView result={result} kitId={id} />
                   </AccordionContent>
                 </AccordionItem>
               ))}
             </Accordion>
           )}
+        </TabsContent>
+
+        {/* Screenshots Tab */}
+        <TabsContent value="screenshots" className="mt-4">
+          <TabScreenshots kitId={id!} enabled={activeTab === "screenshots"} />
+        </TabsContent>
+
+        {/* Network Tab */}
+        <TabsContent value="network" className="mt-4">
+          <TabNetwork kitId={id!} enabled={activeTab === "network"} />
+        </TabsContent>
+
+        {/* Resources Tab */}
+        <TabsContent value="resources" className="mt-4">
+          <TabResources kitId={id!} enabled={activeTab === "resources"} />
         </TabsContent>
 
         {/* Content Tab */}
@@ -627,6 +688,31 @@ export function KitDetailPage() {
           </Link>
         </div>
       )}
+
+      {/* Re-download confirmation dialog */}
+      <Dialog open={redownloadOpen} onOpenChange={setRedownloadOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Re-download Kit</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-sm">
+              This will create a <span className="font-medium">new kit</span> by re-downloading
+              and re-analyzing the source URL:
+            </p>
+            <p className="font-mono text-xs text-muted-foreground break-all">{kit.source_url}</p>
+            <p className="text-xs text-muted-foreground">
+              The existing kit will not be modified. URL and hash deduplication checks will be skipped.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRedownloadOpen(false)}>Cancel</Button>
+            <Button onClick={handleRedownload} disabled={forceRedownload.isPending}>
+              {forceRedownload.isPending ? "Submitting..." : "Re-download"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete confirmation dialog */}
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
