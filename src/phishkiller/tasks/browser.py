@@ -4,21 +4,90 @@ Runs on the dedicated ``browser`` queue consumed by worker-browser (solo pool).
 Creates a **child kit** linked to the original httpx-downloaded parent, so both
 the raw JS loader and the browser-rendered credential form are preserved as
 separate entities with a parent→child relationship.
+
+Dedup strategy:
+  1. **Ancestor chain** — compare child against its parent chain (parent,
+     grandparent, …, root).  A match means the kit is stuck at a protection
+     gate (e.g. Cloudflare Turnstile).  No re-render is scheduled.
+  2. **Direct siblings** — compare child against other children of the same
+     parent.  A match means the relay domain pool is repeating.  A re-render
+     is scheduled with an incremented dupe counter.
+  Both checks use TLSH distance with SHA256 fallback for tiny files.
+  Neither check ever deletes kits — duplicates are marked FAILED with
+  ``duplicate_of_kit_id`` set and files preserved on disk.
 """
 
 import logging
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from sqlalchemy import func
 
 from phishkiller.analysis.browser_downloader import browser_download
+from phishkiller.analysis.hasher import compute_hashes as do_hash, compute_tlsh_distance
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
 from phishkiller.models.kit import Kit, KitStatus
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Dedup helpers
+# ---------------------------------------------------------------------------
+
+def _walk_ancestor_chain(db, kit: Kit, max_depth: int = 5) -> list[Kit]:
+    """Walk ``parent_kit_id`` links up to root.
+
+    Returns ``[parent, grandparent, …]``.  Bounded by *max_depth* to
+    prevent runaway loops.  Uses the indexed ``parent_kit_id`` FK so
+    each hop is a single-row PK lookup.
+    """
+    ancestors: list[Kit] = []
+    current = kit
+    for _ in range(max_depth):
+        if not current.parent_kit_id:
+            break
+        parent = db.query(Kit).filter(Kit.id == current.parent_kit_id).first()
+        if not parent:
+            break
+        ancestors.append(parent)
+        current = parent
+    return ancestors
+
+
+def _get_direct_siblings(db, kit: Kit) -> list[Kit]:
+    """Return browser-render children sharing the same parent (excluding *kit*)."""
+    if not kit.parent_kit_id:
+        return []
+    return db.query(Kit).filter(
+        Kit.parent_kit_id == kit.parent_kit_id,
+        Kit.id != kit.id,
+        Kit.discovery_method == "browser_render",
+    ).all()
+
+
+def _content_matches(
+    child_tlsh: str | None,
+    child_sha256: str | None,
+    other_tlsh: str | None,
+    other_sha256: str | None,
+    threshold: int,
+) -> tuple[bool, str]:
+    """Compare two kits' content.  Returns ``(is_match, detail_string)``.
+
+    Uses TLSH distance when both hashes are available, falls back to exact
+    SHA256 for tiny files where TLSH is None.
+    """
+    if child_tlsh and other_tlsh:
+        distance = compute_tlsh_distance(child_tlsh, other_tlsh)
+        if distance is not None and distance <= threshold:
+            return True, f"TLSH distance {distance} (threshold {threshold})"
+    if child_sha256 and other_sha256 and child_sha256 == other_sha256:
+        return True, "exact SHA256 match"
+    return False, ""
 
 
 @celery_app.task(
@@ -199,93 +268,84 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
             parent_kit.status = KitStatus.ANALYZED
 
         # --- Compute hashes ---
-        from phishkiller.analysis.hasher import (
-            compute_hashes as do_hash,
-            compute_tlsh_distance,
-        )
-
         child_hashes = do_hash(filepath)
         child_kit.sha256 = child_hashes.sha256
         child_kit.md5 = child_hashes.md5
         child_kit.sha1 = child_hashes.sha1
         child_kit.tlsh = child_hashes.tlsh
 
-        # --- Relay domain dedup ---
-        # PhaaS kits rotate relay domains per-visit, but the same domain
-        # can repeat.  When the child lands on a domain we've already
-        # captured, mark it FAILED (preserving files on disk) and count
-        # toward pool exhaustion.
+        threshold = settings.browser_dedup_tlsh_threshold
+
+        # --- Ancestor chain dedup (stuck-at-gate detection) ---
+        # Walk parent → grandparent → … → root.  If the child's content
+        # matches any ancestor, it's stuck at the same protection gate
+        # (e.g. still seeing the Cloudflare challenge page).
         dup_of: str | None = None
         dup_reason: str | None = None
-        if final_url and child_kit.investigation_id:
-            from urllib.parse import urlparse
+        stuck_at_gate = False
 
-            child_domain = urlparse(final_url).hostname
-            if child_domain:
-                siblings = db.query(Kit).filter(
-                    Kit.investigation_id == child_kit.investigation_id,
-                    Kit.id != child_kit.id,
-                    Kit.discovery_method == "browser_render",
-                ).all()
-
-                for sibling in siblings:
-                    sib_domain = urlparse(sibling.source_url).hostname
-                    if sib_domain == child_domain:
-                        dup_of = str(sibling.id)
-                        dup_reason = (
-                            f"Relay domain duplicate of kit {sibling.id} "
-                            f"(domain: {child_domain})"
-                        )
-                        break
-
-        # --- TLSH dedup ---
-        # Near-identical content to a sibling (within TLSH threshold).
-        # Mark FAILED and count toward pool exhaustion, but keep files.
-        if not dup_of and child_hashes.tlsh and child_kit.investigation_id:
-            siblings = db.query(Kit).filter(
-                Kit.investigation_id == child_kit.investigation_id,
-                Kit.id != child_kit.id,
-                Kit.tlsh.isnot(None),
-            ).all()
-
-            for sibling in siblings:
-                if not sibling.tlsh:
-                    continue
-                distance = compute_tlsh_distance(
-                    child_hashes.tlsh, sibling.tlsh,
+        ancestors = _walk_ancestor_chain(db, child_kit, settings.chain_max_depth)
+        for ancestor in ancestors:
+            matched, detail = _content_matches(
+                child_hashes.tlsh, child_hashes.sha256,
+                ancestor.tlsh, ancestor.sha256,
+                threshold,
+            )
+            if matched:
+                dup_of = str(ancestor.id)
+                dup_reason = (
+                    f"Content matches ancestor {ancestor.id} at depth "
+                    f"{ancestor.chain_depth} ({detail}) — stuck at gate"
                 )
-                if (
-                    distance is not None
-                    and distance <= settings.browser_dedup_tlsh_threshold
-                ):
+                stuck_at_gate = True
+                break
+
+        # --- Direct sibling dedup (relay pool exhaustion) ---
+        # Compare against children of the same parent only — never across
+        # depths or different parent chains.
+        if not dup_of:
+            siblings = _get_direct_siblings(db, child_kit)
+            for sibling in siblings:
+                matched, detail = _content_matches(
+                    child_hashes.tlsh, child_hashes.sha256,
+                    sibling.tlsh, sibling.sha256,
+                    threshold,
+                )
+                if matched:
                     dup_of = str(sibling.id)
                     dup_reason = (
-                        f"TLSH duplicate of kit {sibling.id} "
-                        f"(distance: {distance}, "
-                        f"threshold: {settings.browser_dedup_tlsh_threshold})"
+                        f"Sibling duplicate of kit {sibling.id} ({detail})"
                     )
                     break
 
         # --- Apply dedup result ---
-        # Duplicates are marked FAILED with a descriptive error_message
-        # so they're visible in the UI but clearly flagged.  Files stay
-        # on disk — nothing is deleted.
+        # Duplicates are marked FAILED with duplicate_of_kit_id set.
+        # Files stay on disk — nothing is deleted.
         if dup_of:
             child_kit.status = KitStatus.FAILED
             child_kit.error_message = dup_reason
+            child_kit.duplicate_of_kit_id = uuid.UUID(dup_of)
             db.commit()
 
-            logger.info(
-                "Kit %s marked as duplicate: %s", child_id, dup_reason,
-            )
+            logger.info("Kit %s: %s", child_id, dup_reason)
 
-            # Count toward pool exhaustion and schedule next re-render
+            if stuck_at_gate:
+                # Stuck at a protection gate — re-rendering the same
+                # parent won't help.  Don't schedule another attempt.
+                return {
+                    "kit_id": child_id,
+                    "parent_kit_id": kit_id,
+                    "status": "stuck_at_gate",
+                    "duplicate_of": dup_of,
+                    "reason": dup_reason,
+                }
+
+            # Sibling duplicate — relay pool may still have new domains.
             next_dupes = consecutive_dupes + 1
             if next_dupes < settings.browser_render_pool_stop:
                 browser_download_kit.apply_async(
                     args=[kit_id, next_dupes],
                 )
-
             return {
                 "kit_id": child_id,
                 "parent_kit_id": kit_id,
@@ -319,10 +379,8 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
         # but only if the browser redirected to a different domain (relay
         # rotation).  If the final URL stays on the lure domain there's no
         # relay pool to enumerate.
-        from urllib.parse import urlparse as _urlparse
-
-        lure_domain = _urlparse(parent_kit.source_url).hostname
-        final_domain = _urlparse(final_url).hostname if final_url else None
+        lure_domain = urlparse(parent_kit.source_url).hostname
+        final_domain = urlparse(final_url).hostname if final_url else None
         if final_domain and final_domain != lure_domain:
             browser_download_kit.apply_async(args=[kit_id, 0])
             return {**download_result, "rerender_scheduled": True}
