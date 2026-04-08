@@ -7,8 +7,6 @@ separate entities with a parent→child relationship.
 """
 
 import logging
-import re
-import shutil
 import uuid
 from pathlib import Path
 
@@ -21,43 +19,6 @@ from phishkiller.database import get_sync_db
 from phishkiller.models.kit import Kit, KitStatus
 
 logger = logging.getLogger(__name__)
-
-# Patterns that identify a bot-challenge / interstitial page rather than
-# real phishing content.  Checked against the sibling's page.html so we
-# can decide whether a new render should supersede it.
-_CHALLENGE_PATTERNS = [
-    # Cloudflare Turnstile / "Checking your browser"
-    re.compile(r"challenges\.cloudflare\.com", re.IGNORECASE),
-    re.compile(r"cdn-cgi/challenge-platform", re.IGNORECASE),
-    re.compile(r'class="cf-turnstile"', re.IGNORECASE),
-    re.compile(r"data-sitekey=", re.IGNORECASE),
-    # Common interstitial titles
-    re.compile(r"<title>\s*(Just a moment|Attention Required|Almost ready)", re.IGNORECASE),
-    # Generic "checking your browser" gates
-    re.compile(r"Checking your browser before accessing", re.IGNORECASE),
-    re.compile(r"DDoS protection by", re.IGNORECASE),
-]
-
-
-def _is_challenge_page(kit: Kit, settings) -> bool:
-    """Return True if the kit's page.html matches known challenge patterns."""
-    if not kit.local_path:
-        # Try fallback directory
-        page_path = Path(settings.kit_download_dir) / str(kit.id) / "page.html"
-    else:
-        page_path = Path(kit.local_path)
-
-    if not page_path.is_file():
-        return False
-
-    try:
-        # Only need the first ~50KB to check for challenge markers
-        with open(page_path, "r", encoding="utf-8", errors="replace") as f:
-            head = f.read(50_000)
-    except OSError:
-        return False
-
-    return any(pat.search(head) for pat in _CHALLENGE_PATTERNS)
 
 
 @celery_app.task(
@@ -237,16 +198,25 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
         if parent_kit.status != KitStatus.ANALYZED:
             parent_kit.status = KitStatus.ANALYZED
 
+        # --- Compute hashes ---
+        from phishkiller.analysis.hasher import (
+            compute_hashes as do_hash,
+            compute_tlsh_distance,
+        )
+
+        child_hashes = do_hash(filepath)
+        child_kit.sha256 = child_hashes.sha256
+        child_kit.md5 = child_hashes.md5
+        child_kit.sha1 = child_hashes.sha1
+        child_kit.tlsh = child_hashes.tlsh
+
         # --- Relay domain dedup ---
         # PhaaS kits rotate relay domains per-visit, but the same domain
-        # can repeat.  Dedup on the final URL's domain before running the
-        # full analysis pipeline.
-        #
-        # Edge case: a sibling may have captured only a bot-challenge page
-        # (Cloudflare Turnstile, generic "checking your browser" interstitial)
-        # while the new child got past it.  Detect this by inspecting the
-        # sibling's page.html for known challenge markers rather than relying
-        # on file-size heuristics.
+        # can repeat.  When the child lands on a domain we've already
+        # captured, mark it FAILED (preserving files on disk) and count
+        # toward pool exhaustion.
+        dup_of: str | None = None
+        dup_reason: str | None = None
         if final_url and child_kit.investigation_id:
             from urllib.parse import urlparse
 
@@ -261,65 +231,17 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
                 for sibling in siblings:
                     sib_domain = urlparse(sibling.source_url).hostname
                     if sib_domain == child_domain:
-                        # Check whether the existing sibling is just a
-                        # challenge/interstitial page that never reached
-                        # the real content.
-                        if _is_challenge_page(sibling, settings):
-                            logger.info(
-                                "Kit %s supersedes challenge-page sibling "
-                                "%s on domain %s",
-                                child_id, sibling.id, child_domain,
-                            )
-                            sib_dir = Path(settings.kit_download_dir) / str(sibling.id)
-                            db.delete(sibling)
-                            db.commit()
-                            shutil.rmtree(sib_dir, ignore_errors=True)
-                            # Fall through to TLSH dedup / analysis
-                            break
-
-                        logger.info(
-                            "Kit %s relay domain %s already captured by %s "
-                            "— removing duplicate child",
-                            child_id, child_domain, sibling.id,
+                        dup_of = str(sibling.id)
+                        dup_reason = (
+                            f"Relay domain duplicate of kit {sibling.id} "
+                            f"(domain: {child_domain})"
                         )
-                        db.delete(child_kit)
-                        if parent_kit.investigation_id:
-                            from phishkiller.models.investigation import Investigation as Inv
-                            inv = db.query(Inv).filter(
-                                Inv.id == parent_kit.investigation_id
-                            ).first()
-                            if inv:
-                                inv.total_kits = max(0, inv.total_kits - 1)
-                        db.commit()
-                        shutil.rmtree(download_dir, ignore_errors=True)
+                        break
 
-                        browser_download_kit.apply_async(
-                            args=[kit_id, consecutive_dupes + 1],
-                        )
-                        return {
-                            "kit_id": child_id,
-                            "parent_kit_id": kit_id,
-                            "status": "duplicate",
-                            "duplicate_of": str(sibling.id),
-                            "relay_domain": child_domain,
-                            "rerender_scheduled": True,
-                        }
-
-        # --- TLSH dedup against investigation siblings ---
-        # Compute hashes early so we can compare TLSH before wasting
-        # analysis pipeline time on duplicate content.
-        from phishkiller.analysis.hasher import (
-            compute_hashes as do_hash,
-            compute_tlsh_distance,
-        )
-
-        child_hashes = do_hash(filepath)
-        child_kit.sha256 = child_hashes.sha256
-        child_kit.md5 = child_hashes.md5
-        child_kit.sha1 = child_hashes.sha1
-        child_kit.tlsh = child_hashes.tlsh
-
-        if child_hashes.tlsh and child_kit.investigation_id:
+        # --- TLSH dedup ---
+        # Near-identical content to a sibling (within TLSH threshold).
+        # Mark FAILED and count toward pool exhaustion, but keep files.
+        if not dup_of and child_hashes.tlsh and child_kit.investigation_id:
             siblings = db.query(Kit).filter(
                 Kit.investigation_id == child_kit.investigation_id,
                 Kit.id != child_kit.id,
@@ -336,37 +258,41 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
                     distance is not None
                     and distance <= settings.browser_dedup_tlsh_threshold
                 ):
-                    logger.info(
-                        "Kit %s is TLSH-duplicate of %s "
-                        "(distance=%d, threshold=%d) — removing child",
-                        child_id, sibling.id, distance,
-                        settings.browser_dedup_tlsh_threshold,
+                    dup_of = str(sibling.id)
+                    dup_reason = (
+                        f"TLSH duplicate of kit {sibling.id} "
+                        f"(distance: {distance}, "
+                        f"threshold: {settings.browser_dedup_tlsh_threshold})"
                     )
-                    # Delete the duplicate child and clean up
-                    db.delete(child_kit)
-                    if parent_kit.investigation_id:
-                        from phishkiller.models.investigation import Investigation as Inv
-                        inv = db.query(Inv).filter(
-                            Inv.id == parent_kit.investigation_id
-                        ).first()
-                        if inv:
-                            inv.total_kits = max(0, inv.total_kits - 1)
-                    db.commit()
-                    shutil.rmtree(download_dir, ignore_errors=True)
+                    break
 
-                    # Re-render to discover more relay variations
-                    browser_download_kit.apply_async(
-                        args=[kit_id, consecutive_dupes + 1],
-                    )
+        # --- Apply dedup result ---
+        # Duplicates are marked FAILED with a descriptive error_message
+        # so they're visible in the UI but clearly flagged.  Files stay
+        # on disk — nothing is deleted.
+        if dup_of:
+            child_kit.status = KitStatus.FAILED
+            child_kit.error_message = dup_reason
+            db.commit()
 
-                    return {
-                        "kit_id": child_id,
-                        "parent_kit_id": kit_id,
-                        "status": "duplicate",
-                        "duplicate_of": str(sibling.id),
-                        "tlsh_distance": distance,
-                        "rerender_scheduled": True,
-                    }
+            logger.info(
+                "Kit %s marked as duplicate: %s", child_id, dup_reason,
+            )
+
+            # Count toward pool exhaustion and schedule next re-render
+            next_dupes = consecutive_dupes + 1
+            if next_dupes < settings.browser_render_pool_stop:
+                browser_download_kit.apply_async(
+                    args=[kit_id, next_dupes],
+                )
+
+            return {
+                "kit_id": child_id,
+                "parent_kit_id": kit_id,
+                "status": "duplicate",
+                "duplicate_of": dup_of,
+                "reason": dup_reason,
+            }
 
         db.commit()
 
@@ -375,9 +301,7 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
             child_id, kit_id, filepath.name, child_kit.file_size,
         )
 
-        # Dispatch post-download analysis chain for the child kit.
-        # Set extract_dir to the download dir so the pipeline walks all
-        # captured sub-resources (_browser_resources/) alongside page.html.
+        # Dispatch post-download analysis chain for unique children only.
         download_result = {
             "kit_id": child_id,
             "parent_kit_id": kit_id,
