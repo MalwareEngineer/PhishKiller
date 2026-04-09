@@ -134,8 +134,10 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
         result = do_hash(kit.local_path)
 
-        # Check for duplicate SHA256 before writing (skip when force-resubmitted)
-        if not prev_result.get("force"):
+        # Check for duplicate SHA256 before writing (skip when force-resubmitted
+        # and skip the empty-file hash — every 0-byte download shares it).
+        _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        if not prev_result.get("force") and result.sha256 != _EMPTY_SHA256:
             existing = db.query(Kit).filter(
                 Kit.sha256 == result.sha256,
                 Kit.id != kit.id,

@@ -139,6 +139,33 @@ def download_kit(self, kit_id: str) -> dict:
         kit.local_path = str(filepath)
         kit.filename = filepath.name
         kit.file_size = filepath.stat().st_size
+
+        # Treat 0-byte responses as download failures — the server
+        # returned nothing (common with bot-gated pages).  Dispatch to
+        # browser worker if enabled, otherwise mark FAILED.
+        if kit.file_size == 0:
+            if settings.browser_download_enabled:
+                logger.info(
+                    "Kit %s: 0-byte response, dispatching to browser worker",
+                    kit_id,
+                )
+                from phishkiller.tasks.browser import browser_download_kit
+
+                browser_download_kit.apply_async(args=[kit_id])
+                return {
+                    "kit_id": kit_id,
+                    "status": "browser_retry",
+                }
+            else:
+                kit.status = KitStatus.FAILED
+                kit.error_message = "Empty response (0 bytes)"
+                db.commit()
+                return {
+                    "kit_id": kit_id,
+                    "status": "failed",
+                    "error": "empty_response",
+                }
+
         kit.status = KitStatus.DOWNLOADED
 
         # Guess MIME type
@@ -175,13 +202,16 @@ def download_kit(self, kit_id: str) -> dict:
             else:
                 result["redirect_urls"] = []
 
-        # Tier A: JS loader detection → dispatch browser render in parallel
+        # Tier A: JS loader / embedded challenge detection
+        # → dispatch browser render in parallel with analysis chain
         if settings.browser_download_enabled:
             is_html_like = (
                 suffix in (".html", ".htm", ".bin", "")
                 or kit.mime_type == "application/octet-stream"
             )
             if is_html_like:
+                dispatch_browser = False
+
                 from phishkiller.analysis.browser_downloader import is_js_loader
 
                 if is_js_loader(filepath):
@@ -189,6 +219,32 @@ def download_kit(self, kit_id: str) -> dict:
                         "Kit %s: JS loader detected, dispatching browser render",
                         kit_id,
                     )
+                    dispatch_browser = True
+
+                # Tier A.5: Cloudflare Turnstile/challenge in HTTP 200
+                # body — httpx got the page but it needs a browser to
+                # solve the embedded challenge.
+                if not dispatch_browser:
+                    try:
+                        body = filepath.read_text(
+                            encoding="utf-8", errors="ignore",
+                        )[:100_000]
+                        _CF_BODY_MARKERS = [
+                            "challenges.cloudflare.com/turnstile",
+                            "cf-turnstile",
+                            "data-sitekey",
+                        ]
+                        if any(m in body for m in _CF_BODY_MARKERS):
+                            logger.info(
+                                "Kit %s: Cloudflare Turnstile in response body, "
+                                "dispatching browser render",
+                                kit_id,
+                            )
+                            dispatch_browser = True
+                    except Exception:
+                        pass
+
+                if dispatch_browser:
                     from phishkiller.tasks.browser import browser_download_kit
 
                     browser_download_kit.apply_async(args=[kit_id])
