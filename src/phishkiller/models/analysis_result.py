@@ -27,6 +27,7 @@ class AnalysisType(enum.StrEnum):
     LINK_SCORE = "link_score"
     REDIRECT_CHAIN = "redirect_chain"
     EXTERNAL_JS_FETCH = "external_js_fetch"
+    POLYMORPHISM = "polymorphism"
 
 
 class AnalysisResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):

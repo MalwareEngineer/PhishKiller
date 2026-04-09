@@ -64,6 +64,11 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     chain_depth: Mapped[int] = mapped_column(Integer, default=0)
     discovery_method: Mapped[str | None] = mapped_column(String(50))
 
+    # Dedup tracking — points to the kit this one is a duplicate of
+    duplicate_of_kit_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("kits.id", ondelete="SET NULL"), index=True
+    )
+
     # Storage
     local_path: Mapped[str | None] = mapped_column(Text)
 

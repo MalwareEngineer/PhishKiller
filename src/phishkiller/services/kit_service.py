@@ -344,8 +344,18 @@ class KitService:
             """Check if a file is likely text content."""
             if fp.suffix.lower() in text_exts:
                 return True
-            # No extension or generic placeholder — check MIME or sniff content
-            if not fp.suffix or fp.suffix.lower() in opaque_exts:
+            # No extension, generic placeholder, or unrecognised extension —
+            # check MIME or sniff content.  URL-derived filenames can have
+            # misleading suffixes (e.g. ".com" from $user@domain.com).
+            known_binary = {
+                ".zip", ".gz", ".tar", ".rar", ".7z", ".bz2",
+                ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+                ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+                ".exe", ".dll", ".so", ".wasm",
+            }
+            if fp.suffix.lower() in known_binary:
+                return False
+            if not fp.suffix or fp.suffix.lower() not in text_exts:
                 if kit_mime and kit_mime in text_mimes:
                     return True
                 # Sniff first 512 bytes for text content

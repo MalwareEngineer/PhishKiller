@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     browser_render_max_variations: int = 50
     browser_render_pool_stop: int = 3  # consecutive TLSH dupes before stopping re-render loop
 
+    # Polymorphism detection
+    browser_polymorphism_min_variants: int = 2      # min unique siblings on same domain
+    browser_polymorphism_tlsh_max_distance: int = 200  # above this = unrelated, not polymorphic
+
     # External JS fetching (follow <script src="..."> in rendered pages)
     external_js_fetch_enabled: bool = True
     external_js_fetch_timeout: int = 15        # per-request timeout (seconds)

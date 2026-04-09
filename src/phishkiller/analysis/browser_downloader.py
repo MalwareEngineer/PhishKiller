@@ -573,6 +573,41 @@ async def _async_browser_download(
                 pass
             await asyncio.sleep(random.uniform(1.0, 2.0))
 
+            # Check if the current page is a JS loader stub that will
+            # rewrite itself (e.g. fetch→atob→document.write).  If so,
+            # poll until the content changes or we run out of patience.
+            pre_capture = await page.content()
+            if len(pre_capture) < 5000:
+                lower = pre_capture.lower()
+                has_rewrite = any(m in lower for m in [
+                    "document.write", "atob(", "eval(", ".innerhtml",
+                ])
+                if has_rewrite:
+                    logger.info(
+                        "Page looks like JS loader stub (%d bytes), "
+                        "polling for content change",
+                        len(pre_capture),
+                    )
+                    snapshot = pre_capture
+                    for _ in range(6):  # up to 30s (6 × 5s)
+                        await asyncio.sleep(5)
+                        current = await page.content()
+                        if current != snapshot:
+                            logger.info(
+                                "JS loader content changed (%d → %d bytes)",
+                                len(snapshot), len(current),
+                            )
+                            # Let post-rewrite resources settle
+                            try:
+                                await asyncio.wait_for(
+                                    page.wait_for_load_state("networkidle"),
+                                    timeout=10,
+                                )
+                            except (asyncio.TimeoutError, Exception):
+                                pass
+                            await asyncio.sleep(random.uniform(1.0, 2.0))
+                            break
+
             # Screenshot: final phishing page (stage 3)
             await _take_screenshot(page, screenshots_dir, "03_phish")
 
@@ -858,10 +893,18 @@ async def _detect_bot_gate(page) -> dict | None:
                     /prove you are human/i,
                     /verify you'?re not a bot/i,
                     /confirm you'?re real/i,
+                    /confirm.{0,3}humanit/i,
+                    /i'?m not a robot/i,
+                    /i am not a robot/i,
+                    /i am.{0,3}human/i,
                     /human check/i,
+                    /human verification/i,
                     /bot protection/i,
                     /security check/i,
+                    /security verification/i,
                     /checking.{0,10}browser/i,
+                    /click.{0,10}(box|button).{0,10}verify/i,
+                    /not a robot/i,
                 ];
                 const hasGateText = gateTextPats.some(p => p.test(pageText));
 
@@ -893,6 +936,25 @@ async def _detect_bot_gate(page) -> dict | None:
                                     && r.height >= 12 && r.height <= 60) {
                                     clickables.push(kid);
                                 }
+                            }
+                        }
+                    }
+
+                    // Fallback: page-wide scan for any small cursor:pointer
+                    // element.  Gate text is already confirmed so any small
+                    // clickable is very likely the checkbox — handles kits
+                    // with obfuscated CSS class names.
+                    if (clickables.length === 0) {
+                        const allEls = document.querySelectorAll('div, span');
+                        for (const el of allEls) {
+                            const cs = window.getComputedStyle(el);
+                            const r = el.getBoundingClientRect();
+                            if (cs.cursor === 'pointer'
+                                && r.width >= 12 && r.width <= 60
+                                && r.height >= 12 && r.height <= 60
+                                && r.width > 0 && r.height > 0) {
+                                clickables.push(el);
+                                break;
                             }
                         }
                     }
@@ -964,7 +1026,7 @@ async def _detect_bot_gate(page) -> dict | None:
             }
         """)
     except Exception as e:
-        logger.debug("Bot gate detection error: %s", e)
+        logger.warning("Bot gate detection error: %s", e)
         return None
 
 
@@ -1001,6 +1063,22 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
     """
     gate = await _detect_bot_gate(page)
     if not gate:
+        # Debug: log why detection failed
+        try:
+            debug = await page.evaluate("""
+                () => {
+                    const t = (document.body ? document.body.innerText : '').substring(0, 200);
+                    const vis = document.documentElement.style.visibility;
+                    return { text_preview: t, visibility: vis, url: location.href };
+                }
+            """)
+            logger.info(
+                "Bot gate not detected — visibility=%s text_preview=%r url=%s",
+                debug.get("visibility"), debug.get("text_preview", "")[:100],
+                debug.get("url"),
+            )
+        except Exception:
+            pass
         return False
 
     logger.info(

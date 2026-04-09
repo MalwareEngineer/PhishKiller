@@ -69,6 +69,7 @@ def _post_download_steps() -> list:
         compute_similarity.s(),
         correlate_kit_actors.s(),
         auto_assign_campaign.s(),
+        detect_polymorphism.s(),
         crawl_chain.s(),
         finalize_kit.s(),
     ]
@@ -133,8 +134,10 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
         result = do_hash(kit.local_path)
 
-        # Check for duplicate SHA256 before writing (skip when force-resubmitted)
-        if not prev_result.get("force"):
+        # Check for duplicate SHA256 before writing (skip when force-resubmitted
+        # and skip the empty-file hash — every 0-byte download shares it).
+        _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        if not prev_result.get("force") and result.sha256 != _EMPTY_SHA256:
             existing = db.query(Kit).filter(
                 Kit.sha256 == result.sha256,
                 Kit.id != kit.id,
@@ -1169,6 +1172,110 @@ def _try_complete_investigation(db, investigation_id: uuid.UUID) -> None:
         logger.warning("Error checking investigation %s status: %s", investigation_id, e)
         with contextlib.suppress(Exception):
             db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Polymorphism Detection
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    name="phishkiller.tasks.analysis.detect_polymorphism",
+    bind=True,
+    queue="analysis",
+)
+def detect_polymorphism(self, prev_result: dict) -> dict:
+    """Detect polymorphic kit variants among siblings sharing a relay domain.
+
+    Groups siblings (same parent_kit_id) by relay domain and checks whether
+    their TLSH distances fall in the polymorphism range (above dedup threshold
+    but below unrelatedness ceiling).  If so, computes a structural diff to
+    identify constant vs variable HTML elements.
+    """
+    kit_id = prev_result["kit_id"]
+    if prev_result.get("status") == "failed":
+        return prev_result
+
+    settings = get_settings()
+    db = get_sync_db()
+    start = time.time()
+
+    try:
+        kit = db.query(Kit).filter(Kit.id == uuid.UUID(kit_id)).first()
+        if not kit or not kit.parent_kit_id:
+            return {**prev_result, "polymorphism": None}
+
+        # Gather all analysed/downloaded browser-render siblings
+        siblings_q = db.query(Kit).filter(
+            Kit.parent_kit_id == kit.parent_kit_id,
+            Kit.discovery_method == "browser_render",
+            Kit.status.in_([KitStatus.ANALYZED, KitStatus.DOWNLOADED]),
+        ).all()
+
+        if len(siblings_q) < settings.browser_polymorphism_min_variants:
+            return {**prev_result, "polymorphism": None}
+
+        from pathlib import Path as _Path
+
+        sibling_data = [
+            (str(s.id), s.tlsh, s.source_url, _Path(s.local_path) if s.local_path else None)
+            for s in siblings_q
+        ]
+
+        from phishkiller.analysis.polymorphism import detect_variants
+
+        result = detect_variants(
+            siblings=sibling_data,
+            dedup_threshold=settings.browser_dedup_tlsh_threshold,
+            max_distance=settings.browser_polymorphism_tlsh_max_distance,
+            min_variants=settings.browser_polymorphism_min_variants,
+        )
+
+        duration = time.time() - start
+
+        if result and result.is_polymorphic:
+            from phishkiller.models.analysis_result import AnalysisType
+
+            result_data = {
+                "is_polymorphic": True,
+                "relay_domain": result.relay_domain,
+                "variant_count": result.variant_count,
+                "confidence": result.confidence,
+                "sibling_kit_ids": result.sibling_kit_ids,
+            }
+            if result.structural_diff:
+                result_data.update({
+                    "structural_similarity": result.structural_diff.structural_similarity,
+                    "constant_elements": result.structural_diff.constant_elements[:50],
+                    "variable_elements": result.structural_diff.variable_elements[:50],
+                    "constant_form_fields": result.structural_diff.constant_form_fields,
+                    "variable_form_fields": result.structural_diff.variable_form_fields,
+                    "token_patterns": result.structural_diff.token_patterns,
+                })
+
+            upsert_analysis_result(
+                db,
+                kit_id=kit.id,
+                analysis_type=AnalysisType.POLYMORPHISM,
+                result_data=result_data,
+                duration_seconds=round(duration, 3),
+            )
+            db.commit()
+
+            logger.info(
+                "Polymorphism detected for kit %s: %d variants on %s "
+                "(confidence=%.2f)",
+                kit_id, result.variant_count, result.relay_domain,
+                result.confidence,
+            )
+            return {**prev_result, "polymorphism": result_data}
+
+        return {**prev_result, "polymorphism": None}
+
+    except Exception as e:
+        logger.warning("Polymorphism detection error for kit %s: %s", kit_id, e)
+        return {**prev_result, "polymorphism": None}
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
