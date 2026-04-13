@@ -26,6 +26,9 @@ import type {
   HealthResponse,
   AnalysisResultDetail,
   TaskStatusResponse,
+  DiffPairGroupsResponse,
+  DiffablePair,
+  DiffCompareResponse,
 } from "@/types/api";
 
 const BASE = "/api/v1";
@@ -220,6 +223,30 @@ export const campaigns = {
 export const analysis = {
   result: (id: string) => request<AnalysisResultDetail>(`/analysis/results/${id}`),
   taskStatus: (taskId: string) => request<TaskStatusResponse>(`/analysis/tasks/${taskId}`),
+};
+
+// ── PhishDiff ──
+
+export const diff = {
+  pairGroups: (params?: { offset?: number; limit?: number; max_distance?: number; max_size_ratio?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.offset) q.set("offset", String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.max_distance) q.set("max_distance", String(params.max_distance));
+    if (params?.max_size_ratio) q.set("max_size_ratio", String(params.max_size_ratio));
+    return request<DiffPairGroupsResponse>(`/diff/pairs?${q}`);
+  },
+  pairs: (kitId: string, params?: { max_distance?: number; max_size_ratio?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.max_distance) q.set("max_distance", String(params.max_distance));
+    if (params?.max_size_ratio) q.set("max_size_ratio", String(params.max_size_ratio));
+    return request<DiffablePair[]>(`/diff/pairs/${kitId}?${q}`);
+  },
+  compare: (kit_a_id: string, kit_b_id: string, normalize = false) =>
+    request<DiffCompareResponse>("/diff/compare", {
+      method: "POST",
+      body: JSON.stringify({ kit_a_id, kit_b_id, normalize }),
+    }),
 };
 
 // ── Health ──

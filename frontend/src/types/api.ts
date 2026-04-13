@@ -306,6 +306,64 @@ export interface DeobfuscationPreviewResponse {
   pairs: DeobfuscationPairItem[];
 }
 
+// ── PhishDiff ──
+
+export interface DiffableKit {
+  id: string;
+  source_url: string;
+  tlsh?: string;
+  file_size?: number;
+  status: string;
+  created_at: string;
+}
+
+export interface DiffablePair {
+  id: string;
+  source_url: string;
+  tlsh?: string;
+  file_size?: number;
+  distance: number;
+  size_ratio: number;
+  created_at: string;
+}
+
+export interface DiffPairGroup {
+  domain: string;
+  kits: DiffableKit[];
+  pair_count: number;
+}
+
+export interface DiffPairGroupsResponse {
+  groups: DiffPairGroup[];
+  total: number;
+}
+
+export interface DiffKitContent {
+  id: string;
+  source_url: string;
+  content: string;
+  file_size?: number;
+}
+
+export interface DiffChangeCategory {
+  category: string;
+  count: number;
+  examples: string[];
+}
+
+export interface DiffCompareSummary {
+  structural_similarity: number;
+  tlsh_distance?: number;
+  change_categories: DiffChangeCategory[];
+}
+
+export interface DiffCompareResponse {
+  kit_a: DiffKitContent;
+  kit_b: DiffKitContent;
+  summary: DiffCompareSummary;
+  normalized: boolean;
+}
+
 // ── Health ──
 
 export interface HealthResponse {
