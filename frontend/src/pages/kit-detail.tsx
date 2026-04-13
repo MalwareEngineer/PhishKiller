@@ -32,7 +32,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus, Download } from "lucide-react";
+import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus, Download, FileDiff } from "lucide-react";
 import { toast } from "sonner";
 import type { AnalysisResultBrief } from "@/types/api";
 import { TabScreenshots } from "@/components/kit-detail/tab-screenshots";
@@ -227,6 +227,12 @@ export function KitDetailPage() {
               Re-download
             </Button>
           )}
+          <Link to={`/phish-diff?a=${id}`}>
+            <Button variant="outline" size="sm">
+              <FileDiff className="mr-2 h-4 w-4" />
+              Compare
+            </Button>
+          </Link>
           <Button variant="outline" size="sm" onClick={handleReanalyze} disabled={reanalyze.isPending}>
             <RefreshCw className="mr-2 h-4 w-4" />
             Reanalyze

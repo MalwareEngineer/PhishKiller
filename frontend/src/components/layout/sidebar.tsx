@@ -9,6 +9,7 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  FileDiff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ const navItems = [
   { to: "/indicators", icon: Search, label: "Indicators" },
   { to: "/actors", icon: Users, label: "Actors" },
   { to: "/campaigns", icon: Target, label: "Campaigns" },
+  { to: "/phish-diff", icon: FileDiff, label: "PhishDiff" },
 ];
 
 export function Sidebar() {

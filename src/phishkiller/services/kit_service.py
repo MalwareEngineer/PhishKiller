@@ -783,6 +783,164 @@ class KitService:
             "created_at": kit.created_at.isoformat() if kit.created_at else None,
         }
 
+    async def find_diffable_pairs(
+        self,
+        kit_id: uuid.UUID,
+        max_distance: int = 30,
+        max_size_ratio: float = 1.15,
+    ) -> list[dict]:
+        """Find kits diffable against *kit_id*: same eTLD+1, close TLSH, similar size."""
+        from phishkiller.utils.domain import extract_etld_plus_one
+
+        kit = await self.get_kit(kit_id)
+        if not kit or not kit.tlsh:
+            return []
+
+        domain = extract_etld_plus_one(kit.source_url)
+        if not domain:
+            return []
+
+        query = select(Kit).where(
+            Kit.tlsh.isnot(None),
+            Kit.id != kit_id,
+            Kit.status == KitStatus.ANALYZED,
+        )
+        result = await self.db.execute(query)
+        candidates = result.scalars().all()
+
+        pairs: list[dict] = []
+        try:
+            import tlsh as tlsh_mod
+
+            for c in candidates:
+                c_domain = extract_etld_plus_one(c.source_url)
+                if c_domain != domain:
+                    continue
+                distance = tlsh_mod.diff(kit.tlsh, c.tlsh)
+                if distance > max_distance:
+                    continue
+                # Size ratio check
+                if kit.file_size and c.file_size:
+                    big, small = max(kit.file_size, c.file_size), min(kit.file_size, c.file_size)
+                    if small > 0 and big / small > max_size_ratio:
+                        continue
+                pairs.append({
+                    "id": c.id,
+                    "source_url": c.source_url,
+                    "tlsh": c.tlsh,
+                    "file_size": c.file_size,
+                    "distance": distance,
+                    "size_ratio": round(big / small, 3) if kit.file_size and c.file_size and min(kit.file_size, c.file_size) > 0 else 1.0,
+                    "created_at": c.created_at,
+                })
+            pairs.sort(key=lambda x: x["distance"])
+        except ImportError:
+            pass
+
+        return pairs
+
+    async def get_kit_primary_html(self, kit_id: uuid.UUID) -> str | None:
+        """Return the content of the largest .html file for a kit."""
+        kit = await self.get_kit(kit_id)
+        if not kit:
+            return None
+
+        settings = get_settings()
+
+        # Check extracted directory first, then raw download
+        candidates: list[Path] = []
+        extract_dir = Path(settings.kit_extract_dir) / str(kit_id)
+        if extract_dir.is_dir():
+            candidates.extend(
+                fp for fp in extract_dir.rglob("*")
+                if fp.is_file() and fp.suffix.lower() in (".html", ".htm")
+            )
+
+        if not candidates and kit.local_path:
+            raw = Path(kit.local_path)
+            if raw.is_file() and raw.suffix.lower() in (".html", ".htm"):
+                candidates.append(raw)
+
+        if not candidates:
+            return None
+
+        # Pick the largest HTML file
+        best = max(candidates, key=lambda fp: fp.stat().st_size)
+        try:
+            return best.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+    async def get_diffable_pair_groups(
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        max_distance: int = 30,
+        max_size_ratio: float = 1.15,
+    ) -> tuple[list[dict], int]:
+        """Return domain groups containing ≥2 diffable kits."""
+        from phishkiller.utils.domain import extract_etld_plus_one
+
+        query = select(Kit).where(
+            Kit.tlsh.isnot(None),
+            Kit.status == KitStatus.ANALYZED,
+        )
+        result = await self.db.execute(query)
+        kits = result.scalars().all()
+
+        # Group by eTLD+1
+        domain_map: dict[str, list[Kit]] = {}
+        for k in kits:
+            d = extract_etld_plus_one(k.source_url)
+            if d:
+                domain_map.setdefault(d, []).append(k)
+
+        # Filter to domains with ≥2 kits that have at least one diffable pair
+        groups: list[dict] = []
+        try:
+            import tlsh as tlsh_mod
+
+            for domain, domain_kits in sorted(domain_map.items()):
+                if len(domain_kits) < 2:
+                    continue
+
+                pair_count = 0
+                for i, ka in enumerate(domain_kits):
+                    for kb in domain_kits[i + 1:]:
+                        dist = tlsh_mod.diff(ka.tlsh, kb.tlsh)
+                        if dist > max_distance:
+                            continue
+                        if ka.file_size and kb.file_size:
+                            big = max(ka.file_size, kb.file_size)
+                            small = min(ka.file_size, kb.file_size)
+                            if small > 0 and big / small > max_size_ratio:
+                                continue
+                        pair_count += 1
+
+                if pair_count == 0:
+                    continue
+
+                groups.append({
+                    "domain": domain,
+                    "kits": [
+                        {
+                            "id": k.id,
+                            "source_url": k.source_url,
+                            "tlsh": k.tlsh,
+                            "file_size": k.file_size,
+                            "status": k.status.value if hasattr(k.status, "value") else str(k.status),
+                            "created_at": k.created_at,
+                        }
+                        for k in domain_kits
+                    ],
+                    "pair_count": pair_count,
+                })
+        except ImportError:
+            pass
+
+        total = len(groups)
+        return groups[offset : offset + limit], total
+
     async def delete_kit(self, kit_id: uuid.UUID) -> bool:
         """Delete a kit and all its descendants (DB cascades handle FK cleanup)."""
         kit = await self.get_kit(kit_id)

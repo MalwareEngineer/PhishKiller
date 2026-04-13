@@ -209,6 +209,24 @@ def compute_structural_diff(
 # Top-level detection
 # ---------------------------------------------------------------------------
 
+_CSS_CLASS_PATTERN = re.compile(r"([a-z]_[a-z]+_)\d{2,4}")
+
+
+def normalize_html(html: str) -> str:
+    """Replace randomized tokens in HTML with stable placeholders.
+
+    Collapses CSS class suffixes (``a_widget_696`` → ``a_CLASS``),
+    UUIDs, hex tokens, timestamps, and base64 blobs so that two
+    polymorphic variants can be meaningfully diffed.
+    """
+    # CSS class-name randomisation (e.g. a_widget_696 → a_CLASS)
+    out = _CSS_CLASS_PATTERN.sub(r"\g<1>CLASS", html)
+    # Dynamic value patterns already defined at module level
+    for pat in _DYNAMIC_VALUE_PATTERNS:
+        out = pat.sub("__VAR__", out)
+    return out
+
+
 def detect_variants(
     siblings: list[tuple[str, str | None, str | None, Path | None]],
     dedup_threshold: int = 30,
