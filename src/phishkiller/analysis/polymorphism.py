@@ -10,6 +10,7 @@ Uses only stdlib ``html.parser`` — no new dependencies.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import re
@@ -212,18 +213,39 @@ def compute_structural_diff(
 _CSS_CLASS_PATTERN = re.compile(r"([a-z]_[a-z]+_)\d{2,4}")
 
 
-def normalize_html(html: str) -> str:
-    """Replace randomized tokens in HTML with stable placeholders.
+_BASE64_BLOB_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 
-    Collapses CSS class suffixes (``a_widget_696`` → ``a_CLASS``),
-    UUIDs, hex tokens, timestamps, and base64 blobs so that two
-    polymorphic variants can be meaningfully diffed.
+
+def _decode_base64_blob(match: re.Match) -> str:
+    """Try to decode a base64 match to readable text; leave unchanged if not decodable."""
+    blob = match.group(0)
+    try:
+        raw = base64.b64decode(blob)
+        text = raw.decode("utf-8", errors="ignore")
+        # Only accept if the decoded content is substantially printable text
+        stripped = text.replace("\n", "").replace("\r", "").replace("\t", "")
+        if len(stripped) > 10 and stripped.isprintable():
+            return text
+    except Exception:
+        pass
+    # Not decodable to readable text — leave the original base64 as-is
+    return blob
+
+
+def normalize_html(html: str) -> str:
+    """Decode and deobfuscate HTML for readable diffing.
+
+    - Normalises CSS class suffixes (``a_widget_696`` → ``a_CLASS``)
+    - Decodes base64-encoded blobs inline to reveal obfuscated payloads
+
+    Does NOT replace values with ``__VAR__`` placeholders — the purpose
+    of PhishDiff is to show what is the same and what is different, so
+    real values must remain visible.
     """
     # CSS class-name randomisation (e.g. a_widget_696 → a_CLASS)
     out = _CSS_CLASS_PATTERN.sub(r"\g<1>CLASS", html)
-    # Dynamic value patterns already defined at module level
-    for pat in _DYNAMIC_VALUE_PATTERNS:
-        out = pat.sub("__VAR__", out)
+    # Decode base64 blobs to reveal obfuscated content
+    out = _BASE64_BLOB_RE.sub(_decode_base64_blob, out)
     return out
 
 

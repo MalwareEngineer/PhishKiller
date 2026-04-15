@@ -224,7 +224,10 @@ class KitService:
             import tlsh
 
             for candidate in candidates:
-                distance = tlsh.diff(kit.tlsh, candidate.tlsh)
+                try:
+                    distance = tlsh.diff(kit.tlsh, candidate.tlsh)
+                except Exception:
+                    continue
                 if distance <= threshold:
                     similar.append({
                         "id": str(candidate.id),
@@ -758,7 +761,10 @@ class KitService:
             import tlsh
 
             for kit in candidates:
-                distance = tlsh.diff(tlsh_hash, kit.tlsh)
+                try:
+                    distance = tlsh.diff(tlsh_hash, kit.tlsh)
+                except Exception:
+                    continue
                 if distance <= threshold:
                     d = self._kit_to_summary(kit)
                     d["distance"] = distance
@@ -816,7 +822,10 @@ class KitService:
                 c_domain = extract_etld_plus_one(c.source_url)
                 if c_domain != domain:
                     continue
-                distance = tlsh_mod.diff(kit.tlsh, c.tlsh)
+                try:
+                    distance = tlsh_mod.diff(kit.tlsh, c.tlsh)
+                except Exception:
+                    continue
                 if distance > max_distance:
                     continue
                 # Size ratio check
@@ -907,7 +916,10 @@ class KitService:
                 pair_count = 0
                 for i, ka in enumerate(domain_kits):
                     for kb in domain_kits[i + 1:]:
-                        dist = tlsh_mod.diff(ka.tlsh, kb.tlsh)
+                        try:
+                            dist = tlsh_mod.diff(ka.tlsh, kb.tlsh)
+                        except Exception:
+                            continue
                         if dist > max_distance:
                             continue
                         if ka.file_size and kb.file_size:

@@ -12,4 +12,10 @@ celery_app.conf.beat_schedule = {
         "args": [30],
         "options": {"queue": "celery"},
     },
+    "recover-stuck-investigations-every-30m": {
+        "task": "phishkiller.tasks.recovery.recover_stuck_investigations",
+        "schedule": crontab(minute="*/30"),
+        "args": [60],
+        "options": {"queue": "celery"},
+    },
 }

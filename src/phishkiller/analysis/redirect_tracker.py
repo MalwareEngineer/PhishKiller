@@ -5,8 +5,10 @@ instead of httpx's automatic follow_redirects=True which silently resolves.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urljoin
 
 import httpx
 
@@ -47,6 +49,45 @@ class RedirectChain:
     def intermediate_urls(self) -> list[str]:
         """URLs from redirect hops (excluding initial and final)."""
         return [h.location for h in self.hops if h.location and h.location != self.final_url]
+
+
+def _extract_js_redirect(body: str, base_url: str) -> str | None:
+    """Extract a redirect URL from meta-refresh or JavaScript location patterns.
+
+    Returns the absolute URL if a client-side redirect is found, else None.
+    Only considers the first 200 KB of the body to avoid scanning huge files.
+    """
+    body = body[:200_000]
+
+    # 1. <meta http-equiv="refresh" content="N; url=...">
+    meta_match = re.search(
+        r'<meta\s[^>]*http-equiv\s*=\s*["\']?refresh["\']?\s[^>]*'
+        r'content\s*=\s*["\']?\s*\d+\s*;\s*url\s*=\s*([^"\'>\s]+)',
+        body, re.IGNORECASE,
+    )
+    if meta_match:
+        return urljoin(base_url, meta_match.group(1).strip())
+
+    # 2. window.location / location.href / location.replace / location.assign
+    js_patterns = [
+        # window.location.href = "..." / window.location = "..."
+        r'(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+        # window.location.replace("...") / window.location.assign("...")
+        r'(?:window\.)?location\.(?:replace|assign)\s*\(\s*["\']([^"\']+)["\']\s*\)',
+    ]
+    for pattern in js_patterns:
+        m = re.search(pattern, body, re.IGNORECASE)
+        if m:
+            target = m.group(1).strip()
+            # Ignore self-referencing patterns like location.href = location.href
+            if "location" in target.lower():
+                continue
+            # Ignore javascript: URIs and anchors
+            if target.startswith(("javascript:", "#")):
+                continue
+            return urljoin(base_url, target)
+
+    return None
 
 
 class RedirectTracker:
@@ -109,6 +150,29 @@ class RedirectTracker:
                     # Non-redirect response — this is the final destination
                     chain.final_url = current_url
                     response.raise_for_status()
+
+                    # Check for JS/meta-refresh redirects in HTML responses
+                    content_type = response.headers.get("content-type", "")
+                    if "html" in content_type or "text" in content_type:
+                        try:
+                            body_text = response.text
+                        except Exception:
+                            body_text = response.content.decode("utf-8", errors="ignore")
+                        js_target = _extract_js_redirect(body_text, current_url)
+                        if js_target and js_target != current_url:
+                            chain.hops.append(RedirectHop(
+                                url=current_url,
+                                status_code=response.status_code,
+                                location=js_target,
+                                server=response.headers.get("server"),
+                            ))
+                            chain.total_redirects += 1
+                            logger.info(
+                                "JS/meta redirect detected: %s -> %s",
+                                current_url, js_target,
+                            )
+                            current_url = js_target
+                            continue
 
                     # Stream the final response body to disk
                     filename = _extract_filename(current_url, response)
