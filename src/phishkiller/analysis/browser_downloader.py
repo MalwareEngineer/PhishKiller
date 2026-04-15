@@ -517,6 +517,9 @@ async def _async_browser_download(
             # Screenshot: landing page (stage 1 — what the browser first shows)
             await _take_screenshot(page, screenshots_dir, "01_landing")
 
+            # Track whether a lure CTA button was already clicked
+            cta_clicked = False
+
             # Wait for Turnstile widget to auto-resolve if present,
             # with a configurable timeout to prevent hanging forever.
             turnstile_result = await _wait_for_turnstile(
@@ -555,7 +558,7 @@ async def _async_browser_download(
                 # Post-Turnstile: click CTA buttons that gate the real content
                 # (e.g. "Verify to Play" voicemail lures, device-code phish)
                 if turnstile_result == "solved":
-                    cta_clicked = await _click_post_turnstile_action(page)
+                    cta_clicked = await _click_lure_cta(page)
                     if cta_clicked:
                         await _take_screenshot(page, screenshots_dir, "02b_post_cta")
 
@@ -590,15 +593,26 @@ async def _async_browser_download(
                         page.url,
                     )
 
+            # General CTA click — catches pages with no Turnstile and
+            # no bot gate (QR code landers, link-through pages), or pages
+            # where the gate resolved and revealed a CTA.
+            if not cta_clicked:
+                cta_clicked = await _click_lure_cta(page)
+                if cta_clicked:
+                    await _take_screenshot(page, screenshots_dir, "02c_lure_cta")
+
             # Wait for final content to settle
             try:
                 await asyncio.wait_for(
                     page.wait_for_load_state("networkidle"),
-                    timeout=10,
+                    timeout=15,
                 )
             except (asyncio.TimeoutError, Exception):
                 pass
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            # Extra settle time for SPAs that render after networkidle
+            # (e.g. MS login page clones loading SVG backgrounds).
+            await asyncio.sleep(random.uniform(2.0, 4.0))
 
             # Check if the current page is a JS loader stub that will
             # rewrite itself (e.g. fetch→atob→document.write).  If so,
@@ -860,13 +874,13 @@ async def _simulate_human_behavior(page) -> None:
         pass
 
 
-async def _click_post_turnstile_action(page) -> bool:
-    """Click a prominent CTA button that appears after Turnstile is solved.
+async def _click_lure_cta(page) -> bool:
+    """Click a prominent CTA button/link that gates the real phishing content.
 
-    Some phishing pages (e.g. voicemail lures, device-code phish) display a
-    call-to-action button after Turnstile completes — "Verify to Play",
-    "Play Voicemail", "Listen Now", etc.  The Turnstile itself is just a
-    gate; the real content only loads after clicking through.
+    Covers multiple lure types:
+    - Post-Turnstile voicemail/device-code phish ("Verify to Play")
+    - QR code landing pages ("Open Document Here", "View PDF")
+    - Generic click-through lures ("Continue", "Proceed")
 
     Returns True if a CTA was found and clicked.
     """
@@ -877,9 +891,12 @@ async def _click_post_turnstile_action(page) -> bool:
                     /play.*voicemail/i, /verify to /i, /listen.*message/i,
                     /access.*voicemail/i, /^continue$/i, /^proceed$/i,
                     /^play$/i, /^listen$/i, /^play now$/i, /^listen now$/i,
+                    /^open document/i, /^view pdf/i, /^view document/i,
+                    /^open file/i, /^download document/i, /^open link/i,
+                    /^view file/i, /^open here$/i,
                 ];
                 const candidates = document.querySelectorAll(
-                    'button, a, [role="button"], [class*="btn"], '
+                    'button, a[href], [role="button"], [class*="btn"], '
                     + '[class*="call-action"], [class*="cta"]'
                 );
                 for (const el of candidates) {
@@ -913,7 +930,7 @@ async def _click_post_turnstile_action(page) -> bool:
         if not cta:
             return False
 
-        logger.info("Post-Turnstile CTA detected: %r (selector=%s)", cta["text"], cta["selector"])
+        logger.info("Lure CTA detected: %r (selector=%s)", cta["text"], cta["selector"])
 
         # Natural mouse approach to the button
         viewport = page.viewport_size or {"width": 1280, "height": 800}
@@ -933,6 +950,26 @@ async def _click_post_turnstile_action(page) -> bool:
             await asyncio.sleep(random.uniform(0.03, 0.1))
 
         await asyncio.sleep(random.uniform(0.1, 0.3))
+
+        # Strip target="_blank" so the click navigates in the same tab
+        # instead of opening a new tab that Playwright won't follow.
+        try:
+            await page.evaluate("""
+                (sel) => {
+                    const el = document.querySelector(sel);
+                    if (el && el.target === '_blank') {
+                        el.removeAttribute('target');
+                    }
+                    // Also strip any anchors inside the button
+                    if (el) {
+                        for (const a of el.querySelectorAll('a[target="_blank"]')) {
+                            a.removeAttribute('target');
+                        }
+                    }
+                }
+            """, cta["selector"])
+        except Exception:
+            pass
 
         # Click
         try:
@@ -954,11 +991,11 @@ async def _click_post_turnstile_action(page) -> bool:
             pass
 
         await asyncio.sleep(random.uniform(1.0, 2.0))
-        logger.info("Post-Turnstile CTA clicked: %r", cta["text"])
+        logger.info("Lure CTA clicked: %r", cta["text"])
         return True
 
     except Exception as e:
-        logger.debug("Post-Turnstile CTA check failed: %s", e)
+        logger.debug("Lure CTA check failed: %s", e)
         return False
 
 
@@ -1310,25 +1347,76 @@ async def _wait_for_gate_resolution(
 
         gate_gone = await page.evaluate("""
             () => {
-                const btns = document.querySelectorAll(
-                    'button, input[type="submit"], [role="button"]'
+                const els = document.querySelectorAll(
+                    'button, input[type="submit"], [role="button"], span, div'
                 );
-                const pat = /verify|check|continue|not a robot|confirm/i;
-                for (const b of btns) {
-                    if (pat.test(b.textContent || b.value || '')) return false;
+                const pat = /verify|verifying|check|checking|continue|not a robot|confirm|processing|please wait/i;
+                for (const b of els) {
+                    const text = (b.textContent || b.value || '').trim();
+                    if (text.length > 100) continue;
+                    if (pat.test(text)) return false;
                 }
                 return true;
             }
         """)
         if gate_gone:
-            logger.info("Bot gate button disappeared — gate likely passed")
+            logger.info("Bot gate elements cleared — gate passed")
             await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
-            logger.warning(
-                "Bot gate button still present after %.0fs — PoW may have "
-                "failed or timed out",
+            # Gate text still present — could be PoW still computing.
+            # Poll until it clears or we run out of time.
+            logger.info(
+                "Gate text still present — polling for PoW completion "
+                "(up to %.0fs remaining)",
                 gate_timeout,
             )
+            import time as _time
+
+            poll_deadline = _time.monotonic() + min(gate_timeout, 30.0)
+            pow_passed = False
+            while _time.monotonic() < poll_deadline:
+                await asyncio.sleep(3.0)
+
+                # Check if URL changed (PoW redirected)
+                if page.url != pre_click_url:
+                    logger.info("PoW redirected to %s", page.url)
+                    pow_passed = True
+                    break
+
+                # Re-check if gate text disappeared
+                still_present = await page.evaluate("""
+                    () => {
+                        const els = document.querySelectorAll(
+                            'button, input[type="submit"], [role="button"], span, div'
+                        );
+                        const pat = /verifying|processing|please wait|checking your browser/i;
+                        for (const b of els) {
+                            const text = (b.textContent || b.value || '').trim();
+                            if (text.length > 100) continue;
+                            if (pat.test(text)) return true;
+                        }
+                        return false;
+                    }
+                """)
+                if not still_present:
+                    logger.info("PoW indicators cleared — gate passed")
+                    pow_passed = True
+                    break
+
+            if pow_passed:
+                try:
+                    await asyncio.wait_for(
+                        page.wait_for_load_state("networkidle"),
+                        timeout=10,
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                await asyncio.sleep(random.uniform(1.5, 3.0))
+            else:
+                logger.warning(
+                    "PoW/gate did not resolve within timeout — "
+                    "capturing current state",
+                )
 
     except Exception as e:
         logger.warning("Error waiting for gate resolution: %s", e)
@@ -1396,10 +1484,10 @@ def browser_download(
     if not _is_available():
         return None, "camoufox not installed (pip install phishkiller[browser])", None
 
-    # Hard wall-clock deadline: timeout + turnstile_timeout + 30s buffer.
-    # This prevents the async function from hanging indefinitely when
-    # networkidle waits never resolve (e.g., Turnstile keeps polling).
-    hard_timeout = timeout + turnstile_timeout + 30
+    # Hard wall-clock deadline: timeout + turnstile_timeout + 60s buffer.
+    # Buffer accounts for CTA click-through (detection + click + post-click
+    # navigation/loading) on top of Turnstile resolution and page load.
+    hard_timeout = timeout + turnstile_timeout + 60
 
     start = time.monotonic()
     try:
