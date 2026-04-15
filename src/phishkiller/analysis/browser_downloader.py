@@ -103,6 +103,26 @@ _STEALTH_JS = """
     }
   } catch {}
 
+  // 4b. getAttribute('webdriver') / getAttribute('driver') — PoW gates
+  //     use DOM element attribute checks as a secondary webdriver signal.
+  try {
+    const _origGetAttribute = Element.prototype.getAttribute;
+    Element.prototype.getAttribute = function(name) {
+      if (typeof name === 'string') {
+        const lower = name.toLowerCase();
+        if (lower === 'webdriver' || lower === 'driver') return null;
+      }
+      return _origGetAttribute.call(this, name);
+    };
+  } catch {}
+
+  // 4c. Clean Playwright utility selectors — document.$ / document.$$
+  //     are injected by Playwright and detected by some bot gates.
+  try {
+    if ('$' in document) delete document['$'];
+    if ('$$' in document) delete document['$$'];
+  } catch {}
+
   // 5. Notification.permission — headless browsers throw or return
   //    unexpected values.  Override to look like a fresh profile.
   try {
@@ -532,6 +552,13 @@ async def _async_browser_download(
             if turnstile_result != "absent":
                 await _take_screenshot(page, screenshots_dir, "02_bot_check")
 
+                # Post-Turnstile: click CTA buttons that gate the real content
+                # (e.g. "Verify to Play" voicemail lures, device-code phish)
+                if turnstile_result == "solved":
+                    cta_clicked = await _click_post_turnstile_action(page)
+                    if cta_clicked:
+                        await _take_screenshot(page, screenshots_dir, "02b_post_cta")
+
             # Simulate minimal human behavior to pass behavioral checks
             await _simulate_human_behavior(page)
 
@@ -833,6 +860,108 @@ async def _simulate_human_behavior(page) -> None:
         pass
 
 
+async def _click_post_turnstile_action(page) -> bool:
+    """Click a prominent CTA button that appears after Turnstile is solved.
+
+    Some phishing pages (e.g. voicemail lures, device-code phish) display a
+    call-to-action button after Turnstile completes — "Verify to Play",
+    "Play Voicemail", "Listen Now", etc.  The Turnstile itself is just a
+    gate; the real content only loads after clicking through.
+
+    Returns True if a CTA was found and clicked.
+    """
+    try:
+        cta = await page.evaluate("""
+            () => {
+                const actionPatterns = [
+                    /play.*voicemail/i, /verify to /i, /listen.*message/i,
+                    /access.*voicemail/i, /^continue$/i, /^proceed$/i,
+                    /^play$/i, /^listen$/i, /^play now$/i, /^listen now$/i,
+                ];
+                const candidates = document.querySelectorAll(
+                    'button, a, [role="button"], [class*="btn"], '
+                    + '[class*="call-action"], [class*="cta"]'
+                );
+                for (const el of candidates) {
+                    const text = (el.textContent || '').trim();
+                    if (text.length < 2 || text.length > 80) continue;
+                    const rect = el.getBoundingClientRect();
+                    // Only consider visible, prominent buttons
+                    if (rect.width < 80 || rect.height < 25) continue;
+                    if (rect.top < 0 || rect.left < 0) continue;
+                    const style = getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    if (parseFloat(style.opacity) < 0.1) continue;
+                    for (const pat of actionPatterns) {
+                        if (pat.test(text)) {
+                            return {
+                                selector: el.id ? '#' + CSS.escape(el.id)
+                                    : (el.className && typeof el.className === 'string' && el.className.trim())
+                                        ? el.tagName.toLowerCase() + '.' + CSS.escape(el.className.trim().split(/\\s+/)[0])
+                                        : el.tagName.toLowerCase(),
+                                text: text.substring(0, 60),
+                                x: rect.x + rect.width / 2,
+                                y: rect.y + rect.height / 2,
+                            };
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+
+        if not cta:
+            return False
+
+        logger.info("Post-Turnstile CTA detected: %r (selector=%s)", cta["text"], cta["selector"])
+
+        # Natural mouse approach to the button
+        viewport = page.viewport_size or {"width": 1280, "height": 800}
+        start_x = random.randint(int(viewport["width"] * 0.3), int(viewport["width"] * 0.7))
+        start_y = random.randint(int(viewport["height"] * 0.2), int(viewport["height"] * 0.5))
+        await page.mouse.move(start_x, start_y)
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+
+        # Move toward the button with intermediate steps
+        target_x, target_y = cta["x"], cta["y"]
+        steps = random.randint(3, 6)
+        for i in range(1, steps + 1):
+            frac = i / steps
+            ix = start_x + (target_x - start_x) * frac + random.uniform(-3, 3)
+            iy = start_y + (target_y - start_y) * frac + random.uniform(-3, 3)
+            await page.mouse.move(ix, iy)
+            await asyncio.sleep(random.uniform(0.03, 0.1))
+
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+
+        # Click
+        try:
+            el = await page.query_selector(cta["selector"])
+            if el:
+                await el.click()
+            else:
+                await page.mouse.click(target_x, target_y)
+        except Exception:
+            await page.mouse.click(target_x, target_y)
+
+        # Wait for post-click navigation or content change
+        try:
+            await asyncio.wait_for(
+                page.wait_for_load_state("networkidle"),
+                timeout=10,
+            )
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+        logger.info("Post-Turnstile CTA clicked: %r", cta["text"])
+        return True
+
+    except Exception as e:
+        logger.debug("Post-Turnstile CTA check failed: %s", e)
+        return False
+
+
 async def _detect_bot_gate(page) -> dict | None:
     """Detect common anti-bot verification gates on the page.
 
@@ -860,7 +989,8 @@ async def _detect_bot_gate(page) -> dict | None:
                 const candidates = [
                     ...document.querySelectorAll(
                         'button, a, input[type="button"], input[type="submit"], '
-                        + '[role="button"], [onclick], div[class*="btn"], span[class*="btn"]'
+                        + '[role="button"], [onclick], div[class*="btn"], span[class*="btn"], '
+                        + '[class*="call-action"], [class*="cta"]'
                     )
                 ];
 
@@ -870,6 +1000,8 @@ async def _detect_bot_gate(page) -> dict | None:
                     /^press & hold$/i, /^click to continue$/i,
                     /^confirm$/i, /^human verification$/i,
                     /^click to verify/i, /^verify your browser/i,
+                    /^verify to /i, /play.*voicemail/i, /listen.*message/i,
+                    /access.*voicemail/i, /^play now$/i, /^listen now$/i,
                 ];
 
                 for (const el of candidates) {
@@ -1087,6 +1219,9 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
     )
 
     # Phase 1: Build mouse movement track
+    # Brief delay so page event listeners are fully attached before
+    # generating mouse movement (PoW gates measure track length).
+    await asyncio.sleep(random.uniform(0.5, 1.0))
     await _build_mouse_track(page)
 
     # Phase 2: Click the gate element with natural mouse approach

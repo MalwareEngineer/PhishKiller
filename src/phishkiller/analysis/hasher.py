@@ -51,10 +51,14 @@ def compute_hashes(filepath: str | Path, tlsh_min_size: int = 50) -> HashResult:
 
 
 def compute_tlsh_distance(hash1: str, hash2: str) -> int | None:
-    """Compute the TLSH distance between two hashes. Returns None if TLSH is unavailable."""
+    """Compute the TLSH distance between two hashes.
+
+    Returns None if TLSH is unavailable or if the hashes are invalid
+    (malformed, empty, incompatible versions, etc.).
+    """
     try:
         import tlsh
 
         return tlsh.diff(hash1, hash2)
-    except ImportError:
+    except Exception:
         return None

@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from phishkiller.celery_app import celery_app
 from phishkiller.config import get_settings
 from phishkiller.database import get_sync_db
+from phishkiller.models.investigation import Investigation, InvestigationStatus
 from phishkiller.models.kit import Kit, KitStatus
 
 logger = logging.getLogger(__name__)
@@ -156,8 +157,83 @@ def full_reset_and_redispatch(self) -> dict:
         db.close()
 
 
+@celery_app.task(
+    name="phishkiller.tasks.recovery.recover_stuck_investigations",
+    bind=True,
+    queue="celery",
+    max_retries=0,
+)
+def recover_stuck_investigations(self, timeout_minutes: int = 60) -> dict:
+    """Find investigations stuck in IN_PROGRESS and complete them if all kits are terminal.
+
+    An investigation is "stuck" if it has been IN_PROGRESS for longer than
+    ``timeout_minutes`` and every one of its kits is in a terminal state
+    (ANALYZED or FAILED).
+    """
+    from sqlalchemy import func
+
+    db = get_sync_db()
+    try:
+        cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
+
+        stuck = db.scalars(
+            select(Investigation).where(
+                Investigation.status == InvestigationStatus.IN_PROGRESS,
+                Investigation.updated_at < cutoff,
+            )
+        ).all()
+
+        if not stuck:
+            logger.info("[recovery] No stuck investigations found (cutoff=%s)", cutoff.isoformat())
+            return {"recovered": 0}
+
+        recovered = 0
+        for inv in stuck:
+            # Count kits still in non-terminal states
+            pending_count = db.query(Kit).filter(
+                Kit.investigation_id == inv.id,
+                Kit.status.notin_([KitStatus.ANALYZED, KitStatus.FAILED]),
+            ).count()
+
+            if pending_count > 0:
+                logger.debug(
+                    "[recovery] Investigation %s still has %d non-terminal kits, skipping",
+                    inv.id, pending_count,
+                )
+                continue
+
+            # All kits are terminal — recompute counters and mark COMPLETED
+            actual_count = db.query(Kit).filter(
+                Kit.investigation_id == inv.id,
+            ).count()
+            actual_depth = db.query(func.coalesce(func.max(Kit.chain_depth), 0)).filter(
+                Kit.investigation_id == inv.id,
+            ).scalar()
+
+            inv.total_kits = actual_count
+            inv.total_depth_reached = actual_depth
+            inv.status = InvestigationStatus.COMPLETED
+            recovered += 1
+            logger.info(
+                "[recovery] Completed investigation %s (%d kits, depth %d)",
+                inv.id, actual_count, actual_depth,
+            )
+
+        db.commit()
+        logger.info("[recovery] Recovered %d stuck investigations", recovered)
+        return {"recovered": recovered}
+
+    except Exception:
+        db.rollback()
+        logger.exception("[recovery] Failed to recover stuck investigations")
+        raise
+    finally:
+        db.close()
+
+
 @worker_ready.connect
 def on_worker_ready(sender, **kwargs):
     """Trigger recovery as soon as the worker comes online."""
     logger.info("[recovery] Worker ready — dispatching stuck-kit recovery (5min cutoff)")
     recover_stuck_kits.delay(timeout_minutes=5)
+    recover_stuck_investigations.delay(timeout_minutes=5)
