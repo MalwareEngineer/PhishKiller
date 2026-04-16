@@ -55,6 +55,8 @@ class KitService:
                 selectinload(Kit.indicators),
                 selectinload(Kit.analysis_results),
                 selectinload(Kit.campaigns),
+                selectinload(Kit.families),
+                selectinload(Kit.actors),
                 selectinload(Kit.child_kits),
             )
         )

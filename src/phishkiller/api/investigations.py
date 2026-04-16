@@ -1,10 +1,12 @@
 """Investigation API endpoints."""
 
 import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 
 from phishkiller.api.deps import DbSession, Pagination
+from phishkiller.config import get_settings
 from phishkiller.schemas.investigation import (
     InvestigationCreate,
     InvestigationDetail,
@@ -51,12 +53,96 @@ async def create_investigation(
     investigation, kit, task_id = await service.create_from_url(
         str(payload.url), max_depth=payload.max_depth,
     )
+
+    # Override auto-generated name with user-provided name
+    if payload.name:
+        investigation.name = payload.name
+        await db.flush()
+
+    # Link root kit to actor/campaign/family
+    from phishkiller.api.kits import _link_kit_to_entities
+
+    await _link_kit_to_entities(
+        db, kit.id, payload.actor_id, payload.campaign_id, payload.family_id,
+    )
+
     await db.commit()
 
     return InvestigationSubmitResponse(
         investigation_id=investigation.id,
         kit_id=kit.id,
         task_id=task_id,
+    )
+
+
+@router.post("/upload", response_model=InvestigationSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_investigation_from_file(
+    db: DbSession,
+    file: UploadFile,
+    name: str = Form(...),
+    max_depth: int = Form(5),
+    actor_id: str | None = Form(None),
+    campaign_id: str | None = Form(None),
+    family_id: str | None = Form(None),
+) -> InvestigationSubmitResponse:
+    """Create an investigation from an uploaded file."""
+    settings = get_settings()
+    max_bytes = settings.max_kit_size_mb * 1024 * 1024
+
+    content = await file.read()
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {settings.max_kit_size_mb}MB limit",
+        )
+
+    # Save file to disk
+    kit_id = uuid.uuid4()
+    download_dir = Path(settings.kit_download_dir) / str(kit_id)
+    download_dir.mkdir(parents=True, exist_ok=True)
+    filepath = download_dir / (file.filename or "upload.bin")
+    filepath.write_bytes(content)
+
+    # Create kit from file
+    from phishkiller.services.kit_service import KitService
+
+    kit_service = KitService(db)
+    kit, task_id = await kit_service.submit_file(
+        filename=file.filename or "upload.bin",
+        local_path=str(filepath),
+        source_feed="manual",
+        kit_id=kit_id,
+    )
+
+    # Create investigation from the kit
+    service = InvestigationService(db)
+    investigation = await service.create_from_file(kit, max_depth=max_depth)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create investigation",
+        )
+
+    # Set user-provided name
+    investigation.name = name
+    await db.flush()
+
+    # Link root kit to actor/campaign/family
+    from phishkiller.api.kits import _link_kit_to_entities
+
+    await _link_kit_to_entities(
+        db, kit.id,
+        uuid.UUID(actor_id) if actor_id else None,
+        uuid.UUID(campaign_id) if campaign_id else None,
+        uuid.UUID(family_id) if family_id else None,
+    )
+
+    await db.commit()
+
+    return InvestigationSubmitResponse(
+        investigation_id=investigation.id,
+        kit_id=kit.id,
+        task_id=task_id or "",
     )
 
 

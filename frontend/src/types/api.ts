@@ -66,6 +66,8 @@ export interface KitDetail extends KitSummary {
   indicators: IndicatorBrief[];
   analysis_results: AnalysisResultBrief[];
   campaigns: CampaignBrief[];
+  families: FamilyBrief[];
+  actors: ActorBrief[];
   child_kits: KitSummary[];
 }
 
@@ -216,6 +218,25 @@ export interface CampaignBrief {
   id: string;
   name: string;
   target_brand?: string;
+}
+
+// ── Families ──
+
+export interface FamilySummary {
+  id: string;
+  name: string;
+  aliases?: string[];
+  created_at: string;
+}
+
+export interface FamilyDetail extends FamilySummary {
+  description?: string;
+  actors: ActorBrief[];
+}
+
+export interface FamilyBrief {
+  id: string;
+  name: string;
 }
 
 // ── Analysis ──

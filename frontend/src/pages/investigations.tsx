@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { useInvestigations, useCreateInvestigation, useBulkDeleteInvestigations } from "@/hooks/use-investigations";
+import { useInvestigations, useCreateInvestigation, useCreateInvestigationFromFile, useBulkDeleteInvestigations } from "@/hooks/use-investigations";
+import { EntityLinkSelectors } from "@/components/shared/entity-link-selectors";
 import { Pagination } from "@/components/shared/pagination";
 import { TableLoading } from "@/components/shared/loading";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,11 +18,18 @@ import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 25;
+const FILE_ACCEPT = ".zip,.rar,.tar,.gz,.html,.eml,.png,.jpg,.jpeg,.gif,.bmp,.webp,.pdf";
 
 export function InvestigationsPage() {
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [submitMode, setSubmitMode] = useState<"url" | "file">("url");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [actorId, setActorId] = useState<string | undefined>();
+  const [campaignId, setCampaignId] = useState<string | undefined>();
+  const [familyId, setFamilyId] = useState<string | undefined>();
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -34,6 +42,7 @@ export function InvestigationsPage() {
 
   const { data, isLoading } = useInvestigations(offset, PAGE_SIZE);
   const create = useCreateInvestigation();
+  const createFromFile = useCreateInvestigationFromFile();
   const bulkDeleteMutation = useBulkDeleteInvestigations();
 
   const items = data?.items ?? [];
@@ -78,19 +87,51 @@ export function InvestigationsPage() {
     });
   };
 
+  const resetForm = () => {
+    setName("");
+    setUrl("");
+    setSubmitMode("url");
+    setSelectedFile(null);
+    setActorId(undefined);
+    setCampaignId(undefined);
+    setFamilyId(undefined);
+  };
+
+  const isCreating = create.isPending || createFromFile.isPending;
+  const canSubmit = name.trim() && (submitMode === "url" ? url.trim() : selectedFile);
+
   const handleCreate = () => {
-    if (!url.trim()) return;
-    create.mutate(
-      { url: url.trim() },
-      {
-        onSuccess: () => {
-          toast.success("Investigation started");
-          setUrl("");
-          setOpen(false);
+    if (!name.trim()) return;
+
+    const onSuccess = () => {
+      toast.success("Investigation started");
+      resetForm();
+      setOpen(false);
+    };
+    const onError = (err: Error) => toast.error(err.message);
+
+    if (submitMode === "url") {
+      if (!url.trim()) return;
+      create.mutate(
+        {
+          name: name.trim(),
+          url: url.trim(),
+          actor_id: actorId,
+          campaign_id: campaignId,
+          family_id: familyId,
         },
-        onError: (err) => toast.error(err.message),
-      }
-    );
+        { onSuccess, onError }
+      );
+    } else {
+      if (!selectedFile) return;
+      const formData = new FormData();
+      formData.append("name", name.trim());
+      formData.append("file", selectedFile);
+      if (actorId) formData.append("actor_id", actorId);
+      if (campaignId) formData.append("campaign_id", campaignId);
+      if (familyId) formData.append("family_id", familyId);
+      createFromFile.mutate(formData, { onSuccess, onError });
+    }
   };
 
   return (
@@ -101,17 +142,78 @@ export function InvestigationsPage() {
           <Plus className="mr-2 h-4 w-4" />
           New Investigation
         </Button>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent>
+        <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) resetForm(); }}>
+          <DialogContent className="sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>Start Investigation</DialogTitle>
             </DialogHeader>
-            <div className="space-y-3">
-              <Input placeholder="https://..." value={url} onChange={(e) => setUrl(e.target.value)} />
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Investigation Name *</label>
+                <Input
+                  placeholder="e.g. Tycoon2FA voicemail campaign April 2026"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Source</label>
+                <div className="flex gap-1 mb-2">
+                  <Button
+                    type="button"
+                    variant={submitMode === "url" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setSubmitMode("url")}
+                  >
+                    URL
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={submitMode === "file" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setSubmitMode("file")}
+                  >
+                    File
+                  </Button>
+                </div>
+                {submitMode === "url" ? (
+                  <Input
+                    placeholder="https://..."
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                  />
+                ) : (
+                  <div className="space-y-2">
+                    <Input
+                      type="file"
+                      accept={FILE_ACCEPT}
+                      onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+                    />
+                    {selectedFile && (
+                      <p className="text-xs text-muted-foreground">
+                        {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <EntityLinkSelectors
+                actorId={actorId}
+                campaignId={campaignId}
+                familyId={familyId}
+                onActorChange={setActorId}
+                onCampaignChange={setCampaignId}
+                onFamilyChange={setFamilyId}
+              />
             </div>
             <DialogFooter>
-              <Button onClick={handleCreate} disabled={create.isPending}>
-                {create.isPending ? "Starting..." : "Start"}
+              <Button variant="outline" onClick={() => { setOpen(false); resetForm(); }}>
+                Cancel
+              </Button>
+              <Button onClick={handleCreate} disabled={isCreating || !canSubmit}>
+                {isCreating ? "Starting..." : "Start"}
               </Button>
             </DialogFooter>
           </DialogContent>

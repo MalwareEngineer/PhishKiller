@@ -12,6 +12,9 @@ class KitCreate(BaseModel):
     url: HttpUrl
     source_feed: str | None = None
     force: bool = False
+    actor_id: uuid.UUID | None = None
+    campaign_id: uuid.UUID | None = None
+    family_id: uuid.UUID | None = None
 
 
 class KitSummary(BaseModel):
@@ -56,6 +59,20 @@ class CampaignBrief(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FamilyBrief(BaseModel):
+    id: uuid.UUID
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
+class ActorBrief(BaseModel):
+    id: uuid.UUID
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
 class KitDetail(KitSummary):
     md5: str | None
     sha1: str | None
@@ -69,6 +86,8 @@ class KitDetail(KitSummary):
     indicators: list[IndicatorBrief] = []
     analysis_results: list[AnalysisResultBrief] = []
     campaigns: list[CampaignBrief] = []
+    families: list[FamilyBrief] = []
+    actors: list[ActorBrief] = []
     child_kits: list[KitSummary] = []
 
     model_config = {"from_attributes": True}
@@ -89,6 +108,9 @@ class KitSubmitResponse(BaseModel):
 class KitBulkCreate(BaseModel):
     urls: list[HttpUrl]
     source_feed: str | None = None
+    actor_id: uuid.UUID | None = None
+    campaign_id: uuid.UUID | None = None
+    family_id: uuid.UUID | None = None
 
 
 class KitBulkResult(BaseModel):

@@ -9,8 +9,12 @@ from phishkiller.schemas.kit import KitSummary
 
 
 class InvestigationCreate(BaseModel):
+    name: str
     url: HttpUrl | None = None
     max_depth: int = 5
+    actor_id: uuid.UUID | None = None
+    campaign_id: uuid.UUID | None = None
+    family_id: uuid.UUID | None = None
 
 
 class InvestigationSummary(BaseModel):

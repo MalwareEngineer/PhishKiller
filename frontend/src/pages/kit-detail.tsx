@@ -1,8 +1,9 @@
 import { useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { useKit, useKitSimilar, useKitActors, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor, useKitScreenshots, useKitNetworkLog, useKitBrowserResources, useForceRedownload } from "@/hooks/use-kits";
+import { useKit, useKitSimilar, useKitActors, useReanalyzeKit, useDeleteKit, useKitDeletePreview, useKitContent, useAddKitToCampaign, useAddKitToActor, useAddKitToFamily, useKitScreenshots, useKitNetworkLog, useKitBrowserResources, useForceRedownload } from "@/hooks/use-kits";
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useActors } from "@/hooks/use-actors";
+import { useFamilies } from "@/hooks/use-families";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
 import { IocTypeBadge } from "@/components/shared/ioc-type-badge";
 import { PageLoading } from "@/components/shared/loading";
@@ -149,11 +150,14 @@ export function KitDetailPage() {
   const [selectedFile, setSelectedFile] = useState(0);
   const addToCampaign = useAddKitToCampaign();
   const addToActor = useAddKitToActor();
+  const addToFamily = useAddKitToFamily();
   const { data: campaignsData } = useCampaigns({ limit: 200 });
   const { data: actorsData } = useActors(0, 200);
+  const { data: familiesData } = useFamilies(0, 200);
   const { data: kitActors } = useKitActors(id!);
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
+  const [selectedFamilyId, setSelectedFamilyId] = useState("");
   const { data: screenshotsData } = useKitScreenshots(id!, activeTab === "screenshots");
   const { data: networkData } = useKitNetworkLog(id!, activeTab === "network");
   const { data: resourcesData } = useKitBrowserResources(id!, activeTab === "resources");
@@ -332,6 +336,9 @@ export function KitDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="actors">
             Actors ({kitActors?.length ?? 0})
+          </TabsTrigger>
+          <TabsTrigger value="families">
+            Families ({kit.families?.length ?? 0})
           </TabsTrigger>
         </TabsList>
 
@@ -673,6 +680,61 @@ export function KitDetailPage() {
             Links all indicators from this kit (and its children) to the selected actor.
             {kit.parent_kit_id && " Since this is a child kit, the root kit's indicators will be linked instead."}
           </p>
+        </TabsContent>
+
+        {/* Families Tab */}
+        <TabsContent value="families" className="mt-4 space-y-4">
+          {(kit.families ?? []).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {kit.families.map((f) => (
+                <Link key={f.id} to={`/families/${f.id}`}>
+                  <Badge variant="outline" className="cursor-pointer hover:bg-muted">
+                    {f.name}
+                  </Badge>
+                </Link>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <select
+              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              value={selectedFamilyId}
+              onChange={(e) => setSelectedFamilyId(e.target.value)}
+            >
+              <option value="">Select a family...</option>
+              {(familiesData?.items ?? [])
+                .filter((f) => !(kit.families ?? []).some((kf) => kf.id === f.id))
+                .map((f) => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+            </select>
+            <Button
+              size="sm"
+              disabled={!selectedFamilyId || addToFamily.isPending}
+              onClick={() => {
+                addToFamily.mutate(
+                  { kitId: id!, familyId: selectedFamilyId },
+                  {
+                    onSuccess: (data) => {
+                      if (data.used_root) {
+                        toast.info(data.message);
+                      } else {
+                        toast.success("Kit added to family");
+                      }
+                      setSelectedFamilyId("");
+                    },
+                    onError: (err) => toast.error(err.message),
+                  }
+                );
+              }}
+            >
+              <Plus className="mr-1 h-4 w-4" />
+              {addToFamily.isPending ? "Adding..." : "Add to Family"}
+            </Button>
+          </div>
+          {(kit.families ?? []).length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-4">Not linked to any families yet</p>
+          )}
         </TabsContent>
       </Tabs>
 

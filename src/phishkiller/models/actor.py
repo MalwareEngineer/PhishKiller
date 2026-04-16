@@ -12,7 +12,9 @@ from phishkiller.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from phishkiller.models.campaign import Campaign
+    from phishkiller.models.family import Family
     from phishkiller.models.indicator import Indicator
+    from phishkiller.models.kit import Kit
 
 
 class Actor(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -32,4 +34,10 @@ class Actor(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     indicators: Mapped[list[Indicator]] = relationship(back_populates="actor")
     campaigns: Mapped[list[Campaign]] = relationship(
         secondary="campaign_actors", back_populates="actors"
+    )
+    kits: Mapped[list[Kit]] = relationship(
+        secondary="kit_actors", back_populates="actors"
+    )
+    families: Mapped[list[Family]] = relationship(
+        secondary="family_actors", back_populates="actors"
     )

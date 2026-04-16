@@ -10,6 +10,8 @@ import { ActorsPage } from "@/pages/actors";
 import { ActorDetailPage } from "@/pages/actor-detail";
 import { CampaignsPage } from "@/pages/campaigns";
 import { CampaignDetailPage } from "@/pages/campaign-detail";
+import { FamiliesPage } from "@/pages/families";
+import { FamilyDetailPage } from "@/pages/family-detail";
 import { PhishDiffPage } from "@/pages/phish-diff";
 
 export function App() {
@@ -26,6 +28,8 @@ export function App() {
         <Route path="actors/:id" element={<ActorDetailPage />} />
         <Route path="campaigns" element={<CampaignsPage />} />
         <Route path="campaigns/:id" element={<CampaignDetailPage />} />
+        <Route path="families" element={<FamiliesPage />} />
+        <Route path="families/:id" element={<FamilyDetailPage />} />
         <Route path="phish-diff" element={<PhishDiffPage />} />
       </Route>
     </Routes>
