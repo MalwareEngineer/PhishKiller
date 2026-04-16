@@ -40,7 +40,7 @@ export function Sidebar() {
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
         <Shield className="h-6 w-6 shrink-0 text-emerald-500" />
         {!collapsed && (
-          <span className="text-lg font-bold tracking-tight">PhishKiller</span>
+          <span className="text-lg font-bold tracking-tight">Darla</span>
         )}
       </div>
 

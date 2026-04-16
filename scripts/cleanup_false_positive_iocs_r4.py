@@ -19,13 +19,13 @@ import argparse
 
 from sqlalchemy import text
 
-from phishkiller.analysis.patterns import (
+from darla.analysis.patterns import (
     BENIGN_URL_ROOT_DOMAINS,
     SMTP_HOST_EXCLUSIONS,
     TELEGRAM_HANDLE_EXCLUSIONS,
     extract_root_domain,
 )
-from phishkiller.database import get_sync_db
+from darla.database import get_sync_db
 
 
 def main() -> None:

@@ -40,7 +40,7 @@ coverage.xml
 alembic/versions/*.pyc
 
 # Downloads / Analysis artifacts
-/tmp/phishkiller/
+/tmp/darla/
 downloads/
 extracted/
 

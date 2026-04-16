@@ -18,8 +18,8 @@ import argparse
 
 from sqlalchemy import text
 
-from phishkiller.celery_app import celery_app
-from phishkiller.database import get_sync_db
+from darla.celery_app import celery_app
+from darla.database import get_sync_db
 
 
 def main() -> None:
@@ -65,7 +65,7 @@ def main() -> None:
     print(f"Dispatching {n:,} compute_similarity tasks...")
     for i, row in enumerate(kit_ids):
         celery_app.send_task(
-            "phishkiller.tasks.analysis.compute_similarity",
+            "darla.tasks.analysis.compute_similarity",
             args=[{"kit_id": str(row.id), "status": "analyzed"}],
             queue="analysis",
         )

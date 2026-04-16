@@ -1,5 +1,5 @@
 /*
-    PhishKiller — AiTM PhaaS Kit Detection Rules
+    Darla — AiTM PhaaS Kit Detection Rules
     Detect Adversary-in-the-Middle phishing-as-a-service patterns derived
     from avoutfitters/monexyit.cfd and himediagroup/northmiamifl-gov.com
     campaign analysis (2026-03).
@@ -9,7 +9,7 @@ rule AiTM_Empty_Tag_String_Splitting
 {
     meta:
         description = "Empty inline HTML tags used to split strings and defeat text extraction"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "evasion"
         mitre = "T1027"
@@ -33,7 +33,7 @@ rule AiTM_PageValidator_BotDetection
 {
     meta:
         description = "PageValidator anti-headless browser detection framework"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "evasion"
 
@@ -52,7 +52,7 @@ rule AiTM_Randomized_CSS_Variables
 {
     meta:
         description = "Randomized CSS class names and JS variable suffixes typical of PhaaS kits"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -69,7 +69,7 @@ rule AiTM_Honeypot_Fields
 {
     meta:
         description = "Off-screen honeypot input fields with sys_ prefix used to trap bots"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "evasion"
 
@@ -90,7 +90,7 @@ rule AiTM_Relay_Proxy_Indicators
 {
     meta:
         description = "AiTM relay proxying real Microsoft/Google authentication endpoints"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "critical"
         category = "technique"
         mitre = "T1557"
@@ -125,7 +125,7 @@ rule AiTM_Credential_Exfil_REST
 {
     meta:
         description = "REST API credential exfiltration with CORS preflight pattern"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -153,7 +153,7 @@ rule AiTM_PhaaS_URL_Parameters
 {
     meta:
         description = "PhaaS kit URL parameter fingerprint scheme (session/ray/geo/jst/ver)"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "kit_family"
 
@@ -172,7 +172,7 @@ rule AiTM_Mousemove_Gated_DOM
 {
     meta:
         description = "Mousemove event listener gates DOM element injection for bot detection"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "evasion"
 

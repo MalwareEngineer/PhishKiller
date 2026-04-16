@@ -1,5 +1,5 @@
 /*
-    PhishKiller — Evasion Technique Detection Rules
+    Darla — Evasion Technique Detection Rules
     Detect anti-analysis and anti-bot techniques used by phishing kits.
 */
 
@@ -7,7 +7,7 @@ rule PhishKit_Antibot_Htaccess
 {
     meta:
         description = ".htaccess rules blocking security bots and crawlers"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -30,7 +30,7 @@ rule PhishKit_Antibot_PHP
 {
     meta:
         description = "PHP-based bot detection and blocking"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -55,7 +55,7 @@ rule PhishKit_Antibot_JavaScript
 {
     meta:
         description = "JavaScript-based bot/automation detection"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "low"
         category = "evasion"
 
@@ -75,7 +75,7 @@ rule PhishKit_PHP_Obfuscation_Eval
 {
     meta:
         description = "PHP eval/assert obfuscation wrappers"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -95,7 +95,7 @@ rule PhishKit_PHP_Obfuscation_Hex
 {
     meta:
         description = "PHP hex-encoded string obfuscation"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -111,7 +111,7 @@ rule PhishKit_IP_Blocking
 {
     meta:
         description = "IP-based visitor blocking (security companies, VPNs)"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -132,7 +132,7 @@ rule PhishKit_Double_Login
 {
     meta:
         description = "Double-login technique to capture credentials twice"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "technique"
 
@@ -151,7 +151,7 @@ rule PhishKit_Cloudflare_Turnstile_Gate
 {
     meta:
         description = "Cloudflare Turnstile CAPTCHA used as anti-analysis gate"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -170,7 +170,7 @@ rule PhishKit_FingerprintJS_Tracking
 {
     meta:
         description = "FingerprintJS used for visitor fingerprinting in phishing"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -191,7 +191,7 @@ rule PhishKit_AntiVM_Detection
 {
     meta:
         description = "Browser-side VM/sandbox detection in phishing page"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "evasion"
 
@@ -213,7 +213,7 @@ rule PhishKit_AntiDevTools
 {
     meta:
         description = "Anti-DevTools detection techniques in phishing page"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "evasion"
 
@@ -235,7 +235,7 @@ rule PhishKit_WASM_Obfuscation
 {
     meta:
         description = "WebAssembly module used for obfuscation in phishing page"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "evasion"
 

@@ -17,7 +17,7 @@ import sys
 
 from sqlalchemy import text
 
-from phishkiller.database import get_sync_db
+from darla.database import get_sync_db
 
 
 # Benign root domain patterns for C2 URLs
