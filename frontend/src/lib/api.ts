@@ -23,6 +23,8 @@ import type {
   ActorDetail,
   CampaignSummary,
   CampaignDetail,
+  FamilySummary,
+  FamilyDetail,
   HealthResponse,
   AnalysisResultDetail,
   TaskStatusResponse,
@@ -58,15 +60,18 @@ export const kits = {
     return request<PaginatedResponse<KitSummary>>(`/kits?${q}`);
   },
   get: (id: string) => request<KitDetail>(`/kits/${id}`),
-  submit: (url: string, source_feed?: string, force?: boolean) =>
+  submit: (url: string, source_feed?: string, force?: boolean, entityIds?: { actor_id?: string; campaign_id?: string; family_id?: string }) =>
     request<KitSubmitResponse>("/kits", {
       method: "POST",
-      body: JSON.stringify({ url, source_feed, force }),
+      body: JSON.stringify({ url, source_feed, force, ...entityIds }),
     }),
-  upload: async (file: File, source_feed?: string) => {
+  upload: async (file: File, source_feed?: string, entityIds?: { actor_id?: string; campaign_id?: string; family_id?: string }) => {
     const form = new FormData();
     form.append("file", file);
     if (source_feed) form.append("source_feed", source_feed);
+    if (entityIds?.actor_id) form.append("actor_id", entityIds.actor_id);
+    if (entityIds?.campaign_id) form.append("campaign_id", entityIds.campaign_id);
+    if (entityIds?.family_id) form.append("family_id", entityIds.family_id);
     const res = await fetch(`${BASE}/kits/upload`, { method: "POST", body: form });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     return res.json() as Promise<KitSubmitResponse>;
@@ -81,14 +86,17 @@ export const kits = {
     request<PaginatedResponse<IndicatorSummary>>(`/kits/${id}/indicators?offset=${offset}&limit=${limit}`),
   reanalyze: (id: string) =>
     request<{ kit_id: string; task_id: string }>(`/kits/${id}/reanalyze`, { method: "POST" }),
-  bulkSubmit: (urls: string[]) =>
+  bulkSubmit: (urls: string[], entityIds?: { actor_id?: string; campaign_id?: string; family_id?: string }) =>
     request<KitBulkResponse>("/kits/bulk", {
       method: "POST",
-      body: JSON.stringify({ urls }),
+      body: JSON.stringify({ urls, ...entityIds }),
     }),
-  bulkUpload: async (files: File[]) => {
+  bulkUpload: async (files: File[], entityIds?: { actor_id?: string; campaign_id?: string; family_id?: string }) => {
     const form = new FormData();
     for (const file of files) form.append("files", file);
+    if (entityIds?.actor_id) form.append("actor_id", entityIds.actor_id);
+    if (entityIds?.campaign_id) form.append("campaign_id", entityIds.campaign_id);
+    if (entityIds?.family_id) form.append("family_id", entityIds.family_id);
     const res = await fetch(`${BASE}/kits/upload/bulk`, { method: "POST", body: form });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     return res.json() as Promise<KitBulkUploadResponse>;
@@ -109,6 +117,11 @@ export const kits = {
     request<{ linked: number; kit_id: string; used_root: boolean; message: string }>(
       `/kits/${kitId}/add-to-actor`,
       { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
+    ),
+  addToFamily: (kitId: string, familyId: string) =>
+    request<{ added: number; kit_id: string; used_root: boolean; message: string }>(
+      `/kits/${kitId}/add-to-family`,
+      { method: "POST", body: JSON.stringify({ family_id: familyId }) },
     ),
   bulkDelete: (ids: string[]) =>
     request<{ deleted: number }>("/kits/bulk-delete", {
@@ -136,11 +149,29 @@ export const investigations = {
   tree: (id: string) => request<InvestigationTreeNode[]>(`/investigations/${id}/tree`),
   kits: (id: string, offset = 0, limit = 50) =>
     request<PaginatedResponse<KitSummary>>(`/investigations/${id}/kits?offset=${offset}&limit=${limit}`),
-  create: (url: string, max_depth = 3) =>
+  create: (data: {
+    name: string;
+    url: string;
+    max_depth?: number;
+    actor_id?: string;
+    campaign_id?: string;
+    family_id?: string;
+  }) =>
     request<InvestigationSubmitResponse>("/investigations", {
       method: "POST",
-      body: JSON.stringify({ url, max_depth }),
+      body: JSON.stringify(data),
     }),
+  createFromFile: async (formData: FormData) => {
+    const res = await fetch(`${BASE}/investigations/upload`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `${res.status} ${res.statusText}`);
+    }
+    return res.json() as Promise<InvestigationSubmitResponse>;
+  },
   update: (id: string, data: Partial<InvestigationDetail>) =>
     request<InvestigationDetail>(`/investigations/${id}`, {
       method: "PUT",
@@ -215,6 +246,30 @@ export const campaigns = {
     request<{ added: number }>(`/campaigns/${id}/kits`, {
       method: "POST",
       body: JSON.stringify({ kit_ids }),
+    }),
+};
+
+// ── Families ──
+
+export const families = {
+  list: (offset = 0, limit = 50) =>
+    request<PaginatedResponse<FamilySummary>>(`/families?offset=${offset}&limit=${limit}`),
+  get: (id: string) => request<FamilyDetail>(`/families/${id}`),
+  create: (data: { name: string; aliases?: string[]; description?: string }) =>
+    request<FamilyDetail>("/families", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<FamilyDetail>) =>
+    request<FamilyDetail>(`/families/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  delete: (id: string) =>
+    request<void>(`/families/${id}`, { method: "DELETE" }),
+  addKits: (id: string, kit_ids: string[]) =>
+    request<{ added: number }>(`/families/${id}/kits`, {
+      method: "POST",
+      body: JSON.stringify({ kit_ids }),
+    }),
+  addActors: (id: string, actor_ids: string[]) =>
+    request<{ added: number }>(`/families/${id}/actors`, {
+      method: "POST",
+      body: JSON.stringify({ actor_ids }),
     }),
 };
 

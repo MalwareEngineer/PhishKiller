@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useKits, useSubmitKit, useUploadKit, useBulkSubmitKits, useBulkUploadKits, useSearchKits, useBulkDeleteKits } from "@/hooks/use-kits";
 import { KitStatusBadge } from "@/components/shared/kit-status-badge";
+import { EntityLinkSelectors } from "@/components/shared/entity-link-selectors";
 import { Pagination } from "@/components/shared/pagination";
 import { TableLoading } from "@/components/shared/loading";
 import { Card, CardContent } from "@/components/ui/card";
@@ -79,6 +80,17 @@ export function KitsPage() {
   // Upload state
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+
+  // Entity linking state (shared by both dialogs)
+  const [submitActorId, setSubmitActorId] = useState<string | undefined>();
+  const [submitCampaignId, setSubmitCampaignId] = useState<string | undefined>();
+  const [submitFamilyId, setSubmitFamilyId] = useState<string | undefined>();
+  const [uploadActorId, setUploadActorId] = useState<string | undefined>();
+  const [uploadCampaignId, setUploadCampaignId] = useState<string | undefined>();
+  const [uploadFamilyId, setUploadFamilyId] = useState<string | undefined>();
+
+  // .txt file import ref
+  const txtFileRef = useRef<HTMLInputElement>(null);
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -180,31 +192,61 @@ export function KitsPage() {
 
     if (urls.length === 0) return;
 
+    const entityIds = {
+      actor_id: submitActorId,
+      campaign_id: submitCampaignId,
+      family_id: submitFamilyId,
+    };
+
+    const resetSubmit = () => {
+      setSubmitUrls("");
+      setSubmitOpen(false);
+      setSubmitActorId(undefined);
+      setSubmitCampaignId(undefined);
+      setSubmitFamilyId(undefined);
+    };
+
     if (urls.length === 1) {
       submitMutation.mutate(
-        { url: urls[0] },
+        { url: urls[0], entityIds },
         {
           onSuccess: (res) => {
             toast.success(res.duplicate ? "Duplicate kit — already queued" : "Kit submitted for analysis");
-            setSubmitUrls("");
-            setSubmitOpen(false);
+            resetSubmit();
           },
           onError: (err) => toast.error(err.message),
         }
       );
     } else {
-      bulkSubmitMutation.mutate(urls, {
-        onSuccess: (res) => {
-          const msg = res.skipped_duplicate > 0
-            ? `${res.submitted} URLs submitted (${res.skipped_duplicate} duplicates skipped)`
-            : `${res.submitted} URLs submitted for analysis`;
-          toast.success(msg);
-          setSubmitUrls("");
-          setSubmitOpen(false);
-        },
-        onError: (err) => toast.error(err.message),
-      });
+      bulkSubmitMutation.mutate(
+        { urls, entityIds },
+        {
+          onSuccess: (res) => {
+            const msg = res.skipped_duplicate > 0
+              ? `${res.submitted} URLs submitted (${res.skipped_duplicate} duplicates skipped)`
+              : `${res.submitted} URLs submitted for analysis`;
+            toast.success(msg);
+            resetSubmit();
+          },
+          onError: (err) => toast.error(err.message),
+        }
+      );
     }
+  };
+
+  const handleTxtImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result as string;
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+      if (lines.length > 0) {
+        setSubmitUrls((prev) => (prev.trim() ? prev.trim() + "\n" : "") + lines.join("\n"));
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -222,27 +264,42 @@ export function KitsPage() {
   const handleUpload = () => {
     if (selectedFiles.length === 0) return;
 
+    const entityIds = {
+      actor_id: uploadActorId,
+      campaign_id: uploadCampaignId,
+      family_id: uploadFamilyId,
+    };
+
+    const resetUpload = () => {
+      setSelectedFiles([]);
+      setUploadOpen(false);
+      setUploadActorId(undefined);
+      setUploadCampaignId(undefined);
+      setUploadFamilyId(undefined);
+    };
+
     if (selectedFiles.length === 1) {
       uploadMutation.mutate(
-        { file: selectedFiles[0] },
+        { file: selectedFiles[0], entityIds },
         {
           onSuccess: () => {
             toast.success("File uploaded for analysis");
-            setSelectedFiles([]);
-            setUploadOpen(false);
+            resetUpload();
           },
           onError: (err) => toast.error(err.message),
         }
       );
     } else {
-      bulkUploadMutation.mutate(selectedFiles, {
-        onSuccess: (res) => {
-          toast.success(`${res.submitted} files uploaded for analysis`);
-          setSelectedFiles([]);
-          setUploadOpen(false);
-        },
-        onError: (err) => toast.error(err.message),
-      });
+      bulkUploadMutation.mutate(
+        { files: selectedFiles, entityIds },
+        {
+          onSuccess: (res) => {
+            toast.success(`${res.submitted} files uploaded for analysis`);
+            resetUpload();
+          },
+          onError: (err) => toast.error(err.message),
+        }
+      );
     }
   };
 
@@ -258,15 +315,15 @@ export function KitsPage() {
             <Upload className="mr-2 h-4 w-4" />
             Upload
           </Button>
-          <Dialog open={uploadOpen} onOpenChange={(open) => { setUploadOpen(open); if (!open) setSelectedFiles([]); }}>
-            <DialogContent>
+          <Dialog open={uploadOpen} onOpenChange={(open) => { setUploadOpen(open); if (!open) { setSelectedFiles([]); setUploadActorId(undefined); setUploadCampaignId(undefined); setUploadFamilyId(undefined); } }}>
+            <DialogContent className="sm:max-w-3xl">
               <DialogHeader>
-                <DialogTitle>Upload Phishing Kits</DialogTitle>
+                <DialogTitle>Upload Files for Analysis</DialogTitle>
               </DialogHeader>
               <div className="space-y-3">
                 <Input
                   type="file"
-                  accept=".zip,.rar,.tar,.gz,.html,.eml,.png,.jpg,.jpeg,.gif,.bmp,.webp"
+                  accept=".zip,.rar,.tar,.gz,.html,.eml,.png,.jpg,.jpeg,.gif,.bmp,.webp,.pdf"
                   multiple
                   onChange={handleFileSelect}
                 />
@@ -286,12 +343,20 @@ export function KitsPage() {
                 )}
                 <p className="text-xs text-muted-foreground">
                   {selectedFiles.length === 0
-                    ? "Select one or more files (.zip, .rar, .tar, .gz, .html, .eml, .png, .jpg)"
+                    ? "Select one or more files (.zip, .rar, .tar, .gz, .html, .eml, .pdf, .png, .jpg)"
                     : `${selectedFiles.length} file${selectedFiles.length !== 1 ? "s" : ""} selected`}
                 </p>
+                <EntityLinkSelectors
+                  actorId={uploadActorId}
+                  campaignId={uploadCampaignId}
+                  familyId={uploadFamilyId}
+                  onActorChange={setUploadActorId}
+                  onCampaignChange={setUploadCampaignId}
+                  onFamilyChange={setUploadFamilyId}
+                />
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => { setUploadOpen(false); setSelectedFiles([]); }}>
+                <Button variant="outline" onClick={() => { setUploadOpen(false); setSelectedFiles([]); setUploadActorId(undefined); setUploadCampaignId(undefined); setUploadFamilyId(undefined); }}>
                   Cancel
                 </Button>
                 <Button onClick={handleUpload} disabled={selectedFiles.length === 0 || isUploading}>
@@ -306,11 +371,31 @@ export function KitsPage() {
             Submit URLs
           </Button>
           <Dialog open={submitOpen} onOpenChange={(open) => { setSubmitOpen(open); if (!open) setSubmitUrls(""); }}>
-            <DialogContent>
+            <DialogContent className="sm:max-w-3xl">
               <DialogHeader>
                 <DialogTitle>Submit URLs for Analysis</DialogTitle>
               </DialogHeader>
               <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-muted-foreground">One URL per line</label>
+                  <div>
+                    <input
+                      ref={txtFileRef}
+                      type="file"
+                      accept=".txt"
+                      onChange={handleTxtImport}
+                      className="hidden"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => txtFileRef.current?.click()}
+                    >
+                      Import from .txt
+                    </Button>
+                  </div>
+                </div>
                 <textarea
                   className="flex min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 font-mono"
                   placeholder={"https://example.com/kit1.zip\nhttps://example.com/kit2.zip\nhttps://example.com/kit3.zip"}
@@ -321,13 +406,21 @@ export function KitsPage() {
                   }}
                 />
                 <p className="text-xs text-muted-foreground">
-                  One URL per line. {submitUrls.split("\n").filter((u) => u.trim()).length > 0
+                  {submitUrls.split("\n").filter((u) => u.trim()).length > 0
                     ? `${submitUrls.split("\n").filter((u) => u.trim()).length} URL${submitUrls.split("\n").filter((u) => u.trim()).length !== 1 ? "s" : ""}`
                     : "Ctrl+Enter to submit"}
                 </p>
+                <EntityLinkSelectors
+                  actorId={submitActorId}
+                  campaignId={submitCampaignId}
+                  familyId={submitFamilyId}
+                  onActorChange={setSubmitActorId}
+                  onCampaignChange={setSubmitCampaignId}
+                  onFamilyChange={setSubmitFamilyId}
+                />
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => { setSubmitOpen(false); setSubmitUrls(""); }}>
+                <Button variant="outline" onClick={() => { setSubmitOpen(false); setSubmitUrls(""); setSubmitActorId(undefined); setSubmitCampaignId(undefined); setSubmitFamilyId(undefined); }}>
                   Cancel
                 </Button>
                 <Button onClick={handleSubmit} disabled={isSubmitting || !submitUrls.trim()}>

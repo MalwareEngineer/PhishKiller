@@ -13,8 +13,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from phishkiller.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from phishkiller.models.actor import Actor
     from phishkiller.models.analysis_result import AnalysisResult
     from phishkiller.models.campaign import Campaign
+    from phishkiller.models.family import Family
     from phishkiller.models.indicator import Indicator
     from phishkiller.models.investigation import Investigation
 
@@ -94,6 +96,12 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     campaigns: Mapped[list[Campaign]] = relationship(
         secondary="campaign_kits", back_populates="kits"
+    )
+    families: Mapped[list[Family]] = relationship(
+        secondary="family_kits", back_populates="kits"
+    )
+    actors: Mapped[list[Actor]] = relationship(
+        secondary="kit_actors", back_populates="kits"
     )
 
     __table_args__ = (

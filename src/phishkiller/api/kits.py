@@ -30,6 +30,45 @@ from phishkiller.services.kit_service import KitService
 router = APIRouter()
 
 
+async def _link_kit_to_entities(
+    db,
+    kit_id: uuid.UUID,
+    actor_id: uuid.UUID | None = None,
+    campaign_id: uuid.UUID | None = None,
+    family_id: uuid.UUID | None = None,
+) -> None:
+    """Link a kit to actor, campaign, and/or family after creation."""
+    if campaign_id:
+        from phishkiller.services.campaign_service import CampaignService
+
+        campaign_svc = CampaignService(db)
+        try:
+            await campaign_svc.add_kits(campaign_id, [kit_id])
+        except ValueError:
+            pass
+
+    if family_id:
+        from phishkiller.services.family_service import FamilyService
+
+        family_svc = FamilyService(db)
+        try:
+            await family_svc.link_kits(family_id, [kit_id])
+        except ValueError:
+            pass
+
+    if actor_id:
+        from sqlalchemy import select
+
+        from phishkiller.models.actor import Actor
+        from phishkiller.models.kit import Kit
+
+        kit = (await db.execute(select(Kit).where(Kit.id == kit_id))).scalar_one_or_none()
+        actor = (await db.execute(select(Actor).where(Actor.id == actor_id))).scalar_one_or_none()
+        if kit and actor and actor not in kit.actors:
+            kit.actors.append(actor)
+            await db.flush()
+
+
 @router.get("", response_model=KitListResponse)
 async def list_kits(
     db: DbSession,
@@ -61,6 +100,12 @@ async def create_kit(payload: KitCreate, db: DbSession) -> KitSubmitResponse:
         inv_service = InvestigationService(db)
         await inv_service.create_from_file(kit)
 
+    # Link to actor/campaign/family if specified
+    if not duplicate:
+        await _link_kit_to_entities(
+            db, kit.id, payload.actor_id, payload.campaign_id, payload.family_id,
+        )
+
     return KitSubmitResponse(
         kit_id=kit.id,
         task_id=task_id or "",
@@ -74,6 +119,9 @@ async def upload_kit(
     db: DbSession,
     file: UploadFile,
     source_feed: str = Form("manual"),
+    actor_id: str | None = Form(None),
+    campaign_id: str | None = Form(None),
+    family_id: str | None = Form(None),
 ) -> KitSubmitResponse:
     """Upload a local phishing kit file for analysis (skips download step)."""
     settings = get_settings()
@@ -116,6 +164,14 @@ async def upload_kit(
         inv_service = InvestigationService(db)
         await inv_service.create_from_file(kit)
 
+    # Link to actor/campaign/family if specified
+    await _link_kit_to_entities(
+        db, kit.id,
+        uuid.UUID(actor_id) if actor_id else None,
+        uuid.UUID(campaign_id) if campaign_id else None,
+        uuid.UUID(family_id) if family_id else None,
+    )
+
     return KitSubmitResponse(kit_id=kit.id, task_id=task_id)
 
 
@@ -127,6 +183,9 @@ async def upload_kit(
 async def bulk_upload_kits(
     db: DbSession,
     files: list[UploadFile],
+    actor_id: str | None = Form(None),
+    campaign_id: str | None = Form(None),
+    family_id: str | None = Form(None),
 ) -> KitBulkUploadResponse:
     """Upload multiple phishing kit files for analysis (max 50)."""
     if len(files) > 50:
@@ -188,20 +247,15 @@ async def bulk_upload_kits(
             investigation_id=investigation_id,
         ))
 
-    # Auto-create campaign to group bulk-uploaded kits
-    if len(final_results) > 1:
-        from phishkiller.services.campaign_service import CampaignService
-
-        campaign_svc = CampaignService(db)
-        from datetime import datetime, timezone
-
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        campaign = await campaign_svc.create_campaign({
-            "name": f"Bulk upload {ts}",
-            "auto_generated": True,
-        })
-        kit_ids = [r.kit_id for r in final_results]
-        await campaign_svc.add_kits(campaign.id, kit_ids)
+    # Link all uploaded kits to actor/campaign/family if specified
+    parsed_actor = uuid.UUID(actor_id) if actor_id else None
+    parsed_campaign = uuid.UUID(campaign_id) if campaign_id else None
+    parsed_family = uuid.UUID(family_id) if family_id else None
+    if parsed_actor or parsed_campaign or parsed_family:
+        for r in final_results:
+            await _link_kit_to_entities(
+                db, r.kit_id, parsed_actor, parsed_campaign, parsed_family,
+            )
 
     return KitBulkUploadResponse(
         submitted=len(final_results),
@@ -234,21 +288,13 @@ async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
                 if kit:
                     await inv_service.create_from_file(kit)
 
-    # Auto-create campaign to group bulk-submitted kits
-    non_dup = [r for r in results if not r.get("duplicate")]
-    if len(non_dup) > 1:
-        from phishkiller.services.campaign_service import CampaignService
-
-        campaign_svc = CampaignService(db)
-        from datetime import datetime, timezone
-
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        campaign = await campaign_svc.create_campaign({
-            "name": f"Bulk submit {ts}",
-            "auto_generated": True,
-        })
-        kit_ids = [r["kit_id"] for r in non_dup]
-        await campaign_svc.add_kits(campaign.id, kit_ids)
+    # Link all submitted kits to actor/campaign/family if specified
+    if payload.actor_id or payload.campaign_id or payload.family_id:
+        for r in results:
+            if not r.get("duplicate"):
+                await _link_kit_to_entities(
+                    db, r["kit_id"], payload.actor_id, payload.campaign_id, payload.family_id,
+                )
 
     return KitBulkResponse(
         submitted=submitted,
@@ -536,4 +582,57 @@ async def add_kit_to_actor(
         "message": f"Root kit {str(actual_kit.id)[:8]} indicators linked (child kit selected)"
         if used_root
         else f"{count} indicator(s) linked to actor",
+    }
+
+
+@router.post("/{kit_id}/add-to-family")
+async def add_kit_to_family(
+    kit_id: uuid.UUID,
+    payload: dict,
+    db: DbSession,
+):
+    """Link a kit to a family.
+
+    If the kit is a child in an investigation chain, the root kit is
+    added instead so the full chain stays together.
+    """
+    family_id = payload.get("family_id")
+    if not family_id:
+        raise HTTPException(status_code=400, detail="family_id is required")
+
+    service = KitService(db)
+    kit = await service.get_kit(kit_id)
+    if not kit:
+        raise HTTPException(status_code=404, detail="Kit not found")
+
+    # Resolve root kit of the chain
+    actual_kit = kit
+    used_root = False
+    if kit.parent_kit_id:
+        current = kit
+        while current.parent_kit_id:
+            parent = await service.get_kit(current.parent_kit_id)
+            if not parent:
+                break
+            current = parent
+        actual_kit = current
+        used_root = actual_kit.id != kit.id
+
+    from phishkiller.services.family_service import FamilyService
+
+    family_svc = FamilyService(db)
+    try:
+        count = await family_svc.link_kits(
+            uuid.UUID(family_id), [actual_kit.id]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Family not found") from exc
+
+    return {
+        "added": count,
+        "kit_id": str(actual_kit.id),
+        "used_root": used_root,
+        "message": f"Root kit {str(actual_kit.id)[:8]} added (child kit selected)"
+        if used_root
+        else "Kit added to family",
     }

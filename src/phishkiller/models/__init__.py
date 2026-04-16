@@ -2,9 +2,16 @@
 
 from phishkiller.models.actor import Actor
 from phishkiller.models.analysis_result import AnalysisResult, AnalysisType
-from phishkiller.models.associations import campaign_actors, campaign_kits
+from phishkiller.models.associations import (
+    campaign_actors,
+    campaign_kits,
+    family_actors,
+    family_kits,
+    kit_actors,
+)
 from phishkiller.models.base import Base
 from phishkiller.models.campaign import Campaign
+from phishkiller.models.family import Family
 from phishkiller.models.indicator import Indicator, IndicatorType
 from phishkiller.models.investigation import Investigation, InvestigationStatus
 from phishkiller.models.kit import Kit, KitStatus
@@ -15,6 +22,7 @@ __all__ = [
     "Actor",
     "Base",
     "Campaign",
+    "Family",
     "Indicator",
     "IndicatorType",
     "Investigation",
@@ -23,4 +31,7 @@ __all__ = [
     "KitStatus",
     "campaign_actors",
     "campaign_kits",
+    "family_actors",
+    "family_kits",
+    "kit_actors",
 ]

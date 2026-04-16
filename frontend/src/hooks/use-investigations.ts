@@ -35,8 +35,22 @@ export function useInvestigationKits(id: string, offset = 0, limit = 50) {
 export function useCreateInvestigation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ url, max_depth }: { url: string; max_depth?: number }) =>
-      investigations.create(url, max_depth),
+    mutationFn: (data: {
+      name: string;
+      url: string;
+      max_depth?: number;
+      actor_id?: string;
+      campaign_id?: string;
+      family_id?: string;
+    }) => investigations.create(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["investigations"] }),
+  });
+}
+
+export function useCreateInvestigationFromFile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (formData: FormData) => investigations.createFromFile(formData),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["investigations"] }),
   });
 }

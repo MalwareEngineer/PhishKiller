@@ -38,3 +38,54 @@ campaign_actors = Table(
         primary_key=True,
     ),
 )
+
+family_kits = Table(
+    "family_kits",
+    Base.metadata,
+    Column(
+        "family_id",
+        UUID(as_uuid=True),
+        ForeignKey("families.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "kit_id",
+        UUID(as_uuid=True),
+        ForeignKey("kits.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
+
+family_actors = Table(
+    "family_actors",
+    Base.metadata,
+    Column(
+        "family_id",
+        UUID(as_uuid=True),
+        ForeignKey("families.id"),
+        primary_key=True,
+    ),
+    Column(
+        "actor_id",
+        UUID(as_uuid=True),
+        ForeignKey("actors.id"),
+        primary_key=True,
+    ),
+)
+
+kit_actors = Table(
+    "kit_actors",
+    Base.metadata,
+    Column(
+        "kit_id",
+        UUID(as_uuid=True),
+        ForeignKey("kits.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "actor_id",
+        UUID(as_uuid=True),
+        ForeignKey("actors.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)

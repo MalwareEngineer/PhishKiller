@@ -41,11 +41,13 @@ export function useKitIndicators(id: string, offset = 0, limit = 50) {
   });
 }
 
+type EntityIds = { actor_id?: string; campaign_id?: string; family_id?: string };
+
 export function useSubmitKit() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ url, source_feed }: { url: string; source_feed?: string }) =>
-      kits.submit(url, source_feed),
+    mutationFn: ({ url, source_feed, entityIds }: { url: string; source_feed?: string; entityIds?: EntityIds }) =>
+      kits.submit(url, source_feed, undefined, entityIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
   });
 }
@@ -53,8 +55,8 @@ export function useSubmitKit() {
 export function useUploadKit() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ file, source_feed }: { file: File; source_feed?: string }) =>
-      kits.upload(file, source_feed),
+    mutationFn: ({ file, source_feed, entityIds }: { file: File; source_feed?: string; entityIds?: EntityIds }) =>
+      kits.upload(file, source_feed, entityIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
   });
 }
@@ -62,7 +64,8 @@ export function useUploadKit() {
 export function useBulkSubmitKits() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (urls: string[]) => kits.bulkSubmit(urls),
+    mutationFn: ({ urls, entityIds }: { urls: string[]; entityIds?: EntityIds }) =>
+      kits.bulkSubmit(urls, entityIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
   });
 }
@@ -70,7 +73,8 @@ export function useBulkSubmitKits() {
 export function useBulkUploadKits() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (files: File[]) => kits.bulkUpload(files),
+    mutationFn: ({ files, entityIds }: { files: File[]; entityIds?: EntityIds }) =>
+      kits.bulkUpload(files, entityIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["kits"] }),
   });
 }
@@ -197,6 +201,18 @@ export function useAddKitToActor() {
       qc.invalidateQueries({ queryKey: ["kit", vars.kitId] });
       qc.invalidateQueries({ queryKey: ["kit-actors", vars.kitId] });
       qc.invalidateQueries({ queryKey: ["actors"] });
+    },
+  });
+}
+
+export function useAddKitToFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ kitId, familyId }: { kitId: string; familyId: string }) =>
+      kits.addToFamily(kitId, familyId),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["kit", vars.kitId] });
+      qc.invalidateQueries({ queryKey: ["families"] });
     },
   });
 }
