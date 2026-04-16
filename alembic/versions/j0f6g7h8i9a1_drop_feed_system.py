@@ -1,6 +1,6 @@
 """Drop feed_entries table, feed_entry_id FK on kits, and feedsource enum.
 
-Transitions PhishKiller to manual/API-only intake — no automated feed
+Transitions Darla to manual/API-only intake — no automated feed
 ingestion (PhishTank, OpenPhish, CertStream). Every kit now originates
 from analyst submission, email gateway, or SOAR integration.
 

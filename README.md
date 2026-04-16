@@ -1,12 +1,12 @@
-# PhishKiller
+# Darla
 
-Automated phishing kit analysis platform. Submit a URL, EML, or archive and PhishKiller downloads, extracts, deobfuscates, renders, and scans the kit end-to-end — extracting IOCs, following redirect chains, fetching external JS infrastructure, and correlating threat actors across campaigns.
+Automated phishing kit analysis platform. Submit a URL, EML, or archive and Darla downloads, extracts, deobfuscates, renders, and scans the kit end-to-end — extracting IOCs, following redirect chains, fetching external JS infrastructure, and correlating threat actors across campaigns.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/MalwareEngineer/PhishKiller.git
-cd PhishKiller
+git clone https://github.com/MalwareEngineer/Darla.git
+cd Darla
 cp .env.example .env        # edit credentials if needed
 docker compose up -d
 docker compose exec api alembic upgrade head
@@ -67,11 +67,11 @@ React + Vite + TailwindCSS dashboard for kit triage, investigation trees, indica
 | `postgres` | postgres:16-alpine | Primary database |
 | `redis` | redis:7-alpine | Cache + Celery result backend |
 | `rabbitmq` | rabbitmq:3.13-management | Celery message broker (management UI at `:15672`) |
-| `api` | phishkiller-api | FastAPI REST API |
-| `worker-analysis` | phishkiller-worker-analysis | Analysis pipeline (prefork, 10 processes) |
-| `worker-downloads` | phishkiller-worker-downloads | Kit downloads (prefork, 4 processes) |
-| `worker-browser` | phishkiller-worker-browser | Camoufox stealth browser (solo pool) |
-| `worker-beat` | phishkiller-worker-beat | Celery beat scheduler + stuck-kit recovery |
+| `api` | darla-api | FastAPI REST API |
+| `worker-analysis` | darla-worker-analysis | Analysis pipeline (prefork, 10 processes) |
+| `worker-downloads` | darla-worker-downloads | Kit downloads (prefork, 4 processes) |
+| `worker-browser` | darla-worker-browser | Camoufox stealth browser (solo pool) |
+| `worker-beat` | darla-worker-beat | Celery beat scheduler + stuck-kit recovery |
 
 ### Volumes
 
@@ -83,7 +83,7 @@ React + Vite + TailwindCSS dashboard for kit triage, investigation trees, indica
 ## Project Structure
 
 ```
-src/phishkiller/
+src/darla/
 ├── api/              # FastAPI routes and dependencies
 ├── analysis/         # Core analysis logic
 │   ├── deobfuscator.py   # PHP/HTML/JS deobfuscation
@@ -152,9 +152,9 @@ All settings use the `PK_` env prefix. Key variables in `.env`:
 
 ```bash
 # Infrastructure
-POSTGRES_USER=phishkiller
+POSTGRES_USER=darla
 POSTGRES_PASSWORD=changeme
-RABBITMQ_USER=phishkiller
+RABBITMQ_USER=darla
 RABBITMQ_PASS=changeme
 
 # Database
@@ -174,7 +174,7 @@ PK_BROWSER_DOWNLOAD_ENABLED=true
 PK_BROWSER_RENDER_ON_THIN_RESULTS=true
 ```
 
-Full settings reference: `src/phishkiller/config.py`
+Full settings reference: `src/darla/config.py`
 
 ## Database Migrations
 
@@ -259,30 +259,30 @@ curl "http://localhost:8000/api/v1/analysis/results?kit_id={kit_id}"
 
 ```bash
 # Submit
-phishkiller submit https://suspicious-site.com/login
-phishkiller submit phish.eml
-phishkiller submit kit.zip
-phishkiller submit --batch urls.txt
+darla submit https://suspicious-site.com/login
+darla submit phish.eml
+darla submit kit.zip
+darla submit --batch urls.txt
 
 # Monitor
-phishkiller watch <kit_id>
-phishkiller status <kit_id>
+darla watch <kit_id>
+darla status <kit_id>
 
 # Search
-phishkiller kits list --status analyzed
-phishkiller kits similar <kit_id>
-phishkiller iocs list --type domain
-phishkiller iocs search "example.com"
+darla kits list --status analyzed
+darla kits similar <kit_id>
+darla iocs list --type domain
+darla iocs search "example.com"
 
 # Investigations
-phishkiller investigations create https://suspicious-site.com/login
-phishkiller investigations tree <investigation_id>
+darla investigations create https://suspicious-site.com/login
+darla investigations tree <investigation_id>
 
 # Management
-phishkiller campaigns list
-phishkiller actors list
-phishkiller health
-phishkiller worker recover
+darla campaigns list
+darla actors list
+darla health
+darla worker recover
 ```
 
 ## Development
@@ -307,10 +307,10 @@ pip install -e ".[dev,tlsh,yara,qr,browser]"
 docker compose up -d postgres redis rabbitmq
 
 # Run API locally
-uvicorn phishkiller.main:app --reload --port 8000
+uvicorn darla.main:app --reload --port 8000
 
 # Run worker locally
-celery -A phishkiller.celery_app worker -l info -Q analysis
+celery -A darla.celery_app worker -l info -Q analysis
 ```
 
 ### Tests
@@ -318,7 +318,7 @@ celery -A phishkiller.celery_app worker -l info -Q analysis
 ```bash
 pytest
 pytest tests/test_analysis/ -v
-pytest --cov=phishkiller
+pytest --cov=darla
 ```
 
 ### Rebuilding Workers After Code Changes
@@ -336,7 +336,7 @@ docker compose logs worker-analysis --tail 5  # look for "celery@... ready."
 
 ### Adding a New Pipeline Step
 
-1. Add a Celery task in `src/phishkiller/tasks/analysis.py`
+1. Add a Celery task in `src/darla/tasks/analysis.py`
 2. Add it to the chain in `_post_download_steps()`
 3. If it needs a new `AnalysisType`, add the enum value and create an Alembic migration
 4. Use `upsert_analysis_result()` for DB writes (handles dedup on reanalysis)
@@ -344,8 +344,8 @@ docker compose logs worker-analysis --tail 5  # look for "celery@... ready."
 
 ### Adding IOC Patterns
 
-1. Add regex to `src/phishkiller/analysis/patterns.py`
-2. Add extraction logic in `src/phishkiller/analysis/ioc_engine.py` (`_extract_urls()` or new method)
+1. Add regex to `src/darla/analysis/patterns.py`
+2. Add extraction logic in `src/darla/analysis/ioc_engine.py` (`_extract_urls()` or new method)
 3. Use existing `IndicatorType` enum values, or add a new one with a migration
 
 ## License

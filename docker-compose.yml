@@ -1,11 +1,11 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: phishkiller-postgres
+    container_name: darla-postgres
     env_file:
       - .env
     environment:
-      POSTGRES_DB: phishkiller
+      POSTGRES_DB: darla
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
@@ -20,7 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: phishkiller-redis
+    container_name: darla-redis
     ports:
       - "6379:6379"
     volumes:
@@ -34,7 +34,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
-    container_name: phishkiller-rabbitmq
+    container_name: darla-rabbitmq
     env_file:
       - .env
     environment:
@@ -53,13 +53,13 @@ services:
 
   api:
     build: .
-    container_name: phishkiller-api
+    container_name: darla-api
     command: >
-      uvicorn phishkiller.main:app
+      uvicorn darla.main:app
       --host 0.0.0.0 --port 8000
     environment:
-      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
       PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
       PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
       PK_REDIS_URL: redis://redis:6379/0
@@ -82,14 +82,14 @@ services:
 
   worker-beat:
     build: .
-    container_name: phishkiller-worker-beat
+    container_name: darla-worker-beat
     command: >
-      celery -A phishkiller.celery_app worker
+      celery -A darla.celery_app worker
       -l info -P solo -B
       -Q celery
     environment:
-      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
+      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
       PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
       PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
       PK_REDIS_URL: redis://redis:6379/0
@@ -112,14 +112,14 @@ services:
 
   worker-downloads:
     build: .
-    container_name: phishkiller-worker-downloads
+    container_name: darla-worker-downloads
     command: >
-      celery -A phishkiller.celery_app worker
+      celery -A darla.celery_app worker
       -l info -P prefork -c 4
       -Q downloads
     environment:
-      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
+      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
       PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
       PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
       PK_REDIS_URL: redis://redis:6379/0
@@ -143,14 +143,14 @@ services:
 
   worker-analysis:
     build: .
-    container_name: phishkiller-worker-analysis
+    container_name: darla-worker-analysis
     command: >
-      celery -A phishkiller.celery_app worker
+      celery -A darla.celery_app worker
       -l info -P prefork -c 10
       -Q analysis
     environment:
-      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
+      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
       PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
       PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
       PK_REDIS_URL: redis://redis:6379/0
@@ -178,14 +178,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.browser
-    container_name: phishkiller-worker-browser
+    container_name: darla-worker-browser
     command: >
-      celery -A phishkiller.celery_app worker
+      celery -A darla.celery_app worker
       -l info -P solo
       -Q browser
     environment:
-      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
-      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/phishkiller
+      PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
+      PK_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
       PK_CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672//
       PK_CELERY_RESULT_BACKEND: redis://redis:6379/1
       PK_REDIS_URL: redis://redis:6379/0

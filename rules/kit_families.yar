@@ -1,5 +1,5 @@
 /*
-    PhishKiller — Known Kit Family Detection Rules
+    Darla — Known Kit Family Detection Rules
     Signatures for identifying specific phishing kit builders and templates.
 */
 
@@ -7,7 +7,7 @@ rule PhishKit_16Shop
 {
     meta:
         description = "16Shop phishing kit framework"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "kit_family"
         family = "16Shop"
@@ -27,7 +27,7 @@ rule PhishKit_KingPhisher
 {
     meta:
         description = "King Phisher campaign toolkit markers"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "kit_family"
         family = "KingPhisher"
@@ -46,7 +46,7 @@ rule PhishKit_Chase_Template
 {
     meta:
         description = "Chase bank phishing template"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "Chase"
@@ -67,7 +67,7 @@ rule PhishKit_Office365_Template
 {
     meta:
         description = "Microsoft Office 365 phishing template"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "Microsoft"
@@ -89,7 +89,7 @@ rule PhishKit_PayPal_Template
 {
     meta:
         description = "PayPal phishing template"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "PayPal"
@@ -110,7 +110,7 @@ rule PhishKit_Apple_Template
 {
     meta:
         description = "Apple ID / iCloud phishing template"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "Apple"
@@ -131,7 +131,7 @@ rule PhishKit_Google_Template
 {
     meta:
         description = "Google/Gmail phishing template"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "Google"
@@ -153,7 +153,7 @@ rule PhishKit_LinkedIn_Template
 {
     meta:
         description = "LinkedIn phishing template"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "LinkedIn"
@@ -173,7 +173,7 @@ rule PhishKit_Builder_Watermark
 {
     meta:
         description = "Kit builder watermark or signature"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "attribution"
 
@@ -194,7 +194,7 @@ rule PhishKit_OAuth_Redirect_Phishing
 {
     meta:
         description = "OAuth redirect-based credential phishing"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "technique"
         brand = "Microsoft"
@@ -218,7 +218,7 @@ rule PhishKit_Device_Code_Phishing
 {
     meta:
         description = "Device code flow phishing (OAuth2 device auth abuse)"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "critical"
         category = "technique"
 
@@ -239,7 +239,7 @@ rule PhishKit_Cloudflare_Workers_Hosted
 {
     meta:
         description = "Phishing page hosted on Cloudflare Workers/Pages"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "infrastructure"
 

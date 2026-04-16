@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate starter private/ config files for PhishKiller.
+"""Generate starter private/ config files for Darla.
 
 Creates private/user_agents.json, private/certstream_brands.json, and
 private/certstream_keywords.json with sensible defaults. Existing files

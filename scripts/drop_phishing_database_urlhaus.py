@@ -2,10 +2,10 @@
 """Purge all Phishing.Database and URLhaus data from the database.
 
 Deletes in FK-safe order with batched deletes to avoid long-running locks.
-Run INSIDE the phishkiller-postgres container or with DATABASE_URL set.
+Run INSIDE the darla-postgres container or with DATABASE_URL set.
 
 Usage:
-    docker exec phishkiller-worker-beat python scripts/drop_phishing_database_urlhaus.py
+    docker exec darla-worker-beat python scripts/drop_phishing_database_urlhaus.py
 """
 
 import os
@@ -18,7 +18,7 @@ SOURCES = ("PHISHING_DATABASE", "URLHAUS")
 
 DSN = os.environ.get(
     "PK_SYNC_DATABASE_URL",
-    "postgresql+psycopg2://phishkiller:phishkiller@postgres:5432/phishkiller",
+    "postgresql+psycopg2://darla:darla@postgres:5432/darla",
 ).replace("postgresql+psycopg2://", "postgresql://")
 
 

@@ -1,5 +1,5 @@
 /*
-    PhishKiller — Generic Phishing Kit Detection Rules
+    Darla — Generic Phishing Kit Detection Rules
     These rules detect common patterns found across phishing kits regardless of family.
 */
 
@@ -7,7 +7,7 @@ rule PhishKit_Credential_Exfil_Email
 {
     meta:
         description = "PHP mail() used to exfiltrate stolen credentials"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -28,7 +28,7 @@ rule PhishKit_Credential_Exfil_Telegram
 {
     meta:
         description = "Telegram Bot API used for credential exfiltration"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -46,7 +46,7 @@ rule PhishKit_Credential_Exfil_Telegram_JS
 {
     meta:
         description = "Telegram Bot API used for credential exfiltration via JavaScript"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -67,7 +67,7 @@ rule PhishKit_Credential_Exfil_SMTP
 {
     meta:
         description = "SMTP used to exfiltrate stolen credentials"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -88,7 +88,7 @@ rule PhishKit_Login_Form
 {
     meta:
         description = "HTML login form targeting credentials"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "phishing_page"
 
@@ -111,7 +111,7 @@ rule PhishKit_Credential_Logger
 {
     meta:
         description = "PHP script that logs credentials to a file"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -130,7 +130,7 @@ rule PhishKit_Social_Engineering_Lure
 {
     meta:
         description = "Common social engineering phrases in phishing pages"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "low"
         category = "social_engineering"
 
@@ -152,7 +152,7 @@ rule PhishKit_QR_Code_Phishing
 {
     meta:
         description = "QR code embedded in phishing page for credential harvesting"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "technique"
 
@@ -175,7 +175,7 @@ rule PhishKit_MFA_Phishing_Proxy
 {
     meta:
         description = "Real-time MFA/2FA phishing proxy (EvilGinx-style)"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "critical"
         category = "technique"
 
@@ -199,7 +199,7 @@ rule PhishKit_Credential_Exfil_Discord
 {
     meta:
         description = "Discord webhook used for credential exfiltration"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "exfiltration"
 
@@ -218,7 +218,7 @@ rule PhishKit_Microsoft_Branded_Page
 {
     meta:
         description = "Microsoft-branded phishing page with login form"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "high"
         category = "brand_target"
         brand = "Microsoft"
@@ -242,7 +242,7 @@ rule PhishKit_Redirect_Chain_Suspicious
 {
     meta:
         description = "Suspicious redirect chain patterns common in phishing"
-        author = "PhishKiller"
+        author = "Darla"
         severity = "medium"
         category = "technique"
 
