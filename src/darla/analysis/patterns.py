@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 # Increment when patterns, allowlists, or extraction logic change.
 # Used to identify kits that need re-analysis after updates.
-PATTERN_VERSION = 4
+PATTERN_VERSION = 5
 
 # ---------- Email addresses ----------
 EMAIL_PATTERN = re.compile(
@@ -220,6 +220,7 @@ BENIGN_URL_ROOT_DOMAINS = frozenset({
     "gravatar.com",
     "cloudinary.com",
     "sentry.io",
+    "qualified.com",
     "intercom.io", "intercomcdn.com",
     "zendesk.com", "zdassets.com",
     "hubspot.com", "hsforms.com", "hubspotusercontent.com",
@@ -280,6 +281,37 @@ def is_benign_url(url: str) -> bool:
         return False
 
 
+# Resource origin classification — used by the IOC scanner to decide whether
+# a browser-captured file should be regex-scanned at all.  Attacker-served
+# JS still goes through the full extractor; jQuery-from-a-CDN doesn't.
+ORIGIN_BENIGN = "benign"       # served by a known-legitimate CDN/SaaS
+ORIGIN_LURE = "lure"           # served by the lure domain (attacker page)
+ORIGIN_UNKNOWN = "unknown"     # unclassified — scan as normal
+
+
+def classify_origin(origin_url: str, lure_root_domain: str | None = None) -> str:
+    """Classify an origin URL for IOC-extraction gating.
+
+    Returns one of ``ORIGIN_BENIGN``, ``ORIGIN_LURE``, ``ORIGIN_UNKNOWN``.
+    Callers skip content-regex IOC scans for ``ORIGIN_BENIGN`` files.
+    """
+    if not origin_url:
+        return ORIGIN_UNKNOWN
+    try:
+        clean_url = _HTML_ENTITY_RE.sub("", origin_url)
+        hostname = urlparse(clean_url).hostname
+    except Exception:
+        return ORIGIN_UNKNOWN
+    if not hostname:
+        return ORIGIN_UNKNOWN
+    root = extract_root_domain(hostname.lower())
+    if root in BENIGN_URL_ROOT_DOMAINS:
+        return ORIGIN_BENIGN
+    if lure_root_domain and root == lure_root_domain:
+        return ORIGIN_LURE
+    return ORIGIN_UNKNOWN
+
+
 # URL path patterns that indicate static assets (not C2)
 BENIGN_URL_EXTENSIONS = frozenset({
     ".css", ".woff", ".woff2", ".ttf", ".eot", ".otf",
@@ -327,11 +359,46 @@ PHP_MAIL_TO_PATTERN = re.compile(
 )
 
 # ---------- IP Addresses (IPv4) ----------
+# Each octet must be 1-3 digits with NO leading zero (rejects 21.061.065.065).
+# Boundary lookarounds exclude digits, dots, and hyphen-digit patterns so
+# version strings embedded in filenames/URLs like "-1.2.1.1-" don't match.
 IPV4_PATTERN = re.compile(
-    r"(?<![0-9.])(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}"
-    r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?![0-9.])",
+    r"(?<![0-9.\-])"
+    r"(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]?|0)\.){3}"
+    r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]?|0)"
+    r"(?![0-9.\-])",
 )
 PRIVATE_IP_PREFIXES = ("10.", "127.", "192.168.", "0.", "169.254.")
+
+# Filename/path fragments that signal a Cloudflare challenge HTML or script.
+# Challenge pages contain Base58-ish ray tokens that trip the Bitcoin regex
+# and embedded version strings (e.g. "-1.2.1.1-") that trip the IPv4 regex.
+CLOUDFLARE_CHALLENGE_FILENAME_RE = re.compile(
+    r"-\d{10}-\d+\.\d+\.\d+\.\d+-",
+)
+
+# Path fragments of third-party "what's my IP" services.  The response body
+# is the *visitor's* public IP, not attacker infrastructure — IP extraction
+# on these responses produces a guaranteed false positive.
+IP_ECHO_FILENAME_FRAGMENTS = (
+    "api.ipify.org",
+    "ipapi.co",
+    "ipinfo.io",
+    "api.ipbase.com",
+    "api.ip.sb",
+    "ifconfig.me",
+    "icanhazip.com",
+)
+
+# Keyword window for Telegram handle extraction.  A bare "@handle" match is
+# only promoted to a Telegram IOC if one of these markers appears nearby on
+# the same line — otherwise it's almost always a JS decorator, CSS at-rule,
+# JSON-LD key, or minified symbol.
+TELEGRAM_CONTEXT_MARKERS = (
+    "telegram", "t.me/", "t.me\\/", "tg://", "tg:\\/\\/",
+    "telegra.ph", "@telegram", "telegrambot", "telegram_channel",
+    "telegram bot", "telegram chat",
+)
 
 # ---------- SMTP Credentials ----------
 # Require PHP variable assignment ($var = "val") or array/config key syntax
@@ -452,6 +519,10 @@ _JS_PRONE_TLDS = frozenset({
     "no", "me", "to", "au", "in", "my", "qa", "ph", "pt",
     "ga", "info", "page", "host", "click", "link", "top",
     "center", "media",
+    # Additional ccTLDs that collide with JS attribute/property names
+    # (he.name, ge.th, bz.jp, cg.bd, cg.be) and gTLDs that look like
+    # object keys (ai.info, ce.top, mt.host).
+    "th", "jp", "bd", "be",
 })
 # Benign domains to skip in standalone domain extraction.
 # Uses root-domain matching via extract_root_domain() — so adding "google.com"
@@ -472,6 +543,13 @@ PHONE_PATTERN = re.compile(
 # ---------- Telegram Handles ----------
 TELEGRAM_HANDLE_PATTERN = re.compile(
     r"(?<![a-zA-Z0-9])@([a-zA-Z][a-zA-Z0-9_]{4,31})(?![a-zA-Z0-9_])"
+)
+# Handles shared as a Telegram profile URL: https://t.me/{handle},
+# https://telegram.me/{handle}.  Captured in addition to the bare "@handle"
+# form since many panels/phishing kits only link via URL.
+TELEGRAM_URL_HANDLE_PATTERN = re.compile(
+    r"(?:https?:\\?/\\?/)?(?:www\.)?t(?:elegram)?\.me\\?/([a-zA-Z][a-zA-Z0-9_]{4,31})(?![a-zA-Z0-9_])",
+    re.IGNORECASE,
 )
 # Common false positives for @handles (CSS/JS/email/JSON-LD/npm conventions)
 TELEGRAM_HANDLE_EXCLUSIONS = {

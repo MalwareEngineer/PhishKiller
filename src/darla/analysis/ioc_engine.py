@@ -1,5 +1,6 @@
 """IOC extraction engine for phishing kit source files."""
 
+import json
 import logging
 import os
 import time
@@ -13,9 +14,11 @@ from darla.analysis.patterns import (
     AITM_AUTH_ENDPOINTS,
     BENIGN_DOMAINS,
     BENIGN_URL_EXTENSIONS,
+    BENIGN_URL_ROOT_DOMAINS,
     BITCOIN_PATTERN,
     C2_KEYWORDS,
     C2_URL_PATTERN,
+    CLOUDFLARE_CHALLENGE_FILENAME_RE,
     CSS_JUNK_IN_URL,
     DOMAIN_PATTERN,
     EMAIL_EXCLUSIONS,
@@ -23,9 +26,13 @@ from darla.analysis.patterns import (
     EMAIL_PLACEHOLDER_LOCALS,
     ETHEREUM_PATTERN,
     FALSE_DOMAIN_EXTENSIONS,
+    IP_ECHO_FILENAME_FRAGMENTS,
     IPV4_PATTERN,
     JS_CONCAT_BOUNDARY,
     JS_FALSE_DOMAINS,
+    ORIGIN_BENIGN,
+    ORIGIN_LURE,
+    ORIGIN_UNKNOWN,
     PHONE_PATTERN,
     PHP_MAIL_PATTERN,
     PHP_MAIL_TO_PATTERN,
@@ -37,11 +44,14 @@ from darla.analysis.patterns import (
     TELEGRAM_API_PATTERN,
     TELEGRAM_BOT_TOKEN_PATTERN,
     TELEGRAM_CHAT_ID_PATTERN,
+    TELEGRAM_CONTEXT_MARKERS,
     TELEGRAM_HANDLE_EXCLUSIONS,
     TELEGRAM_HANDLE_PATTERN,
+    TELEGRAM_URL_HANDLE_PATTERN,
     URL_TRAILING_JUNK,
     VALID_TLDS,
     WEBSOCKET_URL_PATTERN,
+    classify_origin,
     extract_root_domain,
     is_benign_url,
 )
@@ -78,6 +88,41 @@ class ExtractionResult:
     errors: list[str] = field(default_factory=list)
 
 
+class ResourceManifest:
+    """Maps on-disk browser-captured file paths back to their origin URLs.
+
+    Written by browser_downloader._on_response into
+    ``_browser_resources/_manifest.json``.  The IOC scanner consults it to
+    decide whether a captured resource came from attacker-controlled
+    infrastructure (scan) or a benign third-party CDN (skip).
+    """
+
+    def __init__(self, by_relative_path: dict[str, dict]):
+        self._entries = by_relative_path
+
+    @classmethod
+    def load(cls, base_dir: str) -> "ResourceManifest":
+        manifest_path = Path(base_dir) / "_browser_resources" / "_manifest.json"
+        if not manifest_path.exists():
+            return cls({})
+        try:
+            entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug("Failed to read manifest at %s: %s", manifest_path, e)
+            return cls({})
+        # Normalize keys to forward-slash relative paths for cross-platform
+        # comparison against os.path.relpath() output.
+        by_path: dict[str, dict] = {}
+        for entry in entries if isinstance(entries, list) else []:
+            fname = entry.get("filename")
+            if isinstance(fname, str):
+                by_path[fname.replace("\\", "/")] = entry
+        return cls(by_path)
+
+    def lookup(self, relative_path: str) -> dict | None:
+        return self._entries.get(relative_path.replace("\\", "/"))
+
+
 class IOCExtractor:
     """Scans phishing kit files for indicators of compromise."""
 
@@ -98,13 +143,25 @@ class IOCExtractor:
 
     def scan_directory(self, directory: str) -> ExtractionResult:
         result = ExtractionResult()
+        manifest = ResourceManifest.load(directory)
         for root, _, files in os.walk(directory):
             for filename in files:
                 filepath = os.path.join(root, filename)
+                relative = os.path.relpath(filepath, directory).replace("\\", "/")
+                # requests.json is extracted via the structured network-IOC
+                # path (extract_network_iocs_from_requests_json), not via
+                # regex scanning as if it were kit source.
+                if relative == "requests.json":
+                    continue
+                # The manifest itself isn't content to scan.
+                if relative.endswith("_browser_resources/_manifest.json"):
+                    continue
                 ext = Path(filepath).suffix.lower()
                 if ext in PROCESSABLE_EXTENSIONS:
                     try:
-                        file_iocs = self._scan_file(filepath, directory)
+                        file_iocs = self._scan_file(
+                            filepath, directory, manifest=manifest,
+                        )
                         result.iocs.extend(file_iocs)
                         result.files_processed += 1
                     except Exception as e:
@@ -113,9 +170,21 @@ class IOCExtractor:
         return result
 
     def scan_content(
-        self, content: str, source_file: str = "<string>"
+        self,
+        content: str,
+        source_file: str = "<string>",
+        *,
+        skip_crypto_and_ip: bool = False,
+        skip_ip_only: bool = False,
     ) -> list[ExtractedIOC]:
-        """Scan a string for IOCs (useful for testing or one-off analysis)."""
+        """Scan a string for IOCs (useful for testing or one-off analysis).
+
+        ``skip_crypto_and_ip`` suppresses crypto-wallet and IP extractors for
+        files that are known to produce false positives of both types
+        (e.g. Cloudflare challenge pages).  ``skip_ip_only`` suppresses just
+        IP extraction — used for IP-echo-service response bodies whose
+        "IP" is the visitor's own public address.
+        """
         iocs: list[ExtractedIOC] = []
         lines = content.split("\n")
         deadline = time.monotonic() + MAX_SCAN_SECONDS
@@ -160,9 +229,13 @@ class IOCExtractor:
             iocs.extend(self._extract_domains(
                 line, source_file, line_num, skip_domains=url_hostnames,
             ))
-            iocs.extend(self._extract_ips(line, source_file, line_num))
+            if not (skip_crypto_and_ip or skip_ip_only):
+                iocs.extend(self._extract_ips(line, source_file, line_num))
             iocs.extend(self._extract_smtp_creds(line, source_file, line_num))
-            iocs.extend(self._extract_crypto_wallets(line, source_file, line_num))
+            if not skip_crypto_and_ip:
+                iocs.extend(
+                    self._extract_crypto_wallets(line, source_file, line_num)
+                )
             iocs.extend(self._extract_phone_numbers(line, source_file, line_num))
             iocs.extend(self._extract_aitm_indicators(line, source_file, line_num))
 
@@ -180,8 +253,15 @@ class IOCExtractor:
         result.iocs = self._deduplicate(result.iocs)
         return result
 
-    def _scan_file(self, filepath: str, base_dir: str) -> list[ExtractedIOC]:
+    def _scan_file(
+        self,
+        filepath: str,
+        base_dir: str,
+        *,
+        manifest: "ResourceManifest | None" = None,
+    ) -> list[ExtractedIOC]:
         relative_path = os.path.relpath(filepath, base_dir)
+        relative_posix = relative_path.replace("\\", "/")
 
         # Skip oversized files — they cause multi-hour regex stalls
         try:
@@ -209,13 +289,53 @@ class IOCExtractor:
             except Exception:
                 return []
 
+        # Origin-aware gating for browser-captured resources.  Files served
+        # by known-benign CDNs are skipped entirely — jQuery, Angular,
+        # crypto-js, Popper, Qualified's widget, Microsoft auth CDNs, etc.
+        # all live here and produce only false positives.  Attacker-hosted
+        # JS (unclassified origin) still goes through the full extractor.
+        origin_url: str | None = None
+        if manifest is not None:
+            entry = manifest.lookup(relative_posix)
+            if entry:
+                origin_url = entry.get("url")
+                origin_class = classify_origin(
+                    origin_url, self._source_root_domain,
+                )
+                if origin_class == ORIGIN_BENIGN:
+                    logger.debug(
+                        "Skipping IOC scan of %s (benign origin %s)",
+                        relative_posix, origin_url,
+                    )
+                    return []
+
+        # Cloudflare challenge pages: Base58-ish ray tokens trip the
+        # crypto-wallet regex, and the "-1.2.1.1-" version fragment trips
+        # IPv4.  Skip both extractors on those specific files regardless
+        # of origin classification.
+        filename_only = os.path.basename(relative_posix)
+        skip_crypto_and_ip = bool(
+            CLOUDFLARE_CHALLENGE_FILENAME_RE.search(filename_only)
+        )
+
+        # IP-echo service response bodies (api.ipify.org.json and friends)
+        # contain the visitor's own public IP, not attacker infrastructure.
+        skip_ip_only = any(
+            frag in relative_posix for frag in IP_ECHO_FILENAME_FRAGMENTS
+        )
+
         try:
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
         except Exception:
             return []
 
-        return self.scan_content(content, relative_path)
+        return self.scan_content(
+            content,
+            relative_path,
+            skip_crypto_and_ip=skip_crypto_and_ip,
+            skip_ip_only=skip_ip_only,
+        )
 
     @staticmethod
     def _looks_like_text(head: bytes) -> bool:
@@ -497,6 +617,14 @@ class IOCExtractor:
             # Skip network/CIDR addresses (x.x.0.0 or x.0.0.0) — not host IPs
             if parts[3] == "0" and parts[2] == "0":
                 continue
+            # Reject version-string-shaped matches like "1.2.1.1", "1.3.1.1",
+            # "3.5.5.3" — every octet under 10 is almost always a library
+            # or Cloudflare challenge version, not a real host.
+            try:
+                if all(int(p) < 10 for p in parts):
+                    continue
+            except ValueError:
+                continue
             results.append(ExtractedIOC(
                 type=IndicatorType.IP_ADDRESS,
                 value=ip,
@@ -681,6 +809,12 @@ class IOCExtractor:
                 # JS vars like "rootdiv", "errgroupobj", "functioncaller"
                 if any(c.isupper() for c in sld[1:]):  # camelCase
                     continue
+                # Very short unhyphenated SLD (≤3 chars) + JS-prone TLD is
+                # overwhelmingly a minified JS property access: he.name,
+                # ge.th, mt.host, bz.jp.  Real domains with such short SLDs
+                # on these TLDs are rare enough to accept the miss.
+                if len(sld) <= 3 and "-" not in sld:
+                    continue
                 # Very long single-word SLD + JS-prone TLD = likely JS var
                 if len(sld) > 12 and "-" not in sld:
                     continue
@@ -752,22 +886,35 @@ class IOCExtractor:
     def _extract_telegram_handles(
         self, line: str, source_file: str, line_num: int
     ) -> list[ExtractedIOC]:
+        # Require a Telegram-context marker on the same line — a bare
+        # "@handle" match in isolation is overwhelmingly a JS decorator,
+        # CSS at-rule, or minified symbol.  The marker requirement cuts
+        # the bulk of the false-positive handles we were seeing out of
+        # bot-detection.js, angular.min.js, and similar obfuscated JS.
+        line_lower = line.lower()
+        if not any(m in line_lower for m in TELEGRAM_CONTEXT_MARKERS):
+            return []
+
         results = []
-        for match in TELEGRAM_HANDLE_PATTERN.finditer(line):
-            handle = match.group(1).lower()
-            if handle in TELEGRAM_HANDLE_EXCLUSIONS:
-                continue
-            # Skip if it looks like a CSS/JS keyword (all lowercase, common word)
-            if len(handle) < 5:
-                continue
-            results.append(ExtractedIOC(
-                type=IndicatorType.TELEGRAM_CHAT_ID,  # Re-use existing type for handles
-                value=f"@{handle}",
-                source_file=source_file,
-                line_number=line_num,
-                context=line[:200],
-                confidence=70,
-            ))
+        seen: set[str] = set()
+        for pattern in (TELEGRAM_HANDLE_PATTERN, TELEGRAM_URL_HANDLE_PATTERN):
+            for match in pattern.finditer(line):
+                handle = match.group(1).lower()
+                if handle in TELEGRAM_HANDLE_EXCLUSIONS:
+                    continue
+                if len(handle) < 5:
+                    continue
+                if handle in seen:
+                    continue
+                seen.add(handle)
+                results.append(ExtractedIOC(
+                    type=IndicatorType.TELEGRAM_HANDLE,
+                    value=f"@{handle}",
+                    source_file=source_file,
+                    line_number=line_num,
+                    context=line[:200],
+                    confidence=70,
+                ))
         return results
 
     def _extract_aitm_indicators(
@@ -803,3 +950,96 @@ class IOCExtractor:
             if key not in seen or ioc.confidence > seen[key].confidence:
                 seen[key] = ioc
         return list(seen.values())
+
+    def extract_network_iocs_from_requests_json(
+        self, requests_json_path: str,
+    ) -> list[ExtractedIOC]:
+        """Parse the browser-render network log and emit structured IOCs.
+
+        ``requests.json`` is JSON, not free text, and carries per-request
+        attribution (url, status, content_type, resource_type).  Parsing it
+        structurally lets us classify each URL's origin and promote only
+        attacker-or-unknown hosts to IOCs — third-party CDN/analytics noise
+        gets dropped instead of being regex-scraped back in.
+        """
+        try:
+            entries = json.loads(Path(requests_json_path).read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug("Failed to read %s: %s", requests_json_path, e)
+            return []
+        if not isinstance(entries, list):
+            return []
+
+        results: list[ExtractedIOC] = []
+        seen_domains: set[str] = set()
+        seen_c2_urls: set[str] = set()
+        relative_source = "requests.json"
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            url = entry.get("url")
+            if not isinstance(url, str) or not url:
+                continue
+            try:
+                parsed = urlparse(url)
+            except Exception:
+                continue
+            hostname = (parsed.hostname or "").lower()
+            if not hostname or "." not in hostname:
+                continue
+            if hostname in ("localhost", "127.0.0.1"):
+                continue
+
+            root = extract_root_domain(hostname)
+
+            # Drop known-benign origins wholesale — we don't IOC a Cloudflare
+            # analytics ping or a Microsoft auth CDN request.
+            if root in BENIGN_URL_ROOT_DOMAINS:
+                continue
+
+            # Same-root as the lure is the phishing page itself; its domain
+            # is already captured by SOURCE_URL / redirect-chain extraction
+            # in analysis.extract_iocs.  Avoid double-booking.
+            if (
+                self._source_root_domain
+                and root == self._source_root_domain
+            ):
+                continue
+
+            # Domain IOC — unique per host, high confidence because this
+            # came from a real connection the browser actually made.
+            if hostname not in seen_domains:
+                seen_domains.add(hostname)
+                results.append(ExtractedIOC(
+                    type=IndicatorType.DOMAIN,
+                    value=hostname,
+                    source_file=relative_source,
+                    line_number=0,
+                    context=f"browser_request:{url[:180]}",
+                    confidence=85,
+                ))
+
+            # WebSockets and non-GET request methods are strong exfil signals.
+            method = entry.get("method") or ""
+            resource_type = entry.get("resource_type") or ""
+            is_websocket = (
+                resource_type.lower() == "websocket"
+                or url.lower().startswith(("ws://", "wss://"))
+            )
+            is_exfil_method = method.upper() in {"POST", "PUT", "PATCH"}
+
+            if (is_websocket or is_exfil_method) and url not in seen_c2_urls:
+                seen_c2_urls.add(url)
+                results.append(ExtractedIOC(
+                    type=IndicatorType.C2_URL,
+                    value=url,
+                    source_file=relative_source,
+                    line_number=0,
+                    context=(
+                        f"browser_{'websocket' if is_websocket else method.lower()}"
+                    ),
+                    confidence=90 if is_websocket else 80,
+                ))
+
+        return results

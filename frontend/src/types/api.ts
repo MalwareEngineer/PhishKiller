@@ -12,6 +12,7 @@ export type IndicatorType =
   | "email"
   | "telegram_bot_token"
   | "telegram_chat_id"
+  | "telegram_handle"
   | "c2_url"
   | "ip_address"
   | "smtp_credential"

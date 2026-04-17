@@ -6,6 +6,7 @@ const typeConfig: Record<IndicatorType, { label: string; className: string }> = 
   email: { label: "Email", className: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
   telegram_bot_token: { label: "TG Bot Token", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
   telegram_chat_id: { label: "TG Chat ID", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
+  telegram_handle: { label: "TG Handle", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
   c2_url: { label: "C2 URL", className: "bg-red-500/20 text-red-400 border-red-500/30" },
   ip_address: { label: "IP", className: "bg-orange-500/20 text-orange-400 border-orange-500/30" },
   smtp_credential: { label: "SMTP Cred", className: "bg-rose-500/20 text-rose-400 border-rose-500/30" },

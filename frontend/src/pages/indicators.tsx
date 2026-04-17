@@ -17,8 +17,8 @@ import type { IndicatorType } from "@/types/api";
 
 const IOC_TYPES: (IndicatorType | "all")[] = [
   "all", "email", "c2_url", "domain", "ip_address", "telegram_bot_token",
-  "telegram_chat_id", "smtp_credential", "cryptocurrency_wallet", "phone_number",
-  "base64_block", "source_url",
+  "telegram_chat_id", "telegram_handle", "smtp_credential", "cryptocurrency_wallet",
+  "phone_number", "base64_block", "source_url",
 ];
 
 const PAGE_SIZE = 50;
