@@ -159,6 +159,8 @@ def _update_actor_metadata(db, actor: Actor) -> None:
     for ind in linked:
         if ind.type == IndicatorType.EMAIL:
             emails.add(ind.value)
+        elif ind.type == IndicatorType.TELEGRAM_HANDLE:
+            handles.add(ind.value)
         elif ind.type == IndicatorType.TELEGRAM_BOT_TOKEN:
             handles.add(ind.value[:20] + "...")  # Truncate token for display
 

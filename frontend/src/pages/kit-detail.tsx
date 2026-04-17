@@ -231,7 +231,7 @@ export function KitDetailPage() {
               Re-download
             </Button>
           )}
-          <Link to={`/phish-diff?a=${id}`}>
+          <Link to={`/phish-diff?a=${id}&mode=any`}>
             <Button variant="outline" size="sm">
               <FileDiff className="mr-2 h-4 w-4" />
               Compare

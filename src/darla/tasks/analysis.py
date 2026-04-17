@@ -558,6 +558,18 @@ def extract_iocs(self, prev_result: dict) -> dict:
         else:
             result = extractor.scan_file(filepath)
 
+        # Structured network-IOC extraction from requests.json (browser
+        # render log).  Parses JSON and classifies each URL's origin
+        # instead of regex-scraping the file as if it were free text.
+        if extract_dir:
+            requests_json = Path(extract_dir) / "requests.json"
+            if requests_json.exists():
+                network_iocs = extractor.extract_network_iocs_from_requests_json(
+                    str(requests_json),
+                )
+                result.iocs.extend(network_iocs)
+                result.iocs = extractor._deduplicate(result.iocs)
+
         # Store file-based indicators
         for ioc in result.iocs:
             indicator = Indicator(

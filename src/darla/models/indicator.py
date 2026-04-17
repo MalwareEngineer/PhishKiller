@@ -21,6 +21,7 @@ class IndicatorType(enum.StrEnum):
     EMAIL = "email"
     TELEGRAM_BOT_TOKEN = "telegram_bot_token"
     TELEGRAM_CHAT_ID = "telegram_chat_id"
+    TELEGRAM_HANDLE = "telegram_handle"
     C2_URL = "c2_url"
     IP_ADDRESS = "ip_address"
     SMTP_CREDENTIAL = "smtp_credential"

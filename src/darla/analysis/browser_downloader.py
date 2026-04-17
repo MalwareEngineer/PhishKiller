@@ -666,6 +666,16 @@ async def _async_browser_download(
 
             # Save captured sub-resources
             saved_resources = 0
+            manifest_entries: list[dict] = []
+            # The main document itself — scanners should treat page.html as
+            # originating from the final landing URL.
+            manifest_entries.append({
+                "filename": "page.html",
+                "url": final_url or url,
+                "status": None,
+                "content_type": "text/html",
+                "index": 0,
+            })
             if captured_responses:
                 resources_dir.mkdir(parents=True, exist_ok=True)
                 for resp in captured_responses:
@@ -702,10 +712,31 @@ async def _async_browser_download(
                         else:
                             res_path.write_text(str(body), encoding="utf-8")
                         saved_resources += 1
+                        manifest_entries.append({
+                            "filename": f"_browser_resources/{res_filename}",
+                            "url": resp["url"],
+                            "status": resp.get("status"),
+                            "content_type": resp.get("content_type", ""),
+                            "index": resp["index"],
+                        })
                     except Exception as e:
                         logger.debug(
                             "Failed to save resource %s: %s", resp["url"], e,
                         )
+
+            # Write the resource manifest so the IOC scanner can correlate
+            # each on-disk file back to the URL it came from.  Consumed by
+            # ioc_engine.ResourceManifest.load().
+            try:
+                manifest_path = resources_dir / "_manifest.json"
+                if resources_dir.exists() or manifest_entries:
+                    resources_dir.mkdir(parents=True, exist_ok=True)
+                    manifest_path.write_text(
+                        json.dumps(manifest_entries, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception as e:
+                logger.debug("Failed to save resource manifest: %s", e)
 
             # Save network log as requests.json
             try:
