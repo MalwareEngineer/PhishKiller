@@ -79,7 +79,7 @@ export function PhishMatchInboxPage() {
                     </TableCell>
                     <TableCell className="max-w-md truncate font-mono text-xs">
                       <Link
-                        to={`/kits/${kit.id}`}
+                        to={`/phish-match/${kit.id}`}
                         className="hover:underline"
                         title={kit.source_url}
                       >
