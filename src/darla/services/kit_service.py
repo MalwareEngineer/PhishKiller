@@ -708,7 +708,7 @@ class KitService:
             SELECT COUNT(DISTINCT k.id)
             FROM kits k
             JOIN analysis_results ar ON ar.kit_id = k.id
-            WHERE ar.analysis_type = 'yara_scan'
+            WHERE ar.analysis_type = 'YARA_SCAN'
               AND EXISTS (
                 SELECT 1 FROM jsonb_array_elements(ar.result_data->'matches') m
                 WHERE m->>'rule' ILIKE :pattern
@@ -723,7 +723,7 @@ class KitService:
                    k.file_size, k.source_feed, k.created_at
             FROM kits k
             JOIN analysis_results ar ON ar.kit_id = k.id
-            WHERE ar.analysis_type = 'yara_scan'
+            WHERE ar.analysis_type = 'YARA_SCAN'
               AND EXISTS (
                 SELECT 1 FROM jsonb_array_elements(ar.result_data->'matches') m
                 WHERE m->>'rule' ILIKE :pattern

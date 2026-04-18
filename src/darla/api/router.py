@@ -12,6 +12,7 @@ from darla.api import (
     indicators,
     investigations,
     kits,
+    phishmatch,
 )
 
 api_router = APIRouter()
@@ -25,3 +26,4 @@ api_router.include_router(campaigns.router, prefix="/campaigns", tags=["campaign
 api_router.include_router(families.router, prefix="/families", tags=["families"])
 api_router.include_router(analysis.router, prefix="/analysis", tags=["analysis"])
 api_router.include_router(diff.router, prefix="/diff", tags=["diff"])
+api_router.include_router(phishmatch.router, prefix="/phishmatch", tags=["phishmatch"])

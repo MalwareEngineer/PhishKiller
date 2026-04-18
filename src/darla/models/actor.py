@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Text
+from sqlalchemy import Boolean, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +29,14 @@ class Actor(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Attribution
     email_addresses: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     telegram_handles: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+
+    # True for synthetic entities minted by the legacy ``correlate_kit_actors``
+    # task (names like ``ACTOR-XXXX``).  PhishMatch filters these out of
+    # default analyst views — they live on only so we don't orphan historical
+    # indicator/kit links.
+    auto_generated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # Relationships
     indicators: Mapped[list[Indicator]] = relationship(back_populates="actor")

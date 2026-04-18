@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { SuggestedKitsPanel } from "@/components/shared/suggested-kits-panel";
 
 export function ActorDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -92,6 +93,12 @@ export function ActorDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      <SuggestedKitsPanel
+        entityType="actor"
+        entityId={id!}
+        entityName={actor.name}
+      />
     </div>
   );
 }

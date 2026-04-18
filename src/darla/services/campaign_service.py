@@ -15,8 +15,19 @@ class CampaignService:
         self.db = db
 
     async def list_campaigns(
-        self, offset: int = 0, limit: int = 50, target_brand: str | None = None
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        target_brand: str | None = None,
+        include_auto: bool = False,
     ) -> tuple[list[Campaign], int]:
+        """List campaigns.
+
+        Auto-generated campaigns (minted by the legacy
+        ``auto_assign_campaign`` task) are hidden by default so analyst
+        campaign lists only show manually curated entries.  Pass
+        ``include_auto=True`` to see every row.
+        """
         query = select(Campaign).order_by(Campaign.created_at.desc())
         count_query = select(func.count(Campaign.id))
 
@@ -25,6 +36,10 @@ class CampaignService:
             count_query = count_query.where(
                 Campaign.target_brand.ilike(f"%{target_brand}%")
             )
+
+        if not include_auto:
+            query = query.where(Campaign.auto_generated.is_(False))
+            count_query = count_query.where(Campaign.auto_generated.is_(False))
 
         total = (await self.db.execute(count_query)).scalar_one()
         result = await self.db.execute(query.offset(offset).limit(limit))

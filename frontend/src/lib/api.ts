@@ -304,6 +304,114 @@ export const diff = {
     }),
 };
 
+// ── PhishMatch ──
+
+export type PhishMatchEntityType = "actor" | "family" | "campaign";
+
+export interface PhishMatchSignals {
+  total: number;
+  tlsh: number;
+  ioc: number;
+  yara: number;
+  source_url: number;
+  redirect_chain: number;
+  evidence: {
+    tlsh: Array<{ kit_id: string; distance: number; tlsh: string }>;
+    ioc: Array<{
+      type: string;
+      value: string;
+      weight: number;
+      subject_indicator_id: string;
+      peer_indicator_id: string;
+      peer_kit_id: string;
+    }>;
+    yara: string[];
+    source_url: string[];
+    redirect: string[];
+  };
+}
+
+export interface PhishMatchCandidate {
+  entity_type: PhishMatchEntityType;
+  entity_id: string;
+  entity_name: string;
+  auto_generated: boolean;
+  score: number;
+  signals: PhishMatchSignals;
+  supporting_kit_ids: string[];
+}
+
+export interface PhishMatchResult {
+  kit_id: string;
+  actors: PhishMatchCandidate[];
+  families: PhishMatchCandidate[];
+  campaigns: PhishMatchCandidate[];
+  no_matches_reason: string | null;
+  min_surface_score: number;
+}
+
+export interface PhishMatchSuggestion {
+  kit_id: string;
+  source_url: string;
+  sha256: string | null;
+  score: number;
+  via_kit_id: string | null;
+  signals: PhishMatchSignals;
+}
+
+export interface PhishMatchSuggestionsResponse {
+  entity_type: PhishMatchEntityType;
+  entity_id: string;
+  suggestions: PhishMatchSuggestion[];
+}
+
+export const phishmatch = {
+  /** Rank candidate entities for a kit. */
+  scoreKit: (kitId: string) =>
+    request<PhishMatchResult>(`/phishmatch/kit/${kitId}`),
+
+  /** Reverse lookup — unattributed kits that score high against an entity. */
+  suggestKits: (
+    entityType: PhishMatchEntityType,
+    entityId: string,
+    limit = 20,
+  ) =>
+    request<PhishMatchSuggestionsResponse>(
+      `/phishmatch/entity/${entityType}/${entityId}?limit=${limit}`,
+    ),
+
+  /** Commit an attribution (kit → entity link) with evidence. */
+  attribute: (kitId: string, payload: {
+    entity_type: PhishMatchEntityType;
+    entity_id: string;
+    confidence: "verified" | "suspected";
+    attributed_by?: string | null;
+    evidence_snapshot?: PhishMatchSignals | null;
+  }) =>
+    request<{
+      kit_id: string;
+      entity_type: PhishMatchEntityType;
+      entity_id: string;
+      created: boolean;
+      confidence: string;
+      attributed_at: string;
+    }>(`/phishmatch/kit/${kitId}/attribute`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Remove a kit → entity link. */
+  unattribute: (
+    kitId: string,
+    entityType: PhishMatchEntityType,
+    entityId: string,
+  ) =>
+    request<void>(
+      `/phishmatch/kit/${kitId}/attribute?entity_type=${entityType}&entity_id=${entityId}`,
+      { method: "DELETE" },
+    ),
+};
+
 // ── Health ──
 
 export const health = {

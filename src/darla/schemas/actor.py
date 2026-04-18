@@ -30,6 +30,7 @@ class ActorSummary(BaseModel):
     aliases: list[str] | None
     first_seen: str | None
     last_seen: str | None
+    auto_generated: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
