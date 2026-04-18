@@ -14,12 +14,24 @@ class ActorService:
         self.db = db
 
     async def list_actors(
-        self, offset: int = 0, limit: int = 50
+        self, offset: int = 0, limit: int = 50, include_auto: bool = False
     ) -> tuple[list[Actor], int]:
-        total = (await self.db.execute(select(func.count(Actor.id)))).scalar_one()
-        result = await self.db.execute(
-            select(Actor).order_by(Actor.created_at.desc()).offset(offset).limit(limit)
-        )
+        """List analyst-managed actors.
+
+        By default, synthetic actors created by the legacy
+        ``correlate_kit_actors`` task (``auto_generated=True``) are hidden —
+        they're kept in the DB to preserve historical indicator/kit links but
+        are not useful in analyst list views.  Pass ``include_auto=True`` to
+        see them (debugging, cleanup tooling, reverse-lookup queries).
+        """
+        query = select(Actor).order_by(Actor.created_at.desc())
+        count_query = select(func.count(Actor.id))
+        if not include_auto:
+            query = query.where(Actor.auto_generated.is_(False))
+            count_query = count_query.where(Actor.auto_generated.is_(False))
+
+        total = (await self.db.execute(count_query)).scalar_one()
+        result = await self.db.execute(query.offset(offset).limit(limit))
         return list(result.scalars().all()), total
 
     async def get_actor(self, actor_id: uuid.UUID) -> Actor | None:

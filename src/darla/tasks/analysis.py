@@ -51,10 +51,17 @@ def upsert_analysis_result(db, **kwargs) -> None:
 
 
 def _post_download_steps() -> list:
-    """Return the analysis chain steps that run after download (steps 2-14)."""
-    from darla.tasks.campaigns import auto_assign_campaign
+    """Return the analysis chain steps that run after download.
+
+    NOTE: ``correlate_kit_actors`` and ``auto_assign_campaign`` were removed
+    from this chain in the PhishMatch manual-first attribution redesign.
+    Attribution (kit → actor/campaign/family) is now driven by analyst review
+    via the PhishMatch UI.  The tasks themselves still exist in
+    ``darla.tasks.correlation`` and ``darla.tasks.campaigns`` and may be
+    invoked as *suggestion* generators by the scoring engine, but they no
+    longer silently mutate the attribution graph as part of every pipeline run.
+    """
     from darla.tasks.chain import crawl_chain, decode_qr_codes, parse_eml
-    from darla.tasks.correlation import correlate_kit_actors
 
     return [
         compute_hashes.s(),
@@ -67,8 +74,6 @@ def _post_download_steps() -> list:
         extract_iocs.s(),
         decode_qr_codes.s(),
         compute_similarity.s(),
-        correlate_kit_actors.s(),
-        auto_assign_campaign.s(),
         detect_polymorphism.s(),
         crawl_chain.s(),
         finalize_kit.s(),

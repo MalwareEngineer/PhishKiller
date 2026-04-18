@@ -30,6 +30,7 @@ class CampaignSummary(BaseModel):
     target_brand: str | None
     start_date: str | None
     end_date: str | None
+    auto_generated: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -18,10 +18,16 @@ router = APIRouter()
 
 
 @router.get("", response_model=ActorListResponse)
-async def list_actors(db: DbSession, pagination: Pagination):
+async def list_actors(
+    db: DbSession, pagination: Pagination, include_auto: bool = False
+):
+    """List actors.  Auto-generated (synthetic) actors are hidden unless
+    ``include_auto=true`` is passed."""
     service = ActorService(db)
     actors, total = await service.list_actors(
-        offset=pagination.offset, limit=pagination.limit
+        offset=pagination.offset,
+        limit=pagination.limit,
+        include_auto=include_auto,
     )
     return ActorListResponse(items=actors, total=total)
 

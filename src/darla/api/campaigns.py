@@ -19,13 +19,19 @@ router = APIRouter()
 
 @router.get("", response_model=CampaignListResponse)
 async def list_campaigns(
-    db: DbSession, pagination: Pagination, target_brand: str | None = None
+    db: DbSession,
+    pagination: Pagination,
+    target_brand: str | None = None,
+    include_auto: bool = False,
 ):
+    """List campaigns.  Auto-generated (synthetic) campaigns are hidden
+    unless ``include_auto=true`` is passed."""
     service = CampaignService(db)
     campaigns, total = await service.list_campaigns(
         offset=pagination.offset,
         limit=pagination.limit,
         target_brand=target_brand,
+        include_auto=include_auto,
     )
     return CampaignListResponse(items=campaigns, total=total)
 

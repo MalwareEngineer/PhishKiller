@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { SuggestedKitsPanel } from "@/components/shared/suggested-kits-panel";
 
 export function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -111,6 +112,12 @@ export function CampaignDetailPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <SuggestedKitsPanel
+        entityType="campaign"
+        entityId={id!}
+        entityName={campaign.name}
+      />
     </div>
   );
 }
