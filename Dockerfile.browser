@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgbm1 libpango-1.0-0 libcairo2 libatk1.0-0 \
     # Xvfb for headless='virtual' (headed browser in virtual display — best anti-detection)
     xvfb \
+    # LibreOffice headless for DOCX → PDF conversion in artifact_renderer
+    libreoffice-core libreoffice-writer libreoffice-impress --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
@@ -18,8 +20,8 @@ COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
 
-# Install with browser extra (includes camoufox + geoip)
-RUN pip install --no-cache-dir ".[tlsh,yara,qr,browser]"
+# Install with browser + render extras (camoufox, pymupdf for PDF/DOCX render)
+RUN pip install --no-cache-dir ".[tlsh,yara,qr,browser,render]"
 
 # Fetch the Camoufox browser binary
 RUN python -m camoufox fetch

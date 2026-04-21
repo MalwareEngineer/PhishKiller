@@ -28,6 +28,8 @@ class AnalysisType(enum.StrEnum):
     REDIRECT_CHAIN = "redirect_chain"
     EXTERNAL_JS_FETCH = "external_js_fetch"
     POLYMORPHISM = "polymorphism"
+    ARTIFACT_RENDER = "artifact_render"
+    SVG_ACTIVE_EXEC = "svg_active_exec"
 
 
 class AnalysisResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -33,6 +33,21 @@ class EmbeddedImage:
 
 
 @dataclass
+class NestedEML:
+    """A message/rfc822 attachment — carried but not merged into the outer result.
+
+    The task layer turns each of these into its own child kit so each EML in
+    the chain gets independent analysis (IOC extraction per envelope,
+    attachment handling per message, etc.).
+    """
+
+    filename: str
+    subject: str | None
+    data: bytes
+    size: int
+
+
+@dataclass
 class EMLParseResult:
     headers: dict[str, str] = field(default_factory=dict)
     body_text: str | None = None
@@ -40,6 +55,7 @@ class EMLParseResult:
     links: list[str] = field(default_factory=list)
     attachments: list[AttachmentInfo] = field(default_factory=list)
     embedded_images: list[EmbeddedImage] = field(default_factory=list)
+    nested_emls: list[NestedEML] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -78,6 +94,30 @@ class _LinkExtractor(HTMLParser):
 
 # Regex fallback for URLs in plain text
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+
+# Characters that are illegal in Windows filenames or break path operations.
+# We also strip trailing dots/spaces — attackers append them to hide the real
+# extension (e.g. "ATT021.svg.." so Path.suffix returns "." and extension-based
+# classifiers miss the file).
+_BAD_FILENAME_CHARS = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
+
+
+def _safe_attachment_name(name: str | None) -> str:
+    """Normalize an attachment filename for on-disk storage.
+
+    - Strips path components (basename only).
+    - Strips control chars and Windows-reserved characters.
+    - Strips trailing dots/spaces that break ``Path.suffix`` and are
+      invalid on Windows.
+    - Falls back to ``attachment`` if the result is empty.
+    """
+    if not name:
+        return "attachment"
+    # Basename only — never honor attacker-supplied path components.
+    base = Path(name).name
+    cleaned = _BAD_FILENAME_CHARS.sub("_", base).rstrip(". ")
+    return cleaned or "attachment"
 
 
 def _walk_skip_rfc822(msg):
@@ -135,30 +175,36 @@ class EMLParser:
             content_type = part.get_content_type()
             disposition = str(part.get("Content-Disposition", ""))
 
-            # Nested EML (message/rfc822) — recurse into inner message
+            # Nested EML (message/rfc822) — carry the inner bytes up to the
+            # task layer as a NestedEML and let it spawn a child kit.
+            # We intentionally do NOT merge attachments/links/body into the
+            # outer result: each EML in the chain is its own artifact.
             if content_type == "message/rfc822":
                 inner_payloads = part.get_payload()
                 if isinstance(inner_payloads, list):
                     for inner_msg in inner_payloads:
                         try:
-                            inner_bytes = inner_msg.as_bytes()
-                            inner_result = self.parse_bytes(inner_bytes)
-                            result.attachments.extend(inner_result.attachments)
-                            result.embedded_images.extend(inner_result.embedded_images)
-                            result.links.extend(inner_result.links)
-                            if not result.body_html and inner_result.body_html:
-                                result.body_html = inner_result.body_html
-                            if not result.body_text and inner_result.body_text:
-                                result.body_text = inner_result.body_text
-                            result.errors.extend(inner_result.errors)
-                            # Save inner EML as attachment
+                            # Re-emit with CRLF (wire-format) so the saved
+                            # .eml can be re-parsed as an independent artifact
+                            # by strict parsers.
+                            from io import BytesIO
+                            from email.generator import BytesGenerator
+                            buf = BytesIO()
+                            BytesGenerator(
+                                buf,
+                                policy=email.policy.default.clone(
+                                    linesep="\r\n"
+                                ),
+                            ).flatten(inner_msg)
+                            inner_bytes = buf.getvalue()
+                            subj = inner_msg.get("Subject")
                             fname = part.get_filename()
                             if not fname:
-                                subj = inner_msg.get("Subject", "inner")
-                                fname = str(subj).replace("/", "_")[:80] + ".eml"
-                            result.attachments.append(AttachmentInfo(
+                                safe_subj = (str(subj) if subj else "inner").replace("/", "_")
+                                fname = safe_subj[:80] + ".eml"
+                            result.nested_emls.append(NestedEML(
                                 filename=fname,
-                                content_type="message/rfc822",
+                                subject=str(subj) if subj else None,
                                 data=inner_bytes,
                                 size=len(inner_bytes),
                             ))
@@ -255,7 +301,7 @@ class EMLParser:
         saved = []
 
         for att in result.attachments:
-            dest = out / att.filename
+            dest = out / _safe_attachment_name(att.filename)
             # Prevent path traversal
             if not dest.resolve().is_relative_to(out.resolve()):
                 continue
@@ -265,7 +311,7 @@ class EMLParser:
         for i, img in enumerate(result.embedded_images):
             ext = img.content_type.split("/")[-1] if "/" in img.content_type else "bin"
             fname = img.filename or f"embedded_{i}.{ext}"
-            dest = out / fname
+            dest = out / _safe_attachment_name(fname)
             if not dest.resolve().is_relative_to(out.resolve()):
                 continue
             dest.write_bytes(img.data)
@@ -276,5 +322,29 @@ class EMLParser:
             html_dest = out / "body.html"
             html_dest.write_text(result.body_html, encoding="utf-8")
             saved.append(str(html_dest))
+
+        return saved
+
+    def save_nested_emls(
+        self, result: EMLParseResult, output_dir: str,
+    ) -> list[tuple["NestedEML", str]]:
+        """Write nested EMLs to disk in their own subdir. Returns [(nested, path)]."""
+        out = Path(output_dir) / "_nested_emls"
+        out.mkdir(parents=True, exist_ok=True)
+        saved: list[tuple[NestedEML, str]] = []
+
+        for i, nested in enumerate(result.nested_emls):
+            # Ensure unique, collision-free filenames and enforce .eml extension
+            base = nested.filename or f"nested_{i}.eml"
+            if not base.lower().endswith(".eml"):
+                base = base + ".eml"
+            dest = out / base
+            if not dest.resolve().is_relative_to(out.resolve()):
+                # Path traversal attempt — fall back to an ordinal name
+                dest = out / f"nested_{i}.eml"
+            if dest.exists():
+                dest = out / f"nested_{i}_{dest.stem}.eml"
+            dest.write_bytes(nested.data)
+            saved.append((nested, str(dest)))
 
         return saved

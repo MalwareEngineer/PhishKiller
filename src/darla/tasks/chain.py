@@ -61,6 +61,9 @@ def parse_eml(self, prev_result: dict) -> dict:
 
         # Save attachments and embedded images to disk for downstream tasks
         saved_files = parser.save_attachments(result, extract_dir)
+        # Nested EMLs are saved under a subdir so they're not rescanned as
+        # attachments of the outer kit — each becomes its own child kit.
+        saved_nested = parser.save_nested_emls(result, extract_dir)
 
         duration = time.time() - start
 
@@ -73,6 +76,7 @@ def parse_eml(self, prev_result: dict) -> dict:
                 "links_found": len(result.links),
                 "attachments": len(result.attachments),
                 "embedded_images": len(result.embedded_images),
+                "nested_emls": len(result.nested_emls),
                 "has_html_body": result.body_html is not None,
                 "has_text_body": result.body_text is not None,
                 "saved_files": len(saved_files),
@@ -171,7 +175,117 @@ def parse_eml(self, prev_result: dict) -> dict:
                 kit_id, eml_iocs_added,
             )
 
+        # SVG inspection — detect script-bearing SVGs, emit URL IOCs, and
+        # leave the SVG in extract_dir so fetch_external_js picks it up via
+        # the expanded SCANNABLE_EXTENSIONS set.
+        svg_inspected = 0
+        svg_script_bearing = 0
+        svg_urls_found = 0
+        for fpath in saved_files:
+            p = Path(fpath)
+            # Strip attacker-appended trailing dots/spaces before suffix check
+            # (e.g. "ATT021.svg.." must still be detected as SVG).
+            _suffix = Path(p.name.rstrip(". ")).suffix.lower()
+            if _suffix != ".svg":
+                continue
+            try:
+                from darla.analysis.svg_inspector import inspect_file as svg_inspect
+
+                svg_result = svg_inspect(p)
+            except Exception as svg_err:
+                logger.debug("SVG inspect failed for %s: %s", p, svg_err)
+                continue
+
+            svg_inspected += 1
+            if not svg_result.is_suspicious and not svg_result.all_urls:
+                continue
+            if svg_result.has_script:
+                svg_script_bearing += 1
+
+            for url in svg_result.all_urls:
+                svg_urls_found += 1
+                db.add(Indicator(
+                    type=IndicatorType.URL,
+                    value=url[:500],
+                    context="svg_script_reference",
+                    source_file=str(p),
+                    confidence=85,
+                    kit_id=kit.id,
+                ))
+
+        if svg_inspected:
+            logger.info(
+                "SVG inspection for kit %s: %d inspected, %d script-bearing, "
+                "%d URLs extracted",
+                kit_id, svg_inspected, svg_script_bearing, svg_urls_found,
+            )
+
         db.commit()
+
+        # Nested EML spawning — each message/rfc822 attachment becomes its
+        # own child kit so it gets independent analysis (envelope IOCs,
+        # attachment extraction, its own SVG / JS loader / QR pipeline).
+        nested_spawned: list[str] = []
+        if saved_nested:
+            from darla.models.kit import Kit as KitModel, KitStatus
+
+            for nested, nested_path in saved_nested:
+                p = Path(nested_path)
+                existing = db.query(KitModel).filter(
+                    KitModel.parent_kit_id == kit.id,
+                    KitModel.local_path == str(p),
+                ).first()
+                if existing:
+                    logger.info(
+                        "Kit %s: nested EML %s already spawned (%s), skipping",
+                        kit_id, p.name, existing.id,
+                    )
+                    continue
+
+                file_url = p.resolve().as_uri()
+                child = KitModel(
+                    source_url=file_url,
+                    source_feed=kit.source_feed,
+                    status=KitStatus.DOWNLOADED,
+                    parent_kit_id=kit.id,
+                    investigation_id=kit.investigation_id,
+                    chain_depth=kit.chain_depth + 1,
+                    discovery_method="nested_eml",
+                    local_path=str(p),
+                    filename=p.name,
+                    file_size=p.stat().st_size,
+                    mime_type="message/rfc822",
+                )
+                db.add(child)
+                db.flush()
+
+                if kit.investigation_id:
+                    from darla.models.investigation import Investigation
+
+                    inv = db.query(Investigation).filter(
+                        Investigation.id == kit.investigation_id
+                    ).first()
+                    if inv:
+                        inv.total_kits += 1
+
+                db.commit()
+
+                from darla.tasks.analysis import build_post_download_chain
+
+                child_result = {
+                    "kit_id": str(child.id),
+                    "status": "downloaded",
+                    "filepath": str(p),
+                    "file_size": child.file_size,
+                }
+                build_post_download_chain(child_result).apply_async()
+                nested_spawned.append(str(child.id))
+
+            if nested_spawned:
+                logger.info(
+                    "Kit %s: spawned %d nested EML child kit(s)",
+                    kit_id, len(nested_spawned),
+                )
 
         # JS loader detection on extracted HTML attachments
         browser_renders_dispatched = []
@@ -253,9 +367,10 @@ def parse_eml(self, prev_result: dict) -> dict:
                 browser_renders_dispatched.append(str(child.id))
 
         logger.info(
-            "EML parse for kit %s: %d links, %d attachments, %d images%s",
+            "EML parse for kit %s: %d links, %d attachments, %d images, "
+            "%d nested EMLs%s",
             kit_id, len(result.links), len(result.attachments),
-            len(result.embedded_images),
+            len(result.embedded_images), len(result.nested_emls),
             f", {len(browser_renders_dispatched)} browser renders dispatched"
             if browser_renders_dispatched else "",
         )
@@ -266,6 +381,8 @@ def parse_eml(self, prev_result: dict) -> dict:
             "eml_headers": result.headers,
             "eml_attachment_count": len(result.attachments),
             "eml_image_count": len(result.embedded_images),
+            "eml_nested_emls": len(result.nested_emls),
+            "eml_nested_spawned": nested_spawned,
             "eml_browser_renders": browser_renders_dispatched,
             # If we extracted attachments, set extract_dir for downstream
             "extract_dir": extract_dir if saved_files else prev_result.get("extract_dir"),
@@ -447,6 +564,11 @@ def crawl_chain(self, prev_result: dict) -> dict:
             _add(url, "eml_link", 0.8, "email_link")
         for url in prev_result.get("qr_urls", []):
             _add(url, "qr_code", 0.85, "qr_code_url")
+        # Terminal landing pages discovered by the external-JS fetch chain.
+        # Intermediate JS hops stay as content on the parent kit; the final
+        # HTML navigation target becomes its own child for browser render.
+        for url in prev_result.get("external_js_terminal_urls", []):
+            _add(url, "svg_chain_terminal", 0.85, "svg_chain_terminal")
 
         if not scored:
             return {**prev_result, "children_spawned": 0}
