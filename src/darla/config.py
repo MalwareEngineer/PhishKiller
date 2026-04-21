@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     external_js_fetch_max_files: int = 10      # max files to fetch per kit
     external_js_fetch_max_size_kb: int = 512   # max individual JS file size
 
+    # Passive artifact rendering (EML / SVG / PDF / DOCX → _screenshots)
+    artifact_render_enabled: bool = True
+
+    # Active SVG execution — detonates SVG attachments with JS enabled and
+    # captures all outbound network requests.  Goal: one-shot capture of the
+    # full attacker infrastructure chain (SVG → remote loader → landing
+    # page) without a second manual kit resubmission.  Terminal URLs feed
+    # the chain crawler so child kits spawn automatically.
+    svg_active_exec_enabled: bool = True
+    svg_active_exec_timeout: int = 30        # per-SVG wall-clock budget (sec)
+    svg_active_exec_max_requests: int = 200  # cap per SVG
+    svg_active_exec_max_per_kit: int = 3     # at most N SVGs per kit get detonated
+
     # Chain crawling
     chain_max_depth: int = 5
     chain_max_children_per_kit: int = 10

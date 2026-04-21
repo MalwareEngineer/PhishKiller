@@ -53,6 +53,10 @@ qr = [
 browser = [
     "camoufox[geoip]>=0.4.0",
 ]
+render = [
+    # Artifact rendering (PDF page rasterization; DOCX goes through LibreOffice → PDF first)
+    "pymupdf>=1.24.0",
+]
 
 [project.scripts]
 darla = "darla.cli:app"

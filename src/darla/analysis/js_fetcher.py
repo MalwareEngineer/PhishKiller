@@ -27,10 +27,12 @@ from darla.utils.http_client import get_sync_client
 
 logger = logging.getLogger(__name__)
 
-# Match <script src="..."> in HTML
+# Match <script src="..."> in HTML, and <script href|xlink:href="..."> in SVG.
+# Accepts optional namespace prefix on <script> (e.g. <svg:script>).
 SCRIPT_SRC_RE = re.compile(
-    r'<script[^>]+src\s*=\s*["\']([^"\']+)["\']',
-    re.IGNORECASE,
+    r"""<\s*(?:[a-zA-Z][\w-]*:)?script\b[^>]*?
+        (?:src|xlink:href|href)\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE | re.VERBOSE,
 )
 
 # Match URLs in JS content (for recursive following and PHP probing)
@@ -45,6 +47,30 @@ JS_SCRIPT_CREATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Match fetch("https://..."), XMLHttpRequest.open("GET", "https://..."),
+# and new URL("https://...") — the dynamic loaders inline SVG scripts
+# and obfuscated JS actually use.
+JS_DYNAMIC_URL_RE = re.compile(
+    r"""(?:
+        \bfetch\s*\(\s*['"`](https?://[^'"`\s]+)['"`]
+      | \.open\s*\(\s*['"][A-Z]+['"]\s*,\s*['"`](https?://[^'"`\s]+)['"`]
+      | \bimportScripts\s*\(\s*['"`](https?://[^'"`\s]+)['"`]
+      | \bnew\s+Worker\s*\(\s*['"`](https?://[^'"`\s]+)['"`]
+      | \bnew\s+URL\s*\(\s*['"`](https?://[^'"`\s]+)['"`]
+      | (?:window\.)?location(?:\.href)?\s*=\s*['"`](https?://[^'"`\s]+)['"`]
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# File extensions that indicate an HTML landing page (terminal node) rather than
+# a JS/script resource (intermediate node).
+_HTML_EXTENSIONS = frozenset({
+    ".html", ".htm", ".php", ".asp", ".aspx", ".jsp", ".cfm",
+})
+_JS_EXTENSIONS = frozenset({
+    ".js", ".mjs", ".cjs", ".json", ".txt",
+})
+
 # Content types we accept for JS files
 ACCEPTABLE_JS_CONTENT_TYPES = frozenset({
     "application/javascript",
@@ -56,7 +82,7 @@ ACCEPTABLE_JS_CONTENT_TYPES = frozenset({
 })
 
 # Files we scan for script src references
-SCANNABLE_EXTENSIONS = frozenset({".html", ".htm", ".js", ".deob.js"})
+SCANNABLE_EXTENSIONS = frozenset({".html", ".htm", ".js", ".deob.js", ".svg"})
 
 
 @dataclass
@@ -72,6 +98,9 @@ class JSFetchResult:
     errors: list[str] = field(default_factory=list)
     php_sources_found: int = 0
     saved_files: list[str] = field(default_factory=list)
+    # URLs that look like HTML landing pages rather than JS resources.
+    # These are hand-offs for the chain crawler to spawn child kits from.
+    terminal_urls: list[str] = field(default_factory=list)
 
 
 def _is_private_ip(hostname: str) -> bool:
@@ -165,9 +194,14 @@ class ExternalJSFetcher:
             # Skip our own output directory
             if "_external_js" in fpath.parts:
                 continue
-            if fpath.suffix.lower() not in SCANNABLE_EXTENSIONS:
+            # Strip attacker-appended trailing dots/spaces from the filename
+            # before reading the suffix — phishing samples use names like
+            # "ATT021.svg.." so the naive Path.suffix returns "." and misses.
+            _norm_name = fpath.name.rstrip(". ")
+            _norm_suffix = Path(_norm_name).suffix.lower()
+            if _norm_suffix not in SCANNABLE_EXTENSIONS:
                 # Also accept extensionless files that look like HTML
-                if fpath.suffix:
+                if _norm_suffix:
                     continue
             self._process_file(fpath, js_dir, result, depth=0)
 
@@ -227,6 +261,13 @@ class ExternalJSFetcher:
         for url in urls:
             result.urls_discovered.append(url)
 
+            # Landing-page URLs hand off to the chain crawler for
+            # browser-render child kits, not the JS fetcher.
+            if self._classify_url(url) == "terminal":
+                if url not in result.terminal_urls and not is_benign_url(url):
+                    result.terminal_urls.append(url)
+                continue
+
             if not self._should_fetch(url):
                 result.files_skipped_benign += 1
                 result.urls_skipped.append(url)
@@ -243,29 +284,79 @@ class ExternalJSFetcher:
     def _extract_script_urls(
         self, content: str, base_url: str | None,
     ) -> list[str]:
-        """Extract and resolve <script src="..."> URLs from HTML."""
+        """Extract and resolve <script src|href|xlink:href="..."> URLs.
+
+        Covers HTML <script src=>, SVG 1.1 <script xlink:href=>, and
+        SVG 2 <script href=>.
+        """
+        # file:// base URLs can't meaningfully resolve relative refs and
+        # attempting it risks local file disclosure on misconfigured hosts.
+        base_is_file = bool(base_url and base_url.startswith("file://"))
+
         urls: list[str] = []
         for match in SCRIPT_SRC_RE.finditer(content):
             src = match.group(1).strip()
             if not src or src.startswith(("data:", "javascript:", "blob:")):
                 continue
-            # Resolve relative URLs
             if not src.startswith(("http://", "https://")):
-                if base_url:
-                    src = urljoin(base_url, src)
-                else:
-                    continue  # Can't resolve without base URL
+                if base_is_file or not base_url:
+                    continue  # Skip relative refs without a usable base
+                src = urljoin(base_url, src)
             urls.append(src)
         return urls
 
     def _extract_js_script_urls(self, content: str) -> list[str]:
-        """Extract URLs from JS that dynamically creates script elements."""
+        """Extract URLs that JS loads dynamically.
+
+        Catches the full family of inline-script loader patterns:
+        - ``elem.src = "https://..."`` (existing)
+        - ``fetch("https://...")``
+        - ``xhr.open("GET", "https://...")``
+        - ``importScripts("https://...")``
+        - ``new Worker("https://...")``
+        - ``new URL("https://...")``
+        - ``location(.href) = "https://..."``
+        """
         urls: list[str] = []
         for match in JS_SCRIPT_CREATE_RE.finditer(content):
             url = match.group(1).strip()
             if url.startswith(("http://", "https://")):
                 urls.append(url)
+        for match in JS_DYNAMIC_URL_RE.finditer(content):
+            # Multiple alternation groups — pick the one that matched.
+            for group in match.groups():
+                if group and group.startswith(("http://", "https://")):
+                    urls.append(group.strip())
+                    break
         return urls
+
+    def _classify_url(self, url: str) -> str:
+        """Return ``"js"`` or ``"terminal"`` based on URL shape.
+
+        Terminal URLs look like HTML landing pages — navigation targets,
+        not script resources. These get handed off to the chain crawler.
+        """
+        try:
+            path = urlparse(url).path.lower()
+        except Exception:
+            return "js"
+
+        # Trailing slash or empty path → likely a landing page
+        if not path or path.endswith("/"):
+            return "terminal"
+
+        # Explicit extension tells us directly
+        last_dot = path.rfind(".")
+        if last_dot > path.rfind("/"):
+            ext = path[last_dot:]
+            if ext in _JS_EXTENSIONS:
+                return "js"
+            if ext in _HTML_EXTENSIONS:
+                return "terminal"
+
+        # Paths with no extension in their final segment lean terminal
+        # (e.g. /login, /signin, /o/oauth2/deviceauth).
+        return "terminal"
 
     def _should_fetch(self, url: str) -> bool:
         """Determine if a URL should be fetched (not benign, not already done)."""

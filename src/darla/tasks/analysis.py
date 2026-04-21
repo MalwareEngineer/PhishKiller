@@ -61,6 +61,7 @@ def _post_download_steps() -> list:
     invoked as *suggestion* generators by the scoring engine, but they no
     longer silently mutate the attribution graph as part of every pipeline run.
     """
+    from darla.tasks.browser import execute_svgs_active
     from darla.tasks.chain import crawl_chain, decode_qr_codes, parse_eml
 
     return [
@@ -70,6 +71,11 @@ def _post_download_steps() -> list:
         deobfuscate_files.s(),
         decrypt_html_payloads.s(),
         fetch_external_js.s(),
+        # Active SVG detonation runs on the ``browser`` queue.  Placing it
+        # after the httpx-driven JS fetch but before ``crawl_chain`` lets
+        # URLs captured from live rendering merge with statically-fetched
+        # terminal URLs into a single chain-crawl batch.
+        execute_svgs_active.s(),
         yara_scan.s(),
         extract_iocs.s(),
         decode_qr_codes.s(),
@@ -181,6 +187,23 @@ def compute_hashes(self, prev_result: dict) -> dict:
         db.commit()
 
         logger.info("Hashes computed for kit %s: sha256=%s", kit_id, result.sha256[:16])
+
+        # Fire a parallel artifact render (EML/SVG/PDF/DOCX → _screenshots).
+        # Guarded so one-shot failures never break the analysis chain and
+        # already-rendered kits (e.g. reanalysis retries) don't re-queue.
+        try:
+            settings = get_settings()
+            if getattr(settings, "artifact_render_enabled", True):
+                from darla.analysis.artifact_renderer import classify_artifact
+                from darla.tasks.browser import render_artifact
+
+                if kit.local_path and classify_artifact(Path(kit.local_path)):
+                    render_artifact.apply_async(args=[kit_id])
+        except Exception as rr_err:
+            logger.debug(
+                "Failed to dispatch render_artifact for %s: %s", kit_id, rr_err,
+            )
+
         return {
             **prev_result,
             "sha256": result.sha256,
@@ -399,6 +422,72 @@ def deobfuscate_files(self, prev_result: dict) -> dict:
                             "techniques": result.techniques_found,
                             "deob_file": str(deob_path.relative_to(base_dir)),
                         })
+                    files_processed += 1
+
+                # SVG inline <script> bodies — phishing SVGs carry their JS
+                # loader inside <script>...</script>, often atob/XOR-obfuscated.
+                # Extract each body, deobfuscate it, and drop the plaintext
+                # next to the SVG as a sibling .deob.js so the downstream
+                # external-JS fetcher can pull the terminal URL out of it.
+                _svg_suffix = Path(
+                    candidate.name.rstrip(". ")
+                ).suffix.lower()
+                if _svg_suffix == ".svg":
+                    try:
+                        from darla.analysis.svg_inspector import (
+                            extract_inline_script_bodies,
+                        )
+                        raw_svg = candidate.read_bytes()
+                        bodies = extract_inline_script_bodies(raw_svg)
+                    except Exception as svg_err:
+                        logger.debug(
+                            "SVG script-body extract failed for %s: %s",
+                            candidate, svg_err,
+                        )
+                        bodies = []
+
+                    for idx, body in enumerate(bodies):
+                        if not body or len(body) < 20:
+                            continue
+                        try:
+                            result = js_deobfuscator.deobfuscate(body)
+                        except Exception as deob_err:
+                            logger.debug(
+                                "SVG inline-JS deobf failed for %s#%d: %s",
+                                candidate, idx, deob_err,
+                            )
+                            continue
+                        # Even if the deobfuscator unwrapped nothing, the raw
+                        # body itself may contain plaintext URLs worth
+                        # scanning. Emit a sibling file in both cases so
+                        # fetch_external_js can hit it.
+                        content_out = (
+                            result.deobfuscated_content
+                            if result.layers_unwrapped > 0
+                            else body
+                        )
+                        deob_path = candidate.parent / (
+                            f"{candidate.stem}.script{idx}.deob.js"
+                        )
+                        try:
+                            deob_path.write_text(
+                                content_out, encoding="utf-8",
+                            )
+                        except Exception as write_err:
+                            logger.debug(
+                                "SVG deob write failed for %s: %s",
+                                deob_path, write_err,
+                            )
+                            continue
+                        if result.layers_unwrapped > 0:
+                            deob_results.append({
+                                "file": str(candidate.relative_to(base_dir)),
+                                "layers": result.layers_unwrapped,
+                                "techniques": result.techniques_found,
+                                "deob_file": str(deob_path.relative_to(base_dir)),
+                                "source": "svg_inline_script",
+                                "script_index": idx,
+                            })
                     files_processed += 1
             except Exception as e:
                 logger.debug("Failed to deobfuscate %s: %s", candidate, e)
@@ -886,6 +975,7 @@ def fetch_external_js(self, prev_result: dict) -> dict:
                 "urls_discovered": result.urls_discovered[:50],
                 "urls_fetched": result.urls_fetched[:50],
                 "urls_skipped": result.urls_skipped[:50],
+                "terminal_urls": result.terminal_urls[:50],
                 "errors": result.errors[:20],
                 "php_sources_found": result.php_sources_found,
             },
@@ -894,18 +984,20 @@ def fetch_external_js(self, prev_result: dict) -> dict:
         )
         db.commit()
 
-        if result.files_fetched:
+        if result.files_fetched or result.terminal_urls:
             logger.info(
                 "External JS fetch for kit %s: %d fetched, %d skipped (benign), "
-                "%d errors, %d PHP sources",
+                "%d errors, %d PHP sources, %d terminal URLs",
                 kit_id, result.files_fetched, result.files_skipped_benign,
                 result.files_skipped_error, result.php_sources_found,
+                len(result.terminal_urls),
             )
 
         return {
             **prev_result,
             "external_js_fetched": result.files_fetched,
             "external_js_urls": result.urls_fetched,
+            "external_js_terminal_urls": result.terminal_urls,
         }
 
     except Exception as e:

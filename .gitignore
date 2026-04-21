@@ -43,6 +43,7 @@ alembic/versions/*.pyc
 /tmp/darla/
 downloads/
 extracted/
+screenshots_tmp/
 
 # Docker volumes
 pgdata/

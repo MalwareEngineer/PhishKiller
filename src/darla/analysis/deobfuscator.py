@@ -18,6 +18,7 @@ Does NOT execute PHP or JS. Only applies known inverse functions in Python.
 
 import base64
 import codecs
+import json
 import re
 import zlib
 from dataclasses import dataclass, field
@@ -289,6 +290,39 @@ class JSDeobfuscator:
         r"""['"]([A-Za-z0-9+/=]{40,})['"]""",
     )
 
+    # --- Layered decoder primitives ----------------------------------------
+    # Together these let us reconstruct loader functions that chain several
+    # transforms (atob, hex-pair XOR, reverse, ROT13, JSON.parse+join) in an
+    # arbitrary order. We match each primitive's occurrence in source and
+    # replay them in textual order against candidate base64 seeds.
+
+    # hex-pair XOR: parseInt(pair, 16) ^ KEY  (captures KEY).
+    # The first argument can be a bare identifier (``h``), an indexed lookup
+    # (``h[i]``), or a longer expression — allow anything up to the comma.
+    _PARSEINT_HEX_XOR_RE = re.compile(
+        r"""parseInt\s*\(\s*[^,)]+?\s*,\s*16\s*\)\s*\^\s*(0x[0-9a-fA-F]+|\d+)""",
+    )
+    # reverse: x.split('').reverse().join('')
+    _SPLIT_REVERSE_JOIN_RE = re.compile(
+        r"""\.\s*split\s*\(\s*['"]\s*['"]\s*\)\s*\.\s*reverse\s*\(\s*\)\s*\.\s*join""",
+    )
+    # ROT13 math: (c.charCodeAt(0) - b + 13) % 26  (the "+13 … %26" is the
+    # tell; the surrounding branching for upper/lower case varies).
+    _ROT13_MATH_RE = re.compile(
+        r"""charCodeAt\s*\(\s*0?\s*\)\s*-\s*\w+\s*\+\s*13\s*\)\s*%\s*26""",
+    )
+    # JSON.parse(x).join('sep')  — captures the join separator (usually '').
+    _JSON_PARSE_JOIN_RE = re.compile(
+        r"""JSON\s*\.\s*parse\s*\([^)]*\)\s*\.\s*join\s*\(\s*['"]([^'"]*)['"]\s*\)""",
+    )
+    # atob( — one b64_decode step per occurrence.
+    _ATOB_CALL_RE = re.compile(r"""\batob\s*\(""")
+
+    # Looser seed pattern for layered chains. Real phishing seeds are often
+    # >1000 chars; the 20 floor just rules out incidental junk. We iterate
+    # seeds longest-first so the biggest payload wins when multiple match.
+    _SEED_BASE64_RE = re.compile(r"""['"]([A-Za-z0-9+/=]{20,})['"]""")
+
     # URL pattern for extracted decoded content
     URL_PATTERN = re.compile(
         r"""https?://[^\s"'<>\]\)\\]+""",
@@ -310,6 +344,29 @@ class JSDeobfuscator:
             if inner:
                 techniques.append("js_xor_base64_nested")
                 decoded_parts.append(inner)
+
+        # Try multi-stage loader chains: parse the decoder's source for a
+        # sequence of known primitives (atob / hex-XOR / reverse / ROT13 /
+        # JSON.parse-join) in the order they appear, then replay that
+        # sequence against each long base64 seed literal.
+        layered = self._try_layered_decode_chain(content)
+        if layered:
+            plaintext, used_steps = layered
+            techniques.append("js_layered_chain")
+            for step in used_steps:
+                techniques.append(f"js_chain:{step}")
+            if plaintext not in decoded_parts:
+                decoded_parts.append(plaintext)
+
+            # Nested-loader tail. The unwrapped plaintext is often *another*
+            # mini loader that hides the terminal URL behind String.fromCharCode
+            # or \xNN hex-escaped string literals. Run a cheap resolver pass
+            # so URL_PATTERN can find the URL on the output.
+            resolved = self._resolve_js_string_literals(plaintext)
+            if resolved and resolved != plaintext:
+                if resolved not in decoded_parts:
+                    decoded_parts.append(resolved)
+                    techniques.append("js_literals_resolved")
 
         # Try plain atob('...') without XOR (simpler obfuscation)
         for m in self.ATOB_PATTERN.finditer(content):
@@ -408,3 +465,254 @@ class JSDeobfuscator:
                 continue
 
         return None
+
+    # ------------------------------------------------------------------
+    # Multi-stage layered chain decoder
+    # ------------------------------------------------------------------
+
+    def _build_transform_pipeline(
+        self, content: str,
+    ) -> list[tuple[str, dict]]:
+        """Walk the source for known primitives in textual order and
+        return a list of (name, params) steps describing the decode
+        pipeline the decoder function applies.
+
+        Recognised primitives:
+          - b64        : base64 decode
+          - hex_xor    : atob → split hex pairs → parseInt(pair,16) ^ KEY
+                         → fromCharCode (params: {"key": int})
+          - reverse    : .split('').reverse().join('')
+          - rot13      : ROT13 over a-zA-Z
+          - json_parse : JSON.parse(x).join(sep)  (params: {"sep": str})
+        """
+        # Pair hex_xor with the b64_decode that feeds it (the atob call
+        # immediately preceding the parseInt), so we don't double-count the
+        # split/XOR atob as a standalone b64 step.
+        hex_xor_positions: dict[int, int] = {}
+        atobs = [m.start() for m in self._ATOB_CALL_RE.finditer(content)]
+        for m in self._PARSEINT_HEX_XOR_RE.finditer(content):
+            pos = m.start()
+            # Find nearest atob at a smaller offset — that's the one whose
+            # output is being split into hex pairs.
+            preceding = [a for a in atobs if a < pos]
+            if preceding:
+                hex_xor_positions[preceding[-1]] = int(
+                    m.group(1), 16 if m.group(1).startswith("0x") else 10,
+                )
+
+        events: list[tuple[int, str, dict]] = []
+        for atob_pos in atobs:
+            if atob_pos in hex_xor_positions:
+                events.append(
+                    (atob_pos, "hex_xor", {"key": hex_xor_positions[atob_pos]}),
+                )
+            else:
+                events.append((atob_pos, "b64", {}))
+
+        for m in self._SPLIT_REVERSE_JOIN_RE.finditer(content):
+            events.append((m.start(), "reverse", {}))
+        for m in self._ROT13_MATH_RE.finditer(content):
+            events.append((m.start(), "rot13", {}))
+        for m in self._JSON_PARSE_JOIN_RE.finditer(content):
+            events.append((m.start(), "json_parse", {"sep": m.group(1)}))
+
+        events.sort(key=lambda t: t[0])
+        return [(name, params) for _, name, params in events]
+
+    @staticmethod
+    def _apply_step(step: tuple[str, dict], data: str) -> str | None:
+        """Apply one pipeline step. Returns None on failure."""
+        name, params = step
+        try:
+            if name == "b64":
+                return base64.b64decode(data, validate=False).decode(
+                    "utf-8", errors="replace",
+                )
+            if name == "hex_xor":
+                # data is "atob result" — base64-decode first, then split
+                # into hex pairs, parseInt(pair,16) ^ key → chr → join.
+                raw = base64.b64decode(data, validate=False).decode(
+                    "ascii", errors="ignore",
+                )
+                key = params["key"]
+                if key < 0 or key > 255:
+                    return None
+                out_chars: list[str] = []
+                # Take pairs of ASCII hex digits.
+                i = 0
+                while i + 1 < len(raw):
+                    pair = raw[i:i + 2]
+                    if (
+                        pair[0] in "0123456789abcdefABCDEF"
+                        and pair[1] in "0123456789abcdefABCDEF"
+                    ):
+                        out_chars.append(chr(int(pair, 16) ^ key))
+                    i += 2
+                return "".join(out_chars)
+            if name == "reverse":
+                return data[::-1]
+            if name == "rot13":
+                return codecs.encode(data, "rot_13")
+            if name == "json_parse":
+                parsed = json.loads(data)
+                if not isinstance(parsed, list):
+                    return None
+                return params.get("sep", "").join(str(x) for x in parsed)
+        except Exception:
+            return None
+        return None
+
+    def _try_layered_decode_chain(
+        self, content: str,
+    ) -> tuple[str, list[str]] | None:
+        """If the source describes a multi-stage decoder, replay it against
+        each long base64 seed literal. Return the first plaintext that looks
+        like JS/URL output, along with the list of step names used.
+        """
+        pipeline = self._build_transform_pipeline(content)
+        if not pipeline:
+            return None
+        # A realistic loader has at least one hex_xor or json_parse step;
+        # otherwise the plain ATOB_PATTERN branch already handles it and we
+        # avoid double-reporting trivial matches.
+        names = [n for n, _ in pipeline]
+        if (
+            names.count("hex_xor") == 0
+            and "json_parse" not in names
+            and "reverse" not in names
+        ):
+            return None
+
+        # Candidate seeds — the base64 literal the decoder is fed. Sort
+        # longest-first since the real payload dwarfs incidentals.
+        seeds = sorted(
+            {m.group(1) for m in self._SEED_BASE64_RE.finditer(content)},
+            key=len, reverse=True,
+        )
+
+        for seed in seeds:
+            data: str | None = seed
+            for step in pipeline:
+                if data is None:
+                    break
+                data = self._apply_step(step, data)
+                # Cap runaway growth.
+                if data is not None and len(data) > MAX_OUTPUT_SIZE:
+                    data = None
+                    break
+            if not data or len(data) < 20:
+                continue
+            if (
+                self.URL_PATTERN.search(data)
+                or any(
+                    marker in data
+                    for marker in (
+                        "function", "var ", "const ", "let ",
+                        "window.", "document.", "eval(", "=>",
+                    )
+                )
+            ):
+                return data, names
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Follow-on resolver for in-literal escape schemes
+    # ------------------------------------------------------------------
+
+    # Match String.fromCharCode(n, n, ...) with decimal or 0xNN arguments.
+    _FROM_CHAR_CODE_RE = re.compile(
+        r"""String\s*\.\s*fromCharCode\s*\(\s*([0-9xXa-fA-F,\s]+)\)""",
+    )
+
+    @staticmethod
+    def _resolve_js_string_literals(content: str) -> str:
+        """Produce a flattened view of ``content`` in which ``\\xNN`` / ``\\uNNNN``
+        escapes and ``String.fromCharCode(...)`` calls have been decoded.
+
+        The return value is the original content followed by the resolved
+        fragments, joined on newlines. That keeps the caller able to pattern-
+        match (e.g. :attr:`URL_PATTERN`) against either form — useful when a
+        loader stores a URL as ``"\\x68\\x74\\x74\\x70..."`` or builds it from
+        a ``fromCharCode`` call just before ``fetch``ing it.
+
+        Safe on arbitrary content: the worst case (no escapes, no
+        ``fromCharCode``) just returns the input unchanged.
+        """
+        fragments: list[str] = [content]
+
+        # (a) Blanket unicode_escape over the whole document. Unaffected
+        # substrings pass through untouched; ``\xNN`` / ``\uNNNN`` become
+        # real characters.
+        try:
+            encoded = content.encode("latin-1", errors="replace")
+            unescaped = codecs.decode(encoded, "unicode_escape")
+            if unescaped != content:
+                fragments.append(unescaped)
+        except Exception:
+            pass
+
+        # (b) Per-string-literal decoders. Quoted strings that *look* like
+        # pure hex (``"68747470..."``) or long base64 are decoded in case
+        # the terminal URL is hiding as one of those. The alt-decoded form
+        # is appended as a separate fragment so URL_PATTERN can pick it up
+        # without us having to prove which literal is the URL.
+        for m in re.finditer(
+            r"""(['"])((?:\\.|(?!\1).)*?)\1""", content, flags=re.DOTALL,
+        ):
+            lit = m.group(2)
+            if not lit or len(lit) < 8:
+                continue
+            # Hex-only, even length → bytes.fromhex().
+            if len(lit) % 2 == 0 and all(
+                c in "0123456789abcdefABCDEF" for c in lit
+            ):
+                try:
+                    fragments.append(
+                        bytes.fromhex(lit).decode("utf-8", errors="replace"),
+                    )
+                except Exception:
+                    pass
+                continue
+            # Long base64 → try decoding; accept only if printable-ish.
+            if (
+                len(lit) >= 20
+                and all(c in (
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "abcdefghijklmnopqrstuvwxyz0123456789+/="
+                ) for c in lit)
+            ):
+                try:
+                    dec = base64.b64decode(lit, validate=False)
+                    as_str = dec.decode("utf-8", errors="replace")
+                    if sum(c.isprintable() for c in as_str) >= 0.8 * len(as_str):
+                        fragments.append(as_str)
+                except Exception:
+                    pass
+
+        # (c) String.fromCharCode(n1, n2, ...) — parse the argument list and
+        # emit the decoded character sequence.
+        for m in JSDeobfuscator._FROM_CHAR_CODE_RE.finditer(content):
+            chars: list[str] = []
+            for tok in m.group(1).split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    n = (
+                        int(tok, 16)
+                        if tok.lower().startswith("0x")
+                        else int(tok)
+                    )
+                except ValueError:
+                    chars = []
+                    break
+                if 0 < n < 0x110000:
+                    chars.append(chr(n))
+                else:
+                    chars = []
+                    break
+            if chars:
+                fragments.append("".join(chars))
+
+        return "\n".join(fragments)
