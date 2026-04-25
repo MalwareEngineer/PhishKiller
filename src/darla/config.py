@@ -51,8 +51,24 @@ class Settings(BaseSettings):
     browser_turnstile_timeout: int = 30  # seconds before retrying Turnstile with fresh context
     browser_render_on_thin_results: bool = True
     browser_dedup_tlsh_threshold: int = 30
-    browser_render_max_variations: int = 50
-    browser_render_pool_stop: int = 3  # consecutive TLSH dupes before stopping re-render loop
+    # Total browser_render children allowed per investigation.  Caps the
+    # blast radius of relay-pool enumeration: a single adversarial AITM
+    # kit with rotating relays would otherwise dispatch up to 50 renders.
+    # 10 catches realistic pool sizes; bump if a kit consistently shows
+    # legitimate variations beyond the cap.
+    browser_render_max_variations: int = 10
+    # Consecutive TLSH-duplicate renders before stopping the pool-enum
+    # loop.  At 2 we exit after the second confirmed dupe, which in
+    # practice is when pools have exhausted.  3 wasted ~33% extra
+    # browser time on diminishing-returns enumeration.
+    browser_render_pool_stop: int = 2
+    # Per-investigation in-flight browser-render budget.  Before
+    # dispatching another browser_download_kit (e.g. pool enumeration),
+    # we count DOWNLOADING children for the same investigation; if this
+    # cap is hit we suppress the new dispatch and let in-flight work
+    # finish first.  Smooths queue spikes from adversarial kits without
+    # starving other investigations on a shared browser worker.
+    browser_render_max_inflight_per_investigation: int = 2
 
     # Polymorphism detection
     browser_polymorphism_min_variants: int = 2      # min unique siblings on same domain

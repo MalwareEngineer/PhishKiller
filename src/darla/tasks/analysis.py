@@ -106,6 +106,120 @@ def build_post_download_chain(download_result: dict) -> chain:
     return chain(compute_hashes.si(download_result), *_post_download_steps()[1:])
 
 
+# ---------------------------------------------------------------------------
+# Chain cursor — for resuming stalled chains without restarting the whole
+# kit from download_kit.  See ``recover_chain_cursors`` in tasks/recovery.py.
+# ---------------------------------------------------------------------------
+
+# Ordered list of post-download chain step names matching ``_post_download_steps()``
+# entry-by-entry.  The Celery task_prerun signal looks up the running task's
+# fully-qualified name in this map and writes the SHORT name to
+# ``Kit.chain_cursor``.  Keep this list synchronized with _post_download_steps().
+_CHAIN_STEP_NAME_MAP: dict[str, str] = {
+    "darla.tasks.analysis.compute_hashes": "compute_hashes",
+    "darla.tasks.analysis.extract_archive": "extract_archive",
+    "darla.tasks.chain.parse_eml": "parse_eml",
+    "darla.tasks.analysis.deobfuscate_files": "deobfuscate_files",
+    "darla.tasks.analysis.decrypt_html_payloads": "decrypt_html_payloads",
+    "darla.tasks.analysis.fetch_external_js": "fetch_external_js",
+    "darla.tasks.browser.execute_svgs_active": "execute_svgs_active",
+    "darla.tasks.analysis.yara_scan": "yara_scan",
+    "darla.tasks.analysis.extract_iocs": "extract_iocs",
+    "darla.tasks.chain.decode_qr_codes": "decode_qr_codes",
+    "darla.tasks.analysis.compute_similarity": "compute_similarity",
+    "darla.tasks.analysis.detect_polymorphism": "detect_polymorphism",
+    "darla.tasks.chain.crawl_chain": "crawl_chain",
+    "darla.tasks.analysis.finalize_kit": "finalize_kit",
+}
+
+# Reverse-ordered list used by ``post_download_steps_from_cursor`` to slice
+# the chain at a resume point.  Order MUST match _CHAIN_STEP_NAME_MAP value
+# order which MUST match _post_download_steps() invocation order.
+_CHAIN_STEP_ORDER: tuple[str, ...] = (
+    "compute_hashes",
+    "extract_archive",
+    "parse_eml",
+    "deobfuscate_files",
+    "decrypt_html_payloads",
+    "fetch_external_js",
+    "execute_svgs_active",
+    "yara_scan",
+    "extract_iocs",
+    "decode_qr_codes",
+    "compute_similarity",
+    "detect_polymorphism",
+    "crawl_chain",
+    "finalize_kit",
+)
+
+
+def post_download_steps_from_cursor(cursor: str | None) -> list:
+    """Return chain step signatures starting at ``cursor`` (inclusive).
+
+    The cursor records "this step started but may not have completed";
+    on resume we re-run from the cursor to be safe — every step must be
+    idempotent.  Returns an empty list when ``cursor`` is unknown or
+    after the last step.
+    """
+    if not cursor or cursor not in _CHAIN_STEP_ORDER:
+        return []
+    cursor_index = _CHAIN_STEP_ORDER.index(cursor)
+    full_steps = _post_download_steps()
+    return full_steps[cursor_index:]
+
+
+# Celery signal: record the cursor at every chain-step task start.
+# Using a signal (rather than touching 14 task bodies) keeps the cursor
+# logic in one place and means new steps added later get covered
+# automatically as long as their fully-qualified name is added to
+# ``_CHAIN_STEP_NAME_MAP``.
+from celery.signals import task_prerun  # noqa: E402
+
+
+@task_prerun.connect
+def _record_chain_cursor(
+    sender=None, task_id=None, task=None, args=None, kwargs=None, **_,
+):
+    """Write ``Kit.chain_cursor`` at the start of each post-download step.
+
+    The chain steps all take a single positional ``prev_result`` dict
+    that carries ``kit_id``.  We use that to address the row.  Any
+    failure here is logged and swallowed — chain progress must not
+    block on bookkeeping.
+    """
+    if task is None:
+        return
+    step_name = _CHAIN_STEP_NAME_MAP.get(task.name)
+    if step_name is None:
+        return
+    if not args or not isinstance(args[0], dict):
+        return
+    kit_id_str = args[0].get("kit_id")
+    if not kit_id_str:
+        return
+    db = None
+    try:
+        db = get_sync_db()
+        db.query(Kit).filter(Kit.id == uuid.UUID(kit_id_str)).update(
+            {"chain_cursor": step_name},
+            synchronize_session=False,
+        )
+        db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Failed to record chain_cursor=%s for kit %s: %s",
+            step_name, kit_id_str, exc,
+        )
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    finally:
+        if db is not None:
+            db.close()
+
+
 @celery_app.task(name="darla.tasks.analysis._inject_force", queue="analysis")
 def _inject_force(prev_result: dict) -> dict:
     """Stamp force=True onto the chain result dict."""
@@ -1463,14 +1577,29 @@ def finalize_kit(self, prev_result: dict) -> dict:
                         at_depth_limit = True
 
             if is_thin and is_html_like and not has_browser_child and not at_depth_limit:
-                logger.info(
-                    "Kit %s: thin results (iocs=%d, yara=%d), "
-                    "dispatching browser render",
-                    kit_id, iocs_extracted, yara_count,
+                from darla.tasks.browser import (
+                    browser_download_kit,
+                    precreate_browser_render_child_kit,
                 )
-                from darla.tasks.browser import browser_download_kit
 
-                browser_download_kit.apply_async(args=[kit_id])
+                child, skip_reason = precreate_browser_render_child_kit(
+                    db, kit,
+                )
+                if child is not None:
+                    db.commit()
+                    browser_download_kit.apply_async(
+                        args=[kit_id, str(child.id), 0],
+                    )
+                    logger.info(
+                        "Kit %s: thin results (iocs=%d, yara=%d), "
+                        "dispatched browser render for child %s",
+                        kit_id, iocs_extracted, yara_count, child.id,
+                    )
+                else:
+                    logger.info(
+                        "Kit %s: thin results, browser render skipped (%s)",
+                        kit_id, skip_reason,
+                    )
 
         kit.status = KitStatus.ANALYZED
         db.commit()

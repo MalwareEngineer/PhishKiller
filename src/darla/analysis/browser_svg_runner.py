@@ -42,6 +42,53 @@ _LANDING_CONTENT_TYPES: tuple[str, ...] = (
     "application/xhtml",
 )
 
+# Hosts that serve HTML gates but are never the phishing payload itself.
+# Turnstile / hCaptcha interstitials load in iframes during the loader's
+# bot-check phase; promoting them to terminal URLs spawns wasted child kits
+# that just re-render the same challenge page across polymorphism generations.
+#
+# Scope is intentionally narrow — we only suppress *first-party* gate infra
+# (Cloudflare's own ``challenges.cloudflare.com`` domain, hCaptcha's own
+# domains).  We do NOT suppress arbitrary Cloudflare-fronted domains because
+# legitimate phishing pages often sit behind Cloudflare proxies.
+#
+# Matched by exact hostname or hostname suffix (covers ``*.hcaptcha.com``).
+_SUPPRESS_TERMINAL_HOSTS: frozenset[str] = frozenset({
+    "challenges.cloudflare.com",
+    "challenges.cloudflareaccess.com",
+    "hcaptcha.com",
+    "newassets.hcaptcha.com",
+})
+
+# reCAPTCHA lives at ``www.google.com/recaptcha/...`` — we can't suppress the
+# entire ``google.com`` host, so we fall back to a path-anchored substring
+# check.  Keep this list short for the same reason as above.
+_SUPPRESS_TERMINAL_URL_SUBSTRINGS: tuple[str, ...] = (
+    "google.com/recaptcha",
+)
+
+
+def _is_suppressed_terminal(url: str) -> bool:
+    """Return True when *url* points at a cloaking/challenge gate we never
+    want to chase as a child kit.
+
+    Host match is suffix-based (so ``sub.challenges.cloudflare.com`` is
+    covered).  URL substring fallback covers path-anchored gates like
+    reCAPTCHA where we can't blanket-suppress the whole host.
+    """
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    if host:
+        for suffix in _SUPPRESS_TERMINAL_HOSTS:
+            if host == suffix or host.endswith("." + suffix):
+                return True
+    for sub in _SUPPRESS_TERMINAL_URL_SUBSTRINGS:
+        if sub in url:
+            return True
+    return False
+
 # Content-type prefixes worth saving the body of. JS and JSON responses are
 # useful for downstream deobfuscation; landing HTML is already captured by
 # the downstream browser_download_kit when the URL promotes to a child kit.
@@ -137,6 +184,7 @@ def _build_wrapper_html(svg_text: str, *, dawa_value: str | None) -> str:
 
 
 def _looks_like_landing(
+    url: str,
     content_type: str,
     status: int,
     resource_type: str,
@@ -145,8 +193,12 @@ def _looks_like_landing(
 
     Requires a 2xx/3xx status, an HTML-ish content type, and a request
     classified as ``document`` or ``fetch``/``xhr`` (rules out `<img>` /
-    ``<link rel=icon>`` noise).
+    ``<link rel=icon>`` noise).  First-party cloaking-gate hosts (Turnstile,
+    hCaptcha, reCAPTCHA) are also rejected here so they never become child
+    kits — they're ephemeral interstitials, not the phishing payload.
     """
+    if _is_suppressed_terminal(url):
+        return False
     if status and not (200 <= status < 400):
         return False
     ct = content_type.lower()
@@ -461,24 +513,33 @@ async def _execute_svg_async(
             if (
                 url not in seen_terminal
                 and _looks_like_landing(
-                    ev.get("content_type", ""), ev.get("status", 0), rtype,
+                    url,
+                    ev.get("content_type", ""),
+                    ev.get("status", 0),
+                    rtype,
                 )
             ):
                 seen_terminal.add(url)
                 result.terminal_urls.append(url)
 
-    # Navigations (framenavigated + popups) are always candidate terminals.
+    # Navigations (framenavigated + popups) are candidate terminals — but
+    # cloaking-gate navigations (Turnstile, hCaptcha) are recorded only as
+    # discovered/navigations, never promoted to terminals.  Otherwise the
+    # chain crawler spawns a child kit that re-renders the same interstitial
+    # across every polymorphism generation.
     for nav in navigations:
         if not nav or not nav.startswith(("http://", "https://")):
             continue
-        if nav not in seen_terminal:
-            seen_terminal.add(nav)
-            result.terminal_urls.append(nav)
         if nav not in seen_urls:
             seen_urls.add(nav)
             result.urls_discovered.append(nav)
         if nav not in result.navigations:
             result.navigations.append(nav)
+        if _is_suppressed_terminal(nav):
+            continue
+        if nav not in seen_terminal:
+            seen_terminal.add(nav)
+            result.terminal_urls.append(nav)
 
     # Persist the full network log alongside the resources for later audit.
     try:

@@ -110,26 +110,44 @@ class InvestigationService:
     async def delete_investigation(self, investigation_id: uuid.UUID) -> bool:
         """Delete an investigation.
 
-        DB cascades handle cleanup:
-        - root_kit CASCADE deletes (and its child kits cascade too)
-        - Other linked kits get investigation_id SET NULL (preserved)
+        The FK graph is cyclic at the ORM level:
+          - ``investigations.root_kit_id`` → ``kits.id``  (CASCADE, NOT NULL)
+          - ``kits.investigation_id``      → ``investigations.id`` (SET NULL)
+
+        If we mark BOTH the Investigation and its root Kit for ORM deletion
+        in the same unit-of-work, SQLAlchemy can't topologically order them
+        and raises ``CircularDependencyError``.  Instead, we delete only
+        the root kit via ORM and let the DB-level ``ON DELETE CASCADE`` on
+        ``investigations.root_kit_id`` drop the investigation row.  The
+        Investigation is expunged from the session first so its load does
+        not pull it into the pending unit-of-work.
+
+        Cleanup summary:
+          - Root kit deleted via :meth:`KitService.delete_kit` (cascades
+            descendants + removes on-disk files).
+          - Investigation row removed by DB CASCADE when the root kit goes.
+          - Non-descendant kits with ``investigation_id`` set keep their
+            data; their ``investigation_id`` is nulled via SET NULL.
         """
         investigation = await self.get_investigation(investigation_id)
         if not investigation:
             return False
 
-        # Clean up root kit's local files before deletion
-        if investigation.root_kit and investigation.root_kit.local_path:
-            import shutil
-            from pathlib import Path
+        root_kit_id = investigation.root_kit_id
 
-            from darla.services.kit_service import KitService
+        # Detach the Investigation from the session so the root-kit delete
+        # doesn't create a DeleteState cycle with it.  DB CASCADE still
+        # removes the row when the root kit is deleted.
+        self.db.expunge(investigation)
+        if investigation.root_kit is not None:
+            # selectinload pulled the Kit into the identity map too — get
+            # it out of the unit of work before kit_service re-loads it.
+            self.db.expunge(investigation.root_kit)
 
-            kit_service = KitService(self.db)
-            # Use kit service to do a thorough delete (handles descendants + files)
-            await kit_service.delete_kit(investigation.root_kit.id)
+        from darla.services.kit_service import KitService
 
-        await self.db.delete(investigation)
+        kit_service = KitService(self.db)
+        await kit_service.delete_kit(root_kit_id)
         return True
 
     async def get_kit_tree(self, investigation_id: uuid.UUID) -> list[Kit]:

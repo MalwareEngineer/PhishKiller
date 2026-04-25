@@ -74,6 +74,16 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Storage
     local_path: Mapped[str | None] = mapped_column(Text)
 
+    # Post-download analysis chain progress.  Set to the **name of the
+    # step that started but may not yet have completed** by a Celery
+    # task_prerun signal (see ``darla.tasks.analysis._record_chain_cursor``).
+    # Used by the ``recover_chain_cursors`` recovery beat job to resume
+    # stalled chains without restarting from ``download_kit`` (which
+    # would waste the existing local_path content + re-trigger
+    # browser-render fanout).  ``None`` for kits that haven't entered
+    # post-download chain yet, or that completed cleanly.
+    chain_cursor: Mapped[str | None] = mapped_column(String(64))
+
     # Relationships
     parent_kit: Mapped[Kit | None] = relationship(
         "Kit", remote_side="Kit.id", back_populates="child_kits",

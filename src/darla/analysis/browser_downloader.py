@@ -5,11 +5,14 @@ Turnstile CAPTCHAs, custom anti-bot verification gates, and anti-analysis
 JavaScript.  Falls back gracefully when the ``camoufox`` package is not
 installed.
 
-Captures ALL network traffic (JS, PHP, CSS, XHR, fetch, WebSocket upgrades)
-via Playwright response events — the same resources visible in the browser's
-DevTools Network tab.  Sub-resources are saved alongside ``page.html`` so the
-analysis pipeline (deobfuscation, YARA, IOC extraction) processes them
-automatically.
+Captures ALL network traffic (JS, PHP, CSS, XHR, fetch) via Playwright
+response events plus WebSocket frames via the ``websocket`` event — the
+same resources visible in the browser's DevTools Network tab.  Sub-
+resources are saved alongside ``page.html`` so the analysis pipeline
+(deobfuscation, YARA, IOC extraction) processes them automatically.
+WebSocket frames are written to ``websocket_frames.jsonl`` so AITM cred-
+relay protocols (``wss://...`` harvester backends) can be inspected
+post-mortem without re-running the kit.
 
 Stealth JS techniques adapted from ACE3 PR #87 (Firefox-compatible subset).
 
@@ -28,6 +31,66 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket frame capture helpers.  Module-level so tests can exercise the
+# serialization without spinning up a browser.
+# ---------------------------------------------------------------------------
+
+# Per-frame payload preview cap.  4 KiB is plenty to see AITM protocol
+# headers / field names / credential templates without hoarding attacker
+# traffic on disk.
+_WS_FRAME_PREVIEW_BYTES = 4096
+# Per-navigation hard cap so a single chatty WebSocket can't eat memory.
+_WS_MAX_FRAMES = 2000
+
+
+def _serialize_ws_frame(
+    index: int,
+    direction: str,
+    ws_url: str,
+    payload,
+    timestamp: float,
+) -> dict:
+    """Build a JSONL-safe dict for a single WebSocket frame.
+
+    ``payload`` may be ``str`` (text frame), ``bytes`` / ``bytearray``
+    (binary frame), or a Playwright wrapper exposing ``.payload``.
+    Binary frames are base64-encoded so the JSONL stays ASCII-safe.
+    Text frames are UTF-8 strings truncated at
+    :data:`_WS_FRAME_PREVIEW_BYTES`.
+    """
+    # Unwrap Playwright frame-data wrappers (some versions wrap payload
+    # in an object, others pass str/bytes directly).
+    data = getattr(payload, "payload", payload)
+
+    frame: dict = {
+        "index": index,
+        "ws_url": ws_url,
+        "direction": direction,
+        "timestamp": round(timestamp, 3),
+    }
+
+    try:
+        if isinstance(data, (bytes, bytearray)):
+            import base64 as _b64
+            frame["opcode"] = "binary"
+            frame["length"] = len(data)
+            frame["preview_b64"] = _b64.b64encode(
+                bytes(data[:_WS_FRAME_PREVIEW_BYTES])
+            ).decode("ascii")
+            frame["truncated"] = len(data) > _WS_FRAME_PREVIEW_BYTES
+        else:
+            text = "" if data is None else str(data)
+            frame["opcode"] = "text"
+            frame["length"] = len(text)
+            frame["preview"] = text[:_WS_FRAME_PREVIEW_BYTES]
+            frame["truncated"] = len(text) > _WS_FRAME_PREVIEW_BYTES
+    except Exception as e:  # pragma: no cover — defensive
+        frame["capture_error"] = f"{type(e).__name__}: {e}"[:120]
+
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -407,13 +470,18 @@ async def _async_browser_download(
 ) -> tuple[Path | None, str, str | None]:
     """Internal async implementation of the browser download.
 
-    Captures ALL network responses (JS, PHP, CSS, XHR, fetch, WebSocket
-    upgrades) in addition to the final rendered page.  Saves:
+    Captures ALL network responses (JS, PHP, CSS, XHR, fetch) plus
+    WebSocket frames in addition to the final rendered page.  Saves:
 
     - ``page.html`` — rendered DOM after all stages
     - ``_browser_resources/<NNN>_<filename>`` — captured sub-resources
     - ``_screenshots/<stage>.png`` — screenshots at each page stage
     - ``requests.json`` — full network request/response log
+    - ``websocket_frames.jsonl`` — per-frame WebSocket payloads (sent
+      and received), one JSON object per line.  Present only when at
+      least one WebSocket was opened during the render.  AITM cred-
+      relay protocols use ``wss://`` to stream keystrokes in real time
+      — these frames show the exact wire format.
     """
     try:
         from camoufox.async_api import AsyncCamoufox
@@ -431,6 +499,14 @@ async def _async_browser_download(
     response_counter = 0
     nav_start_time = 0.0
 
+    # WebSocket capture state — AITM cred-relay kits drive credential
+    # exfil through wss:// frames that never appear as HTTP requests.
+    # Caps (``_WS_FRAME_PREVIEW_BYTES`` / ``_WS_MAX_FRAMES``) live at
+    # module level so tests can exercise the serialization without
+    # spinning up a browser.
+    ws_frames: list[dict] = []
+    ws_counter = 0
+
     async def _on_request(request):
         """Log every outgoing request."""
         nonlocal nav_start_time
@@ -443,6 +519,65 @@ async def _async_browser_download(
             "timestamp": round(elapsed, 3),
             "type": "request",
         })
+
+    def _ws_record_frame(direction: str, ws_url: str, payload) -> None:
+        """Append a WebSocket frame to the capture log, bounded."""
+        nonlocal ws_counter
+        if len(ws_frames) >= _WS_MAX_FRAMES:
+            return
+        elapsed = time.monotonic() - nav_start_time if nav_start_time else 0
+        ws_counter += 1
+        ws_frames.append(
+            _serialize_ws_frame(
+                ws_counter, direction, ws_url, payload, elapsed,
+            )
+        )
+
+    def _on_websocket(ws):
+        """Register per-WebSocket frame handlers.
+
+        Playwright emits ``framesent`` / ``framereceived`` with a
+        ``FrameData`` or raw payload depending on version — handle both.
+        """
+        ws_url = getattr(ws, "url", "") or ""
+        logger.info("WebSocket opened: %s", ws_url[:120])
+        # Note: sync handlers — Playwright invokes them synchronously for
+        # frame events.  Any async work would need create_task.
+        def _on_sent(payload):
+            try:
+                # Playwright Python: payload is str for text frames, bytes for binary.
+                # Some versions wrap in an object with .payload — unwrap if present.
+                data = getattr(payload, "payload", payload)
+                _ws_record_frame("sent", ws_url, data)
+            except Exception as _e:
+                logger.debug("ws framesent capture failed: %s", _e)
+
+        def _on_recv(payload):
+            try:
+                data = getattr(payload, "payload", payload)
+                _ws_record_frame("received", ws_url, data)
+            except Exception as _e:
+                logger.debug("ws framereceived capture failed: %s", _e)
+
+        def _on_close():
+            try:
+                ws_frames.append({
+                    "ws_url": ws_url,
+                    "direction": "close",
+                    "timestamp": round(
+                        time.monotonic() - nav_start_time if nav_start_time else 0,
+                        3,
+                    ),
+                })
+            except Exception:
+                pass
+
+        try:
+            ws.on("framesent", _on_sent)
+            ws.on("framereceived", _on_recv)
+            ws.on("close", _on_close)
+        except Exception as e:
+            logger.debug("Failed to attach WebSocket handlers: %s", e)
 
     async def _on_response(response):
         """Capture response metadata and body for text-based resources."""
@@ -497,6 +632,7 @@ async def _async_browser_download(
             # Register network interception handlers BEFORE navigation
             page.on("request", _on_request)
             page.on("response", _on_response)
+            page.on("websocket", _on_websocket)
 
             # Intercept IP-info lookups used by cloaking gates.
             await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
@@ -542,6 +678,7 @@ async def _async_browser_download(
                 # Re-register network handlers on new page
                 page.on("request", _on_request)
                 page.on("response", _on_response)
+                page.on("websocket", _on_websocket)
                 await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
 
                 nav_start_time = time.monotonic()
@@ -747,6 +884,23 @@ async def _async_browser_download(
                 )
             except Exception as e:
                 logger.debug("Failed to save requests.json: %s", e)
+
+            # Save WebSocket frames as JSONL (one object per line).
+            # Only written when at least one frame was captured so kits
+            # without any wss:// traffic don't get a stub file.
+            if ws_frames:
+                try:
+                    ws_path = dest_path / "websocket_frames.jsonl"
+                    with ws_path.open("w", encoding="utf-8") as fh:
+                        for frame in ws_frames:
+                            fh.write(json.dumps(frame, default=str))
+                            fh.write("\n")
+                    logger.info(
+                        "Captured %d WebSocket frame(s) → %s",
+                        len(ws_frames), ws_path.name,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to save websocket_frames.jsonl: %s", e)
 
             logger.info(
                 "Browser captured %d bytes from %s (final URL: %s, "
@@ -1034,6 +1188,13 @@ async def _detect_bot_gate(page) -> dict | None:
     """Detect common anti-bot verification gates on the page.
 
     Scans for:
+    0. Fake-captcha gates whose class/id tokens contain ``captcha`` or
+       related (``human-check``, ``human-verif``).  High-confidence
+       structural signal — legitimate sites don't name login-form
+       elements ``captcha-box``/``captcha-btn``.  Catches the AITM
+       cred-relay pattern (``#captcha-wrapper`` wrapping a click-to-
+       continue gate that unlocks a credential harvester + ``wss://``
+       relay).
     1. Buttons/links with verify/check text (traditional gates)
     2. Div/span checkbox-style clickables near verification text
        (e.g. "Prove you are human", "Verify you're not a bot")
@@ -1051,6 +1212,60 @@ async def _detect_bot_gate(page) -> dict | None:
                         if (cls) return el.tagName.toLowerCase() + '.' + CSS.escape(cls);
                     }
                     return el.tagName.toLowerCase();
+                }
+
+                function isVisible(el) {
+                    if (!el) return false;
+                    const cs = window.getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    if (parseFloat(cs.opacity) < 0.1) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }
+
+                // --- Strategy 0: class/id token signal for fake captcha gates ---
+                // Target class/id substrings that legitimate sites don't use
+                // on their login pages.  Attackers tend to copy open-source
+                // click-captcha templates that preserve these class names.
+                const captchaHost = document.querySelector(
+                    '[class*="captcha"], [id*="captcha"], '
+                    + '[class*="human-check"], [id*="human-check"], '
+                    + '[class*="human-verif"], [id*="human-verif"], '
+                    + '[class*="clickcaptcha"], [id*="clickcaptcha"]'
+                );
+                if (captchaHost && isVisible(captchaHost)) {
+                    // Prefer an explicit button/role inside the host.
+                    const explicitClickable = captchaHost.querySelector(
+                        'button, [role="button"], input[type="submit"], [onclick]'
+                    );
+                    // Else any cursor:pointer descendant — the whole gate
+                    // div sometimes IS the clickable (onclick attached via
+                    // addEventListener, which we can't see from the DOM).
+                    let fallback = null;
+                    if (!explicitClickable) {
+                        const descendants = captchaHost.querySelectorAll('*');
+                        for (const d of descendants) {
+                            if (!isVisible(d)) continue;
+                            const cs = window.getComputedStyle(d);
+                            if (cs.cursor === 'pointer') {
+                                fallback = d;
+                                break;
+                            }
+                        }
+                    }
+                    const target = explicitClickable || fallback || captchaHost;
+                    const text = (target.textContent || target.value || '')
+                        .trim().substring(0, 80);
+                    return {
+                        type: 'fake_captcha_gate',
+                        selector: makeSelector(target),
+                        text: text,
+                        tagName: target.tagName,
+                        hasAutoSubmitForm: !!document.querySelector(
+                            'form[method] input[type="hidden"]'
+                        ),
+                        host_selector: makeSelector(captchaHost),
+                    };
                 }
 
                 // --- Strategy 1: clickable elements with verify text ---
@@ -1342,7 +1557,10 @@ async def _attempt_bot_gate_bypass(page, timeout_remaining: float) -> bool:
         return True
 
     # Phase 3: Wait for resolution
-    if gate.get("hasAutoSubmitForm") or gate["type"] == "checkbox_gate":
+    if (
+        gate.get("hasAutoSubmitForm")
+        or gate["type"] in {"checkbox_gate", "fake_captcha_gate"}
+    ):
         await _wait_for_form_submit(page, pre_click_url, timeout_remaining)
     else:
         await _wait_for_gate_resolution(page, pre_click_url, timeout_remaining)

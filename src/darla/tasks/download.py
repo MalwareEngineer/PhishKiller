@@ -4,6 +4,7 @@ import logging
 import uuid
 from pathlib import Path
 
+from darla.analysis.oauth_ioc import extract_oauth_iocs, is_oauth_authorize_url
 from darla.analysis.redirect_tracker import RedirectTracker
 from darla.celery_app import celery_app
 from darla.config import get_settings
@@ -16,6 +17,42 @@ from darla.utils.http_client import download_file
 logger = logging.getLogger(__name__)
 
 
+def _dispatch_browser_render(db, parent_kit, kit_id: str, log_context: str) -> bool:
+    """Pre-create a browser_render child kit and dispatch the task.
+
+    Wraps the precreate-then-apply_async idiom used at every site that
+    might need a browser render (Cloudflare retry, JS loader, OAuth
+    authorize, 0-byte response, fast-path re-run).  Returns ``True`` if
+    a task was dispatched, ``False`` if the precreate guards tripped
+    (depth, max_variations, or per-investigation in-flight budget).
+
+    The pre-created child kit id is passed to ``browser_download_kit``
+    so that any task redelivery (worker SIGTERM, broker reconnect,
+    etc.) sees the existing child past ``DOWNLOADING`` and exits no-op
+    instead of starting a duplicate render — the orphan-child failure
+    mode that drove the queue explosion before idempotency landed.
+    """
+    from darla.tasks.browser import (
+        browser_download_kit,
+        precreate_browser_render_child_kit,
+    )
+
+    child, skip_reason = precreate_browser_render_child_kit(db, parent_kit)
+    if child is None:
+        logger.info(
+            "Kit %s: %s — browser render skipped (%s)",
+            kit_id, log_context, skip_reason,
+        )
+        return False
+    db.commit()
+    browser_download_kit.apply_async(args=[kit_id, str(child.id), 0])
+    logger.info(
+        "Kit %s: %s — dispatched browser render for child %s",
+        kit_id, log_context, child.id,
+    )
+    return True
+
+
 @celery_app.task(
     name="darla.tasks.download.download_kit",
     bind=True,
@@ -23,11 +60,21 @@ logger = logging.getLogger(__name__)
     default_retry_delay=30,
     queue="downloads",
 )
-def download_kit(self, kit_id: str) -> dict:
+def download_kit(
+    self, kit_id: str, dispatch_followups: bool = True,
+) -> dict:
     """Download a phishing kit archive from its source URL.
 
     Updates the kit record with file metadata and transitions
     status to DOWNLOADED or FAILED.
+
+    When ``dispatch_followups`` is ``False``, the task performs ONLY
+    the download step — no browser-render dispatch, no OAuth
+    browser-retry dispatch, no JS-loader fan-out.  Use this when
+    re-running download_kit during pipeline development or surgical
+    operator interventions to avoid generating cascade work.
+    Investigation-mode IOC + redirect-chain side-effects still happen
+    because they're part of *this* step, not follow-ups.
     """
     settings = get_settings()
     db = get_sync_db()
@@ -37,12 +84,48 @@ def download_kit(self, kit_id: str) -> dict:
         if not kit:
             raise ValueError(f"Kit {kit_id} not found")
 
-        # If file already exists on disk (e.g. manual upload), skip download
+        # ------------------------------------------------------------------
+        # OAuth authorize URLs (consent-phishing / AITM lures) — emit IOCs
+        # from the URL *before* anything else, including the
+        # "already have local file" fast-path.  Microsoft has been known
+        # to disable malicious apps, and attacker AITM infra goes up and
+        # down; neither should cost us the campaign fingerprint
+        # (client_id, scope, state, victim email) which is recoverable
+        # from the lure URL itself.  Running this up-front also means a
+        # re-dispatch on an already-downloaded kit still refreshes the
+        # IOCs (fields added to the extractor over time are picked up).
+        # ------------------------------------------------------------------
+        oauth_iocs = extract_oauth_iocs(kit.source_url)
+        if oauth_iocs:
+            try:
+                upsert_analysis_result(
+                    db,
+                    kit_id=kit.id,
+                    analysis_type=AnalysisType.OAUTH_AUTHORIZE,
+                    result_data=oauth_iocs,
+                )
+                logger.info(
+                    "Kit %s: recorded OAuth IOCs (client_id=%s, tenant=%s)",
+                    kit_id,
+                    oauth_iocs.get("client_id"),
+                    oauth_iocs.get("tenant"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Kit %s: failed to persist OAuth IOCs: %s", kit_id, exc,
+                )
+
+        # If file already exists on disk (e.g. manual upload or prior
+        # successful download), skip re-download but still dispatch the
+        # browser render for OAuth authorize URLs — httpx can't follow
+        # the JS handoff to login.live.com → attacker redirect_uri, so
+        # without the browser path we'd miss the AITM proxy content.
         if kit.local_path and Path(kit.local_path).exists():
             filepath = Path(kit.local_path)
             kit.file_size = filepath.stat().st_size
             kit.filename = filepath.name
             kit.status = KitStatus.DOWNLOADED
+            kit.error_message = None  # clear stale error from prior failed run
             suffix = filepath.suffix.lower()
             mime_map = {
                 ".zip": "application/zip",
@@ -61,12 +144,23 @@ def download_kit(self, kit_id: str) -> dict:
             kit.mime_type = mime_map.get(suffix, "application/octet-stream")
             db.commit()
             logger.info("Kit %s already has local file, skipping download", kit_id)
-            return {
+
+            result: dict = {
                 "kit_id": kit_id,
                 "status": "downloaded",
                 "filepath": kit.local_path,
                 "file_size": kit.file_size,
             }
+            if (
+                dispatch_followups
+                and settings.browser_download_enabled
+                and is_oauth_authorize_url(kit.source_url)
+            ):
+                if _dispatch_browser_render(
+                    db, kit, kit_id, "OAuth authorize URL (fast-path)",
+                ):
+                    result["browser_render_dispatched"] = True
+            return result
 
         kit.status = KitStatus.DOWNLOADING
         db.commit()
@@ -87,15 +181,22 @@ def download_kit(self, kit_id: str) -> dict:
                 str(download_dir),
                 max_size_mb=settings.max_kit_size_mb,
             )
-            if redirect_chain.total_redirects > 0:
-                redirect_chain_data = redirect_chain.to_dict()
-                # Store redirect chain as an analysis result
-                upsert_analysis_result(
-                    db,
-                    kit_id=kit.id,
-                    analysis_type=AnalysisType.REDIRECT_CHAIN,
-                    result_data=redirect_chain_data,
-                )
+            # Always persist the chain on investigation-mode runs — even
+            # a zero-hop result is authoritative data (replaces any stale
+            # chain from a previous run against different code).  This
+            # matters specifically for re-runs after redirect-extractor
+            # fixes: a now-correct "no JS redirect to follow" outcome
+            # would otherwise be masked by the old row claiming we
+            # followed a dead-end.
+            redirect_chain_data = redirect_chain.to_dict()
+            upsert_analysis_result(
+                db,
+                kit_id=kit.id,
+                analysis_type=AnalysisType.REDIRECT_CHAIN,
+                result_data=redirect_chain_data,
+            )
+            if redirect_chain.total_redirects == 0:
+                redirect_chain_data = None  # don't echo into result dict
         else:
             filepath, reason = download_file(
                 kit.source_url,
@@ -105,26 +206,31 @@ def download_kit(self, kit_id: str) -> dict:
 
         if not filepath:
             # Dispatch to browser worker for Cloudflare-protected pages
-            if settings.browser_download_enabled:
+            # and for OAuth authorize URLs (attacker-registered apps may
+            # be dead at the IdP but the stored ``source_url`` is often
+            # served via a browser-only JS handoff — we still want
+            # Camoufox to try it before declaring FAILED).
+            if dispatch_followups and settings.browser_download_enabled:
                 from darla.analysis.browser_downloader import (
                     is_cloudflare_challenge,
                 )
 
-                if is_cloudflare_challenge(reason):
-                    logger.info(
-                        "Kit %s: httpx failed (%s), dispatching to browser worker",
-                        kit_id, reason,
-                    )
-                    from darla.tasks.browser import browser_download_kit
-
-                    browser_download_kit.apply_async(args=[kit_id])
-                    result = {
-                        "kit_id": kit_id,
-                        "status": "browser_retry",
-                    }
-                    if redirect_chain_data:
-                        result["redirect_chain"] = redirect_chain_data
-                    return result
+                should_browser_retry = (
+                    is_cloudflare_challenge(reason)
+                    or is_oauth_authorize_url(kit.source_url)
+                )
+                if should_browser_retry:
+                    if _dispatch_browser_render(
+                        db, kit, kit_id,
+                        f"httpx failed ({reason}), retrying via browser",
+                    ):
+                        result = {
+                            "kit_id": kit_id,
+                            "status": "browser_retry",
+                        }
+                        if redirect_chain_data:
+                            result["redirect_chain"] = redirect_chain_data
+                        return result
 
         if not filepath:
             kit.status = KitStatus.FAILED
@@ -144,17 +250,24 @@ def download_kit(self, kit_id: str) -> dict:
         # returned nothing (common with bot-gated pages).  Dispatch to
         # browser worker if enabled, otherwise mark FAILED.
         if kit.file_size == 0:
-            if settings.browser_download_enabled:
-                logger.info(
-                    "Kit %s: 0-byte response, dispatching to browser worker",
-                    kit_id,
+            if dispatch_followups and settings.browser_download_enabled:
+                if _dispatch_browser_render(
+                    db, kit, kit_id, "0-byte response",
+                ):
+                    return {
+                        "kit_id": kit_id,
+                        "status": "browser_retry",
+                    }
+                # If precreate guard tripped, fall through to FAILED.
+                kit.status = KitStatus.FAILED
+                kit.error_message = (
+                    "Empty response (0 bytes); browser retry suppressed by guard"
                 )
-                from darla.tasks.browser import browser_download_kit
-
-                browser_download_kit.apply_async(args=[kit_id])
+                db.commit()
                 return {
                     "kit_id": kit_id,
-                    "status": "browser_retry",
+                    "status": "failed",
+                    "error": "empty_response",
                 }
             else:
                 kit.status = KitStatus.FAILED
@@ -167,6 +280,10 @@ def download_kit(self, kit_id: str) -> dict:
                 }
 
         kit.status = KitStatus.DOWNLOADED
+        # Clear any stale error from a prior failed run — this kit is
+        # live now, and a lingering "HTTP 404" next to a DOWNLOADED
+        # status misleads operators (see the Azure OAuth re-run case).
+        kit.error_message = None
 
         # Guess MIME type
         suffix = filepath.suffix.lower()
@@ -204,27 +321,23 @@ def download_kit(self, kit_id: str) -> dict:
 
         # Tier A: JS loader / embedded challenge detection
         # → dispatch browser render in parallel with analysis chain
-        if settings.browser_download_enabled:
+        if dispatch_followups and settings.browser_download_enabled:
             is_html_like = (
                 suffix in (".html", ".htm", ".bin", "")
                 or kit.mime_type == "application/octet-stream"
             )
             if is_html_like:
-                dispatch_browser = False
+                dispatch_reason: str | None = None
 
                 from darla.analysis.browser_downloader import is_js_loader
 
                 if is_js_loader(filepath):
-                    logger.info(
-                        "Kit %s: JS loader detected, dispatching browser render",
-                        kit_id,
-                    )
-                    dispatch_browser = True
+                    dispatch_reason = "JS loader detected"
 
                 # Tier A.5: Cloudflare Turnstile/challenge in HTTP 200
                 # body — httpx got the page but it needs a browser to
                 # solve the embedded challenge.
-                if not dispatch_browser:
+                if dispatch_reason is None:
                     try:
                         body = filepath.read_text(
                             encoding="utf-8", errors="ignore",
@@ -235,20 +348,34 @@ def download_kit(self, kit_id: str) -> dict:
                             "data-sitekey",
                         ]
                         if any(m in body for m in _CF_BODY_MARKERS):
-                            logger.info(
-                                "Kit %s: Cloudflare Turnstile in response body, "
-                                "dispatching browser render",
-                                kit_id,
+                            dispatch_reason = (
+                                "Cloudflare Turnstile in response body"
                             )
-                            dispatch_browser = True
                     except Exception:
                         pass
 
-                if dispatch_browser:
-                    from darla.tasks.browser import browser_download_kit
+                if dispatch_reason is not None:
+                    if _dispatch_browser_render(
+                        db, kit, kit_id, dispatch_reason,
+                    ):
+                        result["browser_render_dispatched"] = True
 
-                    browser_download_kit.apply_async(args=[kit_id])
-                    result["browser_render_dispatched"] = True
+        # Tier A.6: OAuth authorize URL — the body we downloaded is an
+        # IdP handoff scaffold (Microsoft's 200 with JS that hands off to
+        # login.live.com, which then 302s to the attacker's registered
+        # redirect_uri and into an AITM proxy).  Pure-HTTP can't follow
+        # that chain — the JS handoff isn't a standard `location.replace`
+        # we can regex.  Always dispatch browser render for these URLs.
+        if (
+            dispatch_followups
+            and settings.browser_download_enabled
+            and is_oauth_authorize_url(kit.source_url)
+            and not result.get("browser_render_dispatched")
+        ):
+            if _dispatch_browser_render(
+                db, kit, kit_id, "OAuth authorize URL",
+            ):
+                result["browser_render_dispatched"] = True
 
         return result
 

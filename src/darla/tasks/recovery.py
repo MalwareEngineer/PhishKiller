@@ -35,10 +35,26 @@ def recover_stuck_kits(self, timeout_minutes: int = 30) -> dict:
     try:
         cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
 
+        # Exclude kits that ``recover_chain_cursors`` is responsible
+        # for — those are DOWNLOADED|ANALYZING with a chain_cursor set,
+        # and the cursor-based path can resume them in-place without
+        # re-downloading or re-triggering browser-render fanout.
+        # Without this exclusion the two jobs would race at the 30-min
+        # mark and double-dispatch the same kit.
+        from sqlalchemy import and_, not_
+
         stuck_kits = db.scalars(
             select(Kit).where(
                 Kit.status.in_(STUCK_STATUSES),
                 Kit.updated_at < cutoff,
+                not_(
+                    and_(
+                        Kit.status.in_(
+                            [KitStatus.DOWNLOADED, KitStatus.ANALYZING]
+                        ),
+                        Kit.chain_cursor.is_not(None),
+                    )
+                ),
             )
         ).all()
 
@@ -231,9 +247,126 @@ def recover_stuck_investigations(self, timeout_minutes: int = 60) -> dict:
         db.close()
 
 
+@celery_app.task(
+    name="darla.tasks.recovery.recover_chain_cursors",
+    bind=True,
+    queue="celery",
+    max_retries=0,
+)
+def recover_chain_cursors(self, timeout_minutes: int = 10) -> dict:
+    """Resume post-download analysis chains stalled at a known cursor.
+
+    A kit qualifies for cursor-based recovery when ALL of:
+
+      * status is ``DOWNLOADED`` (chain not yet completed via
+        ``finalize_kit``) or ``ANALYZING`` (chain in progress)
+      * ``chain_cursor`` is set (chain started past download — we know
+        where to resume)
+      * ``updated_at`` is older than ``timeout_minutes`` ago (the chain
+        actually stalled rather than being mid-step)
+
+    For each match we build a partial chain starting at
+    ``post_download_steps_from_cursor(kit.chain_cursor)`` and dispatch
+    it with a synthetic ``prev_result`` reconstructed from the kit's
+    persisted state (``local_path``, ``file_size``, ``sha256``).  This
+    is much cheaper than the existing ``recover_stuck_kits`` flow,
+    which restarts from ``download_kit`` and re-does the entire chain
+    — including re-triggering browser-render fanout for OAuth/JS
+    loaders that already had their browser children rendered.
+
+    Idempotency note: every chain step is required to be idempotent
+    against re-execution (we use ``upsert_analysis_result`` everywhere)
+    so resuming AT the cursor (rather than after it) is safe.  Worst
+    case the cursor's step runs twice and overwrites its own analysis
+    result with identical data.
+    """
+    from pathlib import Path
+
+    from celery import chain as celery_chain
+
+    from darla.tasks.analysis import (
+        _post_download_steps,
+        post_download_steps_from_cursor,
+    )
+
+    db = get_sync_db()
+    try:
+        cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
+        stuck = db.scalars(
+            select(Kit).where(
+                Kit.status.in_([KitStatus.DOWNLOADED, KitStatus.ANALYZING]),
+                Kit.updated_at < cutoff,
+                Kit.chain_cursor.is_not(None),
+            )
+        ).all()
+
+        if not stuck:
+            logger.info(
+                "[recovery] No stalled chains found (cutoff=%s)",
+                cutoff.isoformat(),
+            )
+            return {"recovered": 0}
+
+        recovered = 0
+        for kit in stuck:
+            steps = post_download_steps_from_cursor(kit.chain_cursor)
+            if not steps:
+                logger.warning(
+                    "[recovery] Kit %s has unknown chain_cursor=%s, "
+                    "falling back to recover_stuck_kits semantics",
+                    kit.id, kit.chain_cursor,
+                )
+                continue
+
+            # Reconstruct the chain prev_result dict from persisted state.
+            # The downstream steps tolerate missing optional keys
+            # (compute_hashes returns hashed=True if already done, etc.).
+            extract_dir = (
+                str(Path(kit.local_path).parent) if kit.local_path else None
+            )
+            prev_result = {
+                "kit_id": str(kit.id),
+                "status": "downloaded",
+                "filepath": kit.local_path,
+                "file_size": kit.file_size,
+                "sha256": kit.sha256,
+                "hashed": bool(kit.sha256),
+                "extract_dir": extract_dir,
+            }
+            if kit.parent_kit_id:
+                prev_result["parent_kit_id"] = str(kit.parent_kit_id)
+
+            # First step takes the dict via .si() (immutable signature
+            # binds the prev_result and ignores any chained input).
+            first_step = steps[0].clone(args=(prev_result,), immutable=True)
+            celery_chain(first_step, *steps[1:]).apply_async()
+
+            recovered += 1
+            logger.info(
+                "[recovery] Resumed kit %s from chain_cursor=%s (%d "
+                "remaining steps)",
+                kit.id, kit.chain_cursor, len(steps),
+            )
+
+        db.commit()
+        logger.info("[recovery] Resumed %d stalled chains", recovered)
+        return {"recovered": recovered}
+
+    except Exception:
+        db.rollback()
+        logger.exception("[recovery] recover_chain_cursors failed")
+        raise
+    finally:
+        db.close()
+
+
 @worker_ready.connect
 def on_worker_ready(sender, **kwargs):
     """Trigger recovery as soon as the worker comes online."""
     logger.info("[recovery] Worker ready — dispatching stuck-kit recovery (5min cutoff)")
     recover_stuck_kits.delay(timeout_minutes=5)
     recover_stuck_investigations.delay(timeout_minutes=5)
+    # Cursor-based chain resume — picks up kits that completed the
+    # download step but stalled mid-analysis.  Cheaper than full
+    # recover_stuck_kits because it skips work that already finished.
+    recover_chain_cursors.delay(timeout_minutes=5)

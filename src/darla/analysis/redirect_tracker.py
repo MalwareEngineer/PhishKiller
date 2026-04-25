@@ -8,7 +8,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -18,6 +18,43 @@ from darla.utils.http_client import _extract_filename, _random_headers
 logger = logging.getLogger(__name__)
 
 MAX_REDIRECTS = 20
+
+# Same-host JS targets that are client-side *fallback* handlers rather
+# than real navigations.  Microsoft's authorize endpoint serves a 200
+# HTML scaffold with:
+#   * a real MSA handoff URL (``https://login.live.com/...``) used by JS
+#   * a ``location.replace("/error.aspx?err=NNN")`` safety-net that only
+#     fires if the JS handoff fails
+# Our original extractor picked the error.aspx target first and followed
+# it into a dead-end 404.  Any host/path pair listed here is treated as
+# "don't follow in pure-HTTP mode" — the browser path will execute the
+# real JS.
+_DEAD_END_SAMEHOST_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("login.microsoftonline.com", re.compile(r"^/error\.aspx")),
+    ("login.microsoftonline.com", re.compile(r"^/nomatch")),
+    ("login.live.com", re.compile(r"^/err\.srf")),
+    ("login.live.com", re.compile(r"^/nomatch")),
+)
+
+
+def _is_dead_end_samehost(current_url: str, candidate_url: str) -> bool:
+    """Return True if ``candidate_url`` is a known client-side fallback
+    handler on the same host as ``current_url`` — a navigation we should
+    NOT follow in pure-HTTP mode because it displaces the real flow.
+    """
+    try:
+        cur = urlparse(current_url)
+        cand = urlparse(candidate_url)
+    except Exception:
+        return False
+    # Only applies when target is same-host (relative or explicit).
+    cand_host = cand.hostname or cur.hostname
+    if cand_host != cur.hostname:
+        return False
+    for host, path_re in _DEAD_END_SAMEHOST_PATTERNS:
+        if cur.hostname == host and path_re.match(cand.path or ""):
+            return True
+    return False
 
 
 @dataclass
@@ -56,17 +93,34 @@ def _extract_js_redirect(body: str, base_url: str) -> str | None:
 
     Returns the absolute URL if a client-side redirect is found, else None.
     Only considers the first 200 KB of the body to avoid scanning huge files.
+
+    When a page contains multiple candidate targets (common on IdP
+    handoff pages like ``login.microsoftonline.com/*/oauth2/v2.0/authorize``
+    which ship both a real cross-host MSA redirect and a same-host
+    ``/error.aspx`` fallback), we:
+
+      1. filter out known same-host dead-end fallback handlers
+         (see ``_DEAD_END_SAMEHOST_PATTERNS``),
+      2. prefer a cross-host candidate over a same-host one,
+      3. fall back to the first surviving candidate in body order.
+
+    This fixes the Azure OAuth AITM case where an attacker-registered
+    MSA app would redirect the victim via ``login.live.com`` to an AITM
+    proxy, but our old "first match wins" logic followed a client-side
+    ``location.replace('/error.aspx?err=504')`` safety-net into a
+    dead-end 404 — making live kits look dead.
     """
     body = body[:200_000]
 
+    candidates: list[str] = []
+
     # 1. <meta http-equiv="refresh" content="N; url=...">
-    meta_match = re.search(
+    for m in re.finditer(
         r'<meta\s[^>]*http-equiv\s*=\s*["\']?refresh["\']?\s[^>]*'
         r'content\s*=\s*["\']?\s*\d+\s*;\s*url\s*=\s*([^"\'>\s]+)',
         body, re.IGNORECASE,
-    )
-    if meta_match:
-        return urljoin(base_url, meta_match.group(1).strip())
+    ):
+        candidates.append(urljoin(base_url, m.group(1).strip()))
 
     # 2. window.location / location.href / location.replace / location.assign
     js_patterns = [
@@ -76,8 +130,7 @@ def _extract_js_redirect(body: str, base_url: str) -> str | None:
         r'(?:window\.)?location\.(?:replace|assign)\s*\(\s*["\']([^"\']+)["\']\s*\)',
     ]
     for pattern in js_patterns:
-        m = re.search(pattern, body, re.IGNORECASE)
-        if m:
+        for m in re.finditer(pattern, body, re.IGNORECASE):
             target = m.group(1).strip()
             # Ignore self-referencing patterns like location.href = location.href
             if "location" in target.lower():
@@ -85,9 +138,46 @@ def _extract_js_redirect(body: str, base_url: str) -> str | None:
             # Ignore javascript: URIs and anchors
             if target.startswith(("javascript:", "#")):
                 continue
-            return urljoin(base_url, target)
+            candidates.append(urljoin(base_url, target))
 
-    return None
+    if not candidates:
+        return None
+
+    # De-duplicate while preserving first-seen order (body order matters
+    # as a tiebreaker for same-class candidates).
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+
+    # Drop known same-host dead-end fallback handlers.
+    live = [c for c in unique if not _is_dead_end_samehost(base_url, c)]
+    if not live:
+        # Every candidate was a dead-end fallback (e.g. the only JS
+        # target was ``/error.aspx?err=504``).  Treat the current page
+        # AS the final page — don't follow into a guaranteed 404.
+        return None
+
+    # Prefer cross-host candidates over same-host ones.  Cross-host
+    # navigation on an IdP page is the real handoff; same-host is
+    # almost always some internal shuffle we don't need to follow.
+    try:
+        base_host = urlparse(base_url).hostname
+    except Exception:
+        base_host = None
+
+    def _is_cross_host(u: str) -> bool:
+        try:
+            return urlparse(u).hostname not in (None, "", base_host)
+        except Exception:
+            return False
+
+    cross_host = [c for c in live if _is_cross_host(c)]
+    if cross_host:
+        return cross_host[0]
+    return live[0]
 
 
 class RedirectTracker:

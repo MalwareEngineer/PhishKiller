@@ -6,7 +6,21 @@ from darla.celery_app import celery_app
 
 # Periodic task schedule
 celery_app.conf.beat_schedule = {
+    "recover-chain-cursors-every-5m": {
+        # Cheap cursor-based resume: picks up kits stalled mid-analysis
+        # and continues from their last completed step.  Runs first /
+        # most often because it avoids redoing the download step or
+        # re-triggering browser-render fanout.
+        "task": "darla.tasks.recovery.recover_chain_cursors",
+        "schedule": crontab(minute="*/5"),
+        "args": [10],
+        "options": {"queue": "celery"},
+    },
     "recover-stuck-kits-every-15m": {
+        # Heavier recovery: resets kits to PENDING and re-runs the full
+        # chain.  Catches kits without a cursor (failed before the
+        # post-download chain even started) and stuck DOWNLOADING /
+        # ANALYZING kits that the cursor-based path can't help.
         "task": "darla.tasks.recovery.recover_stuck_kits",
         "schedule": crontab(minute="*/15"),
         "args": [30],

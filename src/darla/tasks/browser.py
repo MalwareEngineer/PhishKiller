@@ -35,6 +35,137 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Pre-create helper for browser-render children
+# ---------------------------------------------------------------------------
+
+def precreate_browser_render_child_kit(
+    db, parent_kit: Kit,
+) -> tuple[Kit | None, str | None]:
+    """Apply browser-render guards and create a child kit row.
+
+    Caller must commit/rollback the transaction.  The child row is
+    created in ``DOWNLOADING`` status and the investigation counters
+    are incremented atomically — no orphan rows on guard failure.
+
+    Returns ``(child_kit, None)`` on success, or ``(None, reason)``
+    when one of the guards trips:
+
+      * ``max_depth``       — beyond ``Investigation.max_depth`` /
+                              ``settings.chain_max_depth``
+      * ``max_variations``  — beyond ``browser_render_max_variations``
+                              for this investigation
+      * ``inflight_budget`` — already at
+                              ``browser_render_max_inflight_per_investigation``
+                              concurrent renders for this investigation
+
+    The pre-create-then-pass-id flow exists so that Celery task
+    redeliveries (after a worker SIGTERM, prefetch eviction, etc.)
+    can be made idempotent: the redelivered task sees the child row
+    already past ``DOWNLOADING`` and exits no-op instead of starting
+    a duplicate render.
+    """
+    settings = get_settings()
+
+    # Depth guard — refuse to create another child beyond max_depth
+    if parent_kit.investigation_id:
+        from darla.models.investigation import Investigation
+
+        investigation = db.query(Investigation).filter(
+            Investigation.id == parent_kit.investigation_id
+        ).first()
+        if investigation:
+            max_depth = min(investigation.max_depth, settings.chain_max_depth)
+            if parent_kit.chain_depth >= max_depth:
+                return None, "max_depth"
+
+    # Variation cap — limit total browser_render children per investigation
+    if parent_kit.investigation_id:
+        browser_child_count = db.query(func.count(Kit.id)).filter(
+            Kit.investigation_id == parent_kit.investigation_id,
+            Kit.discovery_method == "browser_render",
+        ).scalar()
+        if browser_child_count >= settings.browser_render_max_variations:
+            return None, "max_variations"
+
+    # In-flight budget — per-investigation cap on concurrent renders
+    allowed, _ = _can_dispatch_browser_render(
+        db,
+        parent_kit.investigation_id,
+        settings.browser_render_max_inflight_per_investigation,
+    )
+    if not allowed:
+        return None, "inflight_budget"
+
+    child_kit = Kit(
+        source_url=parent_kit.source_url,
+        source_feed=parent_kit.source_feed,
+        status=KitStatus.DOWNLOADING,
+        parent_kit_id=parent_kit.id,
+        investigation_id=parent_kit.investigation_id,
+        chain_depth=parent_kit.chain_depth + 1,
+        discovery_method="browser_render",
+    )
+    db.add(child_kit)
+    db.flush()  # populate child_kit.id
+
+    if parent_kit.investigation_id:
+        from darla.models.investigation import Investigation
+
+        investigation = db.query(Investigation).filter(
+            Investigation.id == parent_kit.investigation_id
+        ).first()
+        if investigation:
+            investigation.total_kits += 1
+            new_depth = parent_kit.chain_depth + 1
+            if new_depth > investigation.total_depth_reached:
+                investigation.total_depth_reached = new_depth
+
+    return child_kit, None
+
+
+# ---------------------------------------------------------------------------
+# Dispatch throttle — per-investigation in-flight budget
+# ---------------------------------------------------------------------------
+
+def _can_dispatch_browser_render(
+    db, investigation_id, max_inflight: int,
+) -> tuple[bool, int]:
+    """Return ``(allowed, current_inflight)`` for a new browser_render
+    dispatch on this investigation.
+
+    "In-flight" means a child kit with ``discovery_method='browser_render'``
+    in ``DOWNLOADING`` status — it's currently being rendered by some
+    worker.  Tasks that have completed (ANALYZED) or failed are NOT
+    counted; only actively-occupying-a-worker work counts toward the
+    budget.
+
+    With a single Camoufox worker handling the whole queue, an
+    adversarial AITM with relay rotation can dispatch up to
+    ``browser_render_max_variations`` (now 10) renders in succession,
+    starving any other investigation hitting the same worker.  This
+    cap means no single investigation can hold more than
+    ``max_inflight`` browser tasks at once; the rest queue locally on
+    the parent's chain and wait for slots to free up.
+
+    When ``investigation_id`` is None (pre-investigation root kit) the
+    check is a no-op — root kits are by definition the first dispatch
+    in their chain so the budget can't be busy yet.
+    """
+    if investigation_id is None:
+        return True, 0
+    inflight = (
+        db.query(func.count(Kit.id))
+        .filter(
+            Kit.investigation_id == investigation_id,
+            Kit.discovery_method == "browser_render",
+            Kit.status == KitStatus.DOWNLOADING,
+        )
+        .scalar()
+    ) or 0
+    return inflight < max_inflight, inflight
+
+
+# ---------------------------------------------------------------------------
 # Dedup helpers
 # ---------------------------------------------------------------------------
 
@@ -90,24 +221,91 @@ def _content_matches(
     return False, ""
 
 
+def _find_ancestor_match(
+    child_kit: Kit,
+    ancestors: list[Kit],
+    threshold: int,
+) -> tuple[Kit | None, str]:
+    """Check whether *child_kit* is stuck at the same gate as an ancestor.
+
+    Returns ``(matched_ancestor, reason)`` or ``(None, "")``.
+
+    Two signals count as a stuck-at-gate match:
+      1. **Rendered-URL equality vs a browser_render ancestor.**  If we
+         just browser-rendered the exact URL a browser_render ancestor
+         also rendered, we are looping on the same gate.  Content-hash
+         comparison misses this because cloaking gates (Cloudflare
+         Turnstile, hCaptcha) inject per-session nonces so every render
+         is byte-different even though semantically identical.  We only
+         apply this check against ``browser_render`` ancestors so the
+         *first* browser render of an httpx parent is not falsely
+         suppressed (child.source_url typically equals parent.source_url
+         on a first render with no redirect).
+      2. **Content similarity** — TLSH distance below *threshold* or an
+         exact SHA256 match (fallback for tiny files).
+    """
+    for ancestor in ancestors:
+        if (
+            ancestor.discovery_method == "browser_render"
+            and child_kit.source_url
+            and ancestor.source_url
+            and child_kit.source_url == ancestor.source_url
+        ):
+            return ancestor, (
+                f"Same rendered URL as ancestor {ancestor.id} at depth "
+                f"{ancestor.chain_depth} — stuck at gate"
+            )
+        matched, detail = _content_matches(
+            child_kit.tlsh, child_kit.sha256,
+            ancestor.tlsh, ancestor.sha256,
+            threshold,
+        )
+        if matched:
+            return ancestor, (
+                f"Content matches ancestor {ancestor.id} at depth "
+                f"{ancestor.chain_depth} ({detail}) — stuck at gate"
+            )
+    return None, ""
+
+
 @celery_app.task(
     name="darla.tasks.browser.browser_download_kit",
     bind=True,
     max_retries=0,
+    # Override the worker-level ``task_acks_late=True`` for this task.
+    # Browser renders are long (60-150s) and not safely retriable —
+    # if the worker dies, redelivery would create a duplicate child
+    # kit (the original is still mid-render or already FAILED).  Ack
+    # immediately on receipt; the recovery beat job will pick up
+    # stuck DOWNLOADING child kits.
+    acks_late=False,
     queue="browser",
 )
-def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
+def browser_download_kit(
+    self,
+    kit_id: str,
+    child_kit_id: str | None = None,
+    consecutive_dupes: int = 0,
+) -> dict:
     """Download a kit using the Camoufox stealth browser.
 
-    Called by download_kit when it detects a Cloudflare challenge.
-    Creates a new child kit record linked to the parent (httpx) kit,
-    then dispatches the post-download analysis chain for the child.
-    The parent kit is marked ANALYZED with its original JS loader content
-    preserved — both artifacts exist as separate linked entities.
+    Called by ``download_kit`` (and self-redispatched for relay-pool
+    enumeration).  Creates a child kit linked to the httpx-downloaded
+    parent and dispatches the post-download analysis chain for it.
 
-    Re-dispatches itself after each render to enumerate relay domain pools.
-    Stops after ``browser_render_pool_stop`` consecutive TLSH duplicates
-    (pool exhausted) or when ``browser_render_max_variations`` is reached.
+    ``child_kit_id`` is the **idempotency handle**.  Modern callers
+    pre-create the child kit via :func:`precreate_browser_render_child_kit`
+    in their own transaction and pass the resulting id here.  On task
+    redelivery (worker SIGTERM, broker reconnect, etc.) the redelivered
+    instance sees the child already past ``DOWNLOADING`` and exits
+    no-op — preventing the duplicate-child orphans we used to get on
+    every worker rebuild.  When ``None`` (legacy callers / direct
+    operator invocations), the task pre-creates the child itself for
+    backward compatibility.
+
+    Stops the relay-pool enumeration loop after
+    ``browser_render_pool_stop`` consecutive TLSH duplicates (pool
+    exhausted) or when ``browser_render_max_variations`` is reached.
     """
     settings = get_settings()
     db = get_sync_db()
@@ -129,72 +327,69 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
                 "consecutive_dupes": consecutive_dupes,
             }
 
-        # Depth guard — refuse to create another child beyond max_depth
-        if parent_kit.investigation_id:
-            from darla.models.investigation import Investigation
-
-            investigation = db.query(Investigation).filter(
-                Investigation.id == parent_kit.investigation_id
+        # ------------------------------------------------------------------
+        # Idempotency: resolve or create the child kit.
+        # ------------------------------------------------------------------
+        if child_kit_id is not None:
+            child_kit = db.query(Kit).filter(
+                Kit.id == uuid.UUID(child_kit_id)
             ).first()
-            if investigation:
-                max_depth = min(investigation.max_depth, settings.chain_max_depth)
-                if parent_kit.chain_depth >= max_depth:
-                    logger.info(
-                        "Kit %s at depth %d (max %d), skipping browser render",
-                        kit_id, parent_kit.chain_depth, max_depth,
-                    )
-                    return {"kit_id": kit_id, "status": "skipped", "reason": "max_depth"}
-
-        # Variation cap — limit total browser_render children per investigation
-        if parent_kit.investigation_id:
-            browser_child_count = db.query(func.count(Kit.id)).filter(
-                Kit.investigation_id == parent_kit.investigation_id,
-                Kit.discovery_method == "browser_render",
-            ).scalar()
-            if browser_child_count >= settings.browser_render_max_variations:
+            if child_kit is None:
+                logger.warning(
+                    "Kit %s: pre-created child %s vanished — exiting",
+                    kit_id, child_kit_id,
+                )
+                return {
+                    "kit_id": kit_id,
+                    "child_kit_id": child_kit_id,
+                    "status": "missing_child",
+                }
+            if child_kit.parent_kit_id != parent_kit.id:
+                logger.error(
+                    "Kit %s: child %s has parent %s, not %s — refusing to render",
+                    kit_id, child_kit_id, child_kit.parent_kit_id, parent_kit.id,
+                )
+                return {
+                    "kit_id": kit_id,
+                    "child_kit_id": child_kit_id,
+                    "status": "child_parent_mismatch",
+                }
+            if child_kit.status != KitStatus.DOWNLOADING:
+                # Redelivery — a previous execution of this task already
+                # completed and moved the child past DOWNLOADING.  Exit
+                # cleanly so we don't double-render.
                 logger.info(
-                    "Investigation %s has %d browser_render kits (max %d), "
-                    "skipping",
-                    parent_kit.investigation_id, browser_child_count,
-                    settings.browser_render_max_variations,
+                    "Kit %s: child %s already %s — task redelivery, exiting",
+                    kit_id, child_kit_id, child_kit.status,
+                )
+                return {
+                    "kit_id": kit_id,
+                    "child_kit_id": child_kit_id,
+                    "status": "already_handled",
+                    "child_status": str(child_kit.status),
+                }
+        else:
+            # Legacy / direct invocation — pre-create the child here.
+            child_kit, skip_reason = precreate_browser_render_child_kit(
+                db, parent_kit,
+            )
+            if child_kit is None:
+                logger.info(
+                    "Kit %s: skipping browser render (%s)",
+                    kit_id, skip_reason,
                 )
                 return {
                     "kit_id": kit_id,
                     "status": "skipped",
-                    "reason": "max_variations",
+                    "reason": skip_reason,
                 }
-
-        logger.info(
-            "Browser downloading kit %s from %s", kit_id, parent_kit.source_url,
-        )
-
-        # Create the child kit record before downloading
-        child_kit = Kit(
-            source_url=parent_kit.source_url,
-            source_feed=parent_kit.source_feed,
-            status=KitStatus.DOWNLOADING,
-            parent_kit_id=parent_kit.id,
-            investigation_id=parent_kit.investigation_id,
-            chain_depth=parent_kit.chain_depth + 1,
-            discovery_method="browser_render",
-        )
-        db.add(child_kit)
-        db.flush()  # Get child ID
 
         child_id = str(child_kit.id)
 
-        # Update investigation counters if this kit belongs to one
-        if parent_kit.investigation_id:
-            from darla.models.investigation import Investigation
-
-            investigation = db.query(Investigation).filter(
-                Investigation.id == parent_kit.investigation_id
-            ).first()
-            if investigation:
-                investigation.total_kits += 1
-                new_depth = parent_kit.chain_depth + 1
-                if new_depth > investigation.total_depth_reached:
-                    investigation.total_depth_reached = new_depth
+        logger.info(
+            "Browser downloading kit %s (child %s) from %s",
+            kit_id, child_id, parent_kit.source_url,
+        )
 
         db.commit()
 
@@ -268,6 +463,17 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
             parent_kit.status = KitStatus.ANALYZED
 
         # --- Compute hashes ---
+        # IMPORTANT: we assign hashes to ``child_kit`` but must not let
+        # SQLAlchemy autoflush them during the dedup queries below.  The
+        # ``kits.sha256`` column has a UNIQUE index (``ix_kits_sha256``);
+        # if two AITM siblings render identical attacker pages (e.g. the
+        # 5 Azure OAuth kits all land on the same ``solarworldbotswana.
+        # co.bw/.media/`` JS snippet → identical 1044 bytes → identical
+        # sha256), a premature flush fires UniqueViolation *before* our
+        # dedup logic gets a chance to mark the duplicate.  Defer flush
+        # until we know whether this child is a duplicate — if it is,
+        # we null out the hashes so the UNIQUE constraint isn't tripped
+        # on commit.
         child_hashes = do_hash(filepath)
         child_kit.sha256 = child_hashes.sha256
         child_kit.md5 = child_hashes.md5
@@ -284,47 +490,70 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
         dup_reason: str | None = None
         stuck_at_gate = False
 
-        ancestors = _walk_ancestor_chain(db, child_kit, settings.chain_max_depth)
-        for ancestor in ancestors:
-            matched, detail = _content_matches(
-                child_hashes.tlsh, child_hashes.sha256,
-                ancestor.tlsh, ancestor.sha256,
-                threshold,
+        with db.no_autoflush:
+            ancestors = _walk_ancestor_chain(
+                db, child_kit, settings.chain_max_depth,
             )
-            if matched:
-                dup_of = str(ancestor.id)
-                dup_reason = (
-                    f"Content matches ancestor {ancestor.id} at depth "
-                    f"{ancestor.chain_depth} ({detail}) — stuck at gate"
-                )
+            matched_ancestor, match_reason = _find_ancestor_match(
+                child_kit, ancestors, threshold,
+            )
+            if matched_ancestor is not None:
+                dup_of = str(matched_ancestor.id)
+                dup_reason = match_reason
                 stuck_at_gate = True
-                break
 
-        # --- Direct sibling dedup (relay pool exhaustion) ---
-        # Compare against children of the same parent only — never across
-        # depths or different parent chains.
-        if not dup_of:
-            siblings = _get_direct_siblings(db, child_kit)
-            for sibling in siblings:
-                matched, detail = _content_matches(
-                    child_hashes.tlsh, child_hashes.sha256,
-                    sibling.tlsh, sibling.sha256,
-                    threshold,
-                )
-                if matched:
-                    dup_of = str(sibling.id)
-                    dup_reason = (
-                        f"Sibling duplicate of kit {sibling.id} ({detail})"
+            # --- Direct sibling dedup (relay pool exhaustion) ---
+            # Compare against children of the same parent only — never
+            # across depths or different parent chains.
+            if not dup_of:
+                siblings = _get_direct_siblings(db, child_kit)
+                for sibling in siblings:
+                    matched, detail = _content_matches(
+                        child_hashes.tlsh, child_hashes.sha256,
+                        sibling.tlsh, sibling.sha256,
+                        threshold,
                     )
-                    break
+                    if matched:
+                        dup_of = str(sibling.id)
+                        dup_reason = (
+                            f"Sibling duplicate of kit {sibling.id} ({detail})"
+                        )
+                        break
+
+            # --- Cross-investigation SHA256 dedup ---
+            # Catches the AITM case where sibling investigations all
+            # render the same attacker asset (identical bytes) but
+            # belong to different parent chains, so the ancestor + sibling
+            # walks don't reach them.  Without this check, the unique
+            # index would fire on commit.
+            if not dup_of and child_hashes.sha256:
+                existing = (
+                    db.query(Kit)
+                    .filter(
+                        Kit.sha256 == child_hashes.sha256,
+                        Kit.id != child_kit.id,
+                    )
+                    .first()
+                )
+                if existing is not None:
+                    dup_of = str(existing.id)
+                    dup_reason = (
+                        f"Cross-chain SHA256 duplicate of kit {existing.id}"
+                    )
 
         # --- Apply dedup result ---
         # Duplicates are marked FAILED with duplicate_of_kit_id set.
-        # Files stay on disk — nothing is deleted.
+        # Files stay on disk — nothing is deleted.  We clear the hash
+        # columns on the duplicate row so the UNIQUE constraint on
+        # ``ix_kits_sha256`` isn't violated by the pending UPDATE.
         if dup_of:
             child_kit.status = KitStatus.FAILED
             child_kit.error_message = dup_reason
             child_kit.duplicate_of_kit_id = uuid.UUID(dup_of)
+            child_kit.sha256 = None
+            child_kit.md5 = None
+            child_kit.sha1 = None
+            child_kit.tlsh = None
             db.commit()
 
             logger.info("Kit %s: %s", child_id, dup_reason)
@@ -341,11 +570,23 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
                 }
 
             # Sibling duplicate — relay pool may still have new domains.
+            # Pre-create the next child kit so the dispatched task is
+            # idempotent on redelivery.
             next_dupes = consecutive_dupes + 1
             if next_dupes < settings.browser_render_pool_stop:
-                browser_download_kit.apply_async(
-                    args=[kit_id, next_dupes],
+                next_child, skip_reason = (
+                    precreate_browser_render_child_kit(db, parent_kit)
                 )
+                if next_child is not None:
+                    db.commit()
+                    browser_download_kit.apply_async(
+                        args=[kit_id, str(next_child.id), next_dupes],
+                    )
+                else:
+                    logger.info(
+                        "Kit %s: pool-enum re-dispatch suppressed — %s",
+                        kit_id, skip_reason,
+                    )
             return {
                 "kit_id": child_id,
                 "parent_kit_id": kit_id,
@@ -378,12 +619,25 @@ def browser_download_kit(self, kit_id: str, consecutive_dupes: int = 0) -> dict:
         # Re-render to discover more relay variations (reset dupe counter),
         # but only if the browser redirected to a different domain (relay
         # rotation).  If the final URL stays on the lure domain there's no
-        # relay pool to enumerate.
+        # relay pool to enumerate.  Subject to the per-investigation
+        # in-flight budget so a single adversarial kit can't dominate the
+        # browser worker.
         lure_domain = urlparse(parent_kit.source_url).hostname
         final_domain = urlparse(final_url).hostname if final_url else None
         if final_domain and final_domain != lure_domain:
-            browser_download_kit.apply_async(args=[kit_id, 0])
-            return {**download_result, "rerender_scheduled": True}
+            next_child, skip_reason = (
+                precreate_browser_render_child_kit(db, parent_kit)
+            )
+            if next_child is not None:
+                db.commit()
+                browser_download_kit.apply_async(
+                    args=[kit_id, str(next_child.id), 0],
+                )
+                return {**download_result, "rerender_scheduled": True}
+            logger.info(
+                "Kit %s: relay-rotation re-render suppressed — %s",
+                kit_id, skip_reason,
+            )
 
         return download_result
 

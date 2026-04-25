@@ -30,6 +30,7 @@ class AnalysisType(enum.StrEnum):
     POLYMORPHISM = "polymorphism"
     ARTIFACT_RENDER = "artifact_render"
     SVG_ACTIVE_EXEC = "svg_active_exec"
+    OAUTH_AUTHORIZE = "oauth_authorize"
 
 
 class AnalysisResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
