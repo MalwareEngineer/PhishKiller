@@ -360,11 +360,28 @@ def parse_eml(self, prev_result: dict) -> dict:
                 }
                 build_post_download_chain(child_result).apply_async()
 
-                # Also dispatch browser render to follow the JS redirect
-                from darla.tasks.browser import browser_download_kit
+                # Also dispatch browser render to follow the JS redirect.
+                # Pre-create the grandchild kit so the dispatched task is
+                # idempotent on redelivery.
+                from darla.tasks.browser import (
+                    browser_download_kit,
+                    precreate_browser_render_child_kit,
+                )
 
-                browser_download_kit.apply_async(args=[str(child.id)])
-                browser_renders_dispatched.append(str(child.id))
+                grandchild, skip_reason = (
+                    precreate_browser_render_child_kit(db, child)
+                )
+                if grandchild is not None:
+                    db.commit()
+                    browser_download_kit.apply_async(
+                        args=[str(child.id), str(grandchild.id), 0],
+                    )
+                    browser_renders_dispatched.append(str(child.id))
+                else:
+                    logger.info(
+                        "EML JS-loader kit %s: browser render skipped (%s)",
+                        child.id, skip_reason,
+                    )
 
         logger.info(
             "EML parse for kit %s: %d links, %d attachments, %d images, "

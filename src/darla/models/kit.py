@@ -41,8 +41,16 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     file_size: Mapped[int | None] = mapped_column(BigInteger)
     mime_type: Mapped[str | None] = mapped_column(String(128))
 
-    # Hashes
-    sha256: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # Hashes — index but NOT unique.  Two kits in different
+    # investigations can legitimately share a SHA256 when the attacker's
+    # AITM/relay infrastructure serves identical bytes to multiple
+    # campaigns.  We treat that as a CORRELATION signal (set
+    # ``duplicate_of_kit_id``) rather than a redundancy to drop.  The
+    # UNIQUE constraint was getting in the way of letting both kits
+    # carry their own analysis output (IOCs, YARA matches, similarity
+    # edges) while still being linked back to their canonical sibling.
+    # See migration ``w3s9t0u1v2n4`` for the index rebuild.
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     md5: Mapped[str | None] = mapped_column(String(32))
     sha1: Mapped[str | None] = mapped_column(String(40))
     tlsh: Mapped[str | None] = mapped_column(String(72), index=True)
@@ -73,6 +81,16 @@ class Kit(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # Storage
     local_path: Mapped[str | None] = mapped_column(Text)
+
+    # Post-download analysis chain progress.  Set to the **name of the
+    # step that started but may not yet have completed** by a Celery
+    # task_prerun signal (see ``darla.tasks.analysis._record_chain_cursor``).
+    # Used by the ``recover_chain_cursors`` recovery beat job to resume
+    # stalled chains without restarting from ``download_kit`` (which
+    # would waste the existing local_path content + re-trigger
+    # browser-render fanout).  ``None`` for kits that haven't entered
+    # post-download chain yet, or that completed cleanly.
+    chain_cursor: Mapped[str | None] = mapped_column(String(64))
 
     # Relationships
     parent_kit: Mapped[Kit | None] = relationship(

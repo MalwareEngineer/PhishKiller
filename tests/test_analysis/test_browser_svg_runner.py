@@ -58,27 +58,88 @@ def test_derive_dawa_handles_empty(empty) -> None:
 # _looks_like_landing
 # ---------------------------------------------------------------------------
 
+_PHISH_URL = "https://exportationeasehub.pohlusa.co/b64.php"
+
+
 def test_landing_classifier_accepts_html_document() -> None:
-    assert _looks_like_landing("text/html; charset=utf-8", 200, "document")
+    assert _looks_like_landing(
+        _PHISH_URL, "text/html; charset=utf-8", 200, "document",
+    )
 
 
 def test_landing_classifier_accepts_fetch_xhtml() -> None:
-    assert _looks_like_landing("application/xhtml+xml", 200, "fetch")
+    assert _looks_like_landing(
+        _PHISH_URL, "application/xhtml+xml", 200, "fetch",
+    )
 
 
 def test_landing_classifier_rejects_javascript() -> None:
     assert not _looks_like_landing(
-        "application/javascript", 200, "script",
+        _PHISH_URL, "application/javascript", 200, "script",
     )
 
 
 def test_landing_classifier_rejects_image_resource() -> None:
-    assert not _looks_like_landing("text/html", 200, "image")
+    assert not _looks_like_landing(_PHISH_URL, "text/html", 200, "image")
 
 
 def test_landing_classifier_rejects_bad_status() -> None:
-    assert not _looks_like_landing("text/html", 404, "document")
-    assert not _looks_like_landing("text/html", 500, "document")
+    assert not _looks_like_landing(_PHISH_URL, "text/html", 404, "document")
+    assert not _looks_like_landing(_PHISH_URL, "text/html", 500, "document")
+
+
+# ---------------------------------------------------------------------------
+# Cloaking-gate host suppression (Cloudflare Turnstile, hCaptcha, reCAPTCHA)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("gate_url", [
+    # Exact-host match.
+    "https://challenges.cloudflare.com/turnstile/v0/b/abc/api.js",
+    "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/"
+    "orchestrate/chl_api/v1?ray=123&lang=auto",
+    "https://challenges.cloudflareaccess.com/some/path",
+    "https://hcaptcha.com/1/api.js",
+    # Suffix-match (subdomain under suppressed host).
+    "https://newassets.hcaptcha.com/captcha/v1/iframe.html",
+    "https://foo.hcaptcha.com/challenge",
+    # Path-substring match (reCAPTCHA under www.google.com).
+    "https://www.google.com/recaptcha/api2/frame",
+])
+def test_landing_classifier_suppresses_gate_hosts(gate_url: str) -> None:
+    # Even with perfect-looking signals (HTML, 200, document/fetch), a gate
+    # URL must NOT be classified as a landing page — otherwise chain_crawler
+    # spawns a child kit that re-renders the same interstitial.
+    assert not _looks_like_landing(gate_url, "text/html", 200, "document")
+    assert not _looks_like_landing(
+        gate_url, "text/html; charset=utf-8", 200, "fetch",
+    )
+
+
+def test_landing_classifier_accepts_cf_fronted_phish() -> None:
+    # Legitimate phishing often sits behind a generic Cloudflare proxy — we
+    # only suppress Cloudflare's OWN gate infra, not arbitrary CF-fronted
+    # domains.  Critical boundary case: don't over-suppress.
+    cf_fronted_phish = "https://cheap-login.example.com/verify.php"
+    assert _looks_like_landing(
+        cf_fronted_phish, "text/html", 200, "document",
+    )
+
+
+def test_landing_classifier_suppression_is_case_insensitive_on_host() -> None:
+    # Playwright sometimes reports hostnames with mixed case.  urllib's
+    # urlparse().hostname lowercases — verify end-to-end.
+    assert not _looks_like_landing(
+        "https://Challenges.CLOUDFLARE.com/turnstile/x",
+        "text/html", 200, "document",
+    )
+
+
+def test_landing_classifier_tolerates_malformed_url() -> None:
+    # Garbage input must not raise — we just fall through to the existing
+    # content-type/status checks.
+    assert _looks_like_landing(
+        "not a url", "text/html", 200, "document",
+    )  # no suppression applied, but still classified by signals.
 
 
 # ---------------------------------------------------------------------------

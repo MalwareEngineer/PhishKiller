@@ -113,9 +113,13 @@ services:
   worker-downloads:
     build: .
     container_name: darla-worker-downloads
+    # httpx downloads are mostly I/O bound and complete in <2s.
+    # 2 prefork slots cover 300 samples/day with ~7,200/hr ceiling and
+    # leave headroom for redirect-chain spikes.  At -c 4 we were 99.8%
+    # idle and burning extra RAM on duplicated YARA-rules / sqla pools.
     command: >
       celery -A darla.celery_app worker
-      -l info -P prefork -c 4
+      -l info -P prefork -c 2
       -Q downloads
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
@@ -144,9 +148,14 @@ services:
   worker-analysis:
     build: .
     container_name: darla-worker-analysis
+    # Analysis steps (hash, yara, IOC, similarity, polymorphism) are
+    # CPU-light and complete in 0.5-2s.  4 prefork slots cover bursts;
+    # at -c 10 we were 99.96% idle with ~1.5 GB extra RAM tied up in
+    # forked YARA rule sets.  Drop to 4 to free memory for the browser
+    # workers below.
     command: >
       celery -A darla.celery_app worker
-      -l info -P prefork -c 10
+      -l info -P prefork -c 4
       -Q analysis
     environment:
       PK_SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/darla
@@ -173,12 +182,21 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  # Stealth browser worker for Cloudflare-protected pages
+  # Stealth browser worker for Cloudflare-protected pages.
+  # Solo pool (NOT prefork) — Playwright's async event loop is per
+  # process and is unreliable across prefork forks.  Run multiple
+  # replicas instead of multiple workers per process.  3 replicas
+  # ≈ 2-3 GB memory (Camoufox/Firefox is ~600-900 MB each) and gives
+  # us ~90 renders/hr capacity vs 30/hr at single-replica — comfortably
+  # absorbs heavy + worst-case bursts at the 300-samples/day target.
+  # NOTE: ``container_name`` is intentionally absent so compose can
+  # name the replicas (darla-worker-browser-1, -2, -3).
   worker-browser:
     build:
       context: .
       dockerfile: Dockerfile.browser
-    container_name: darla-worker-browser
+    deploy:
+      replicas: 3
     command: >
       celery -A darla.celery_app worker
       -l info -P solo
