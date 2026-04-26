@@ -463,17 +463,10 @@ def browser_download_kit(
             parent_kit.status = KitStatus.ANALYZED
 
         # --- Compute hashes ---
-        # IMPORTANT: we assign hashes to ``child_kit`` but must not let
-        # SQLAlchemy autoflush them during the dedup queries below.  The
-        # ``kits.sha256`` column has a UNIQUE index (``ix_kits_sha256``);
-        # if two AITM siblings render identical attacker pages (e.g. the
-        # 5 Azure OAuth kits all land on the same ``solarworldbotswana.
-        # co.bw/.media/`` JS snippet → identical 1044 bytes → identical
-        # sha256), a premature flush fires UniqueViolation *before* our
-        # dedup logic gets a chance to mark the duplicate.  Defer flush
-        # until we know whether this child is a duplicate — if it is,
-        # we null out the hashes so the UNIQUE constraint isn't tripped
-        # on commit.
+        # IMPORTANT: ``no_autoflush`` is preserved for dedup-query safety
+        # even though the UNIQUE index on ``kits.sha256`` was dropped in
+        # migration ``w3s9t0u1v2n4``.  The wrap protects against any
+        # future flush ordering surprise; it's cheap.
         child_hashes = do_hash(filepath)
         child_kit.sha256 = child_hashes.sha256
         child_kit.md5 = child_hashes.md5
@@ -484,28 +477,29 @@ def browser_download_kit(
 
         # --- Ancestor chain dedup (stuck-at-gate detection) ---
         # Walk parent → grandparent → … → root.  If the child's content
-        # matches any ancestor, it's stuck at the same protection gate
-        # (e.g. still seeing the Cloudflare challenge page).
-        dup_of: str | None = None
-        dup_reason: str | None = None
+        # matches any ancestor, it's stuck at the same protection gate.
+        # Ancestors are always in the same investigation by construction,
+        # so these matches always trigger the FAILED-redundancy path
+        # (not the cross-investigation correlation path).
+        matched_kit: Kit | None = None
+        match_reason: str = ""
         stuck_at_gate = False
 
         with db.no_autoflush:
             ancestors = _walk_ancestor_chain(
                 db, child_kit, settings.chain_max_depth,
             )
-            matched_ancestor, match_reason = _find_ancestor_match(
+            matched_ancestor, ancestor_reason = _find_ancestor_match(
                 child_kit, ancestors, threshold,
             )
             if matched_ancestor is not None:
-                dup_of = str(matched_ancestor.id)
-                dup_reason = match_reason
+                matched_kit = matched_ancestor
+                match_reason = ancestor_reason
                 stuck_at_gate = True
 
             # --- Direct sibling dedup (relay pool exhaustion) ---
-            # Compare against children of the same parent only — never
-            # across depths or different parent chains.
-            if not dup_of:
+            # Same parent_kit_id → same investigation by construction.
+            if matched_kit is None:
                 siblings = _get_direct_siblings(db, child_kit)
                 for sibling in siblings:
                     matched, detail = _content_matches(
@@ -514,19 +508,19 @@ def browser_download_kit(
                         threshold,
                     )
                     if matched:
-                        dup_of = str(sibling.id)
-                        dup_reason = (
+                        matched_kit = sibling
+                        match_reason = (
                             f"Sibling duplicate of kit {sibling.id} ({detail})"
                         )
                         break
 
-            # --- Cross-investigation SHA256 dedup ---
-            # Catches the AITM case where sibling investigations all
-            # render the same attacker asset (identical bytes) but
-            # belong to different parent chains, so the ancestor + sibling
-            # walks don't reach them.  Without this check, the unique
-            # index would fire on commit.
-            if not dup_of and child_hashes.sha256:
+            # --- Cross-chain SHA256 dedup ---
+            # Catches kits across DIFFERENT parent chains hitting the
+            # same attacker asset.  This is the only dedup path that
+            # can match a kit in a *different investigation*; ancestor
+            # and direct-sibling matches above are always within the
+            # same investigation.
+            if matched_kit is None and child_hashes.sha256:
                 existing = (
                     db.query(Kit)
                     .filter(
@@ -536,27 +530,64 @@ def browser_download_kit(
                     .first()
                 )
                 if existing is not None:
-                    dup_of = str(existing.id)
-                    dup_reason = (
-                        f"Cross-chain SHA256 duplicate of kit {existing.id}"
+                    matched_kit = existing
+                    match_reason = (
+                        f"Cross-chain SHA256 match with kit {existing.id}"
                     )
 
-        # --- Apply dedup result ---
-        # Duplicates are marked FAILED with duplicate_of_kit_id set.
-        # Files stay on disk — nothing is deleted.  We clear the hash
-        # columns on the duplicate row so the UNIQUE constraint on
-        # ``ix_kits_sha256`` isn't violated by the pending UPDATE.
-        if dup_of:
+        # --- Apply dedup / correlation result ---
+        # The decision tree:
+        #
+        #   match_kit is None         → unique content, proceed with full
+        #                               analysis chain dispatch (fall through)
+        #   same investigation        → redundant work in the same chain
+        #                               (e.g. CF Turnstile re-render loop or
+        #                               relay-pool exhaustion).  Mark FAILED,
+        #                               keep hashes (UNIQUE was dropped, we
+        #                               want SHA256/TLSH search to surface
+        #                               duplicate kits as additional hits).
+        #   cross investigation       → CORRELATION, not redundancy.  Two
+        #                               investigations independently hit
+        #                               the same attacker asset (e.g. an
+        #                               AITM proxy serving identical bytes
+        #                               to multiple victim chains).  Set
+        #                               ``duplicate_of_kit_id`` as a soft
+        #                               link but proceed with full
+        #                               analysis so investigation B's
+        #                               view records its own IOCs / YARA
+        #                               matches / similarity edges.
+        if matched_kit is not None:
+            same_investigation = (
+                child_kit.investigation_id == matched_kit.investigation_id
+            )
+            child_kit.duplicate_of_kit_id = matched_kit.id
+
+            if not same_investigation:
+                # Cross-investigation correlation — preserve full analysis.
+                logger.info(
+                    "Kit %s: cross-investigation correlation with kit %s "
+                    "(%s, investigations %s vs %s) — proceeding with "
+                    "full analysis",
+                    child_id, matched_kit.id, match_reason,
+                    child_kit.investigation_id, matched_kit.investigation_id,
+                )
+                # Fall through to the success path below.  Don't set
+                # FAILED, don't return, don't dispatch pool-enum
+                # re-render (correlation match isn't a relay-pool
+                # rotation signal).
+                matched_kit = None  # clear so the FAILED branch is skipped
+                stuck_at_gate = False
+
+        if matched_kit is not None:
+            # Same-investigation redundancy — drop this rendering.  Files
+            # stay on disk; we keep hashes intact for SHA256/TLSH search.
             child_kit.status = KitStatus.FAILED
-            child_kit.error_message = dup_reason
-            child_kit.duplicate_of_kit_id = uuid.UUID(dup_of)
-            child_kit.sha256 = None
-            child_kit.md5 = None
-            child_kit.sha1 = None
-            child_kit.tlsh = None
+            child_kit.error_message = match_reason
             db.commit()
 
-            logger.info("Kit %s: %s", child_id, dup_reason)
+            logger.info("Kit %s: %s", child_id, match_reason)
+
+            duplicate_of_str = str(child_kit.duplicate_of_kit_id)
 
             if stuck_at_gate:
                 # Stuck at a protection gate — re-rendering the same
@@ -565,8 +596,8 @@ def browser_download_kit(
                     "kit_id": child_id,
                     "parent_kit_id": kit_id,
                     "status": "stuck_at_gate",
-                    "duplicate_of": dup_of,
-                    "reason": dup_reason,
+                    "duplicate_of": duplicate_of_str,
+                    "reason": match_reason,
                 }
 
             # Sibling duplicate — relay pool may still have new domains.
@@ -591,8 +622,8 @@ def browser_download_kit(
                 "kit_id": child_id,
                 "parent_kit_id": kit_id,
                 "status": "duplicate",
-                "duplicate_of": dup_of,
-                "reason": dup_reason,
+                "duplicate_of": duplicate_of_str,
+                "reason": match_reason,
             }
 
         db.commit()
@@ -602,7 +633,11 @@ def browser_download_kit(
             child_id, kit_id, filepath.name, child_kit.file_size,
         )
 
-        # Dispatch post-download analysis chain for unique children only.
+        # Dispatch post-download analysis chain.  Note: cross-
+        # investigation correlated kits (``duplicate_of_kit_id`` set,
+        # status NOT FAILED — the new branch above) reach this path
+        # too — they get full analysis so investigation B's view has
+        # its own IOCs / YARA / similarity edges.
         download_result = {
             "kit_id": child_id,
             "parent_kit_id": kit_id,
@@ -611,6 +646,8 @@ def browser_download_kit(
             "file_size": child_kit.file_size,
             "extract_dir": str(download_dir),
         }
+        if child_kit.duplicate_of_kit_id is not None:
+            download_result["correlated_with"] = str(child_kit.duplicate_of_kit_id)
 
         from darla.tasks.analysis import build_post_download_chain
 

@@ -259,8 +259,24 @@ def compute_hashes(self, prev_result: dict) -> dict:
 
         result = do_hash(kit.local_path)
 
-        # Check for duplicate SHA256 before writing (skip when force-resubmitted
-        # and skip the empty-file hash — every 0-byte download shares it).
+        # Check for duplicate SHA256 (skip when force-resubmitted and
+        # skip the empty-file hash — every 0-byte download shares it).
+        #
+        # The semantics changed in migration ``w3s9t0u1v2n4``: same
+        # SHA256 in the SAME investigation is still treated as
+        # redundant work (mark FAILED + set duplicate_of_kit_id), but
+        # cross-investigation matches are CORRELATION SIGNALS, not
+        # redundancy.  Investigation B independently encountering an
+        # AITM proxy already seen in investigation A should keep its
+        # own analyzed kit so its IOCs / YARA matches / similarity
+        # edges are recorded under the right investigation.  The
+        # ``duplicate_of_kit_id`` pointer carries the correlation back
+        # to the canonical sibling.
+        #
+        # NULL investigation_id on both sides (feed-ingested kits not
+        # yet promoted) is treated as the same "investigation" so feed
+        # dedup behavior is preserved — two identical feed arrivals
+        # collapse to one.
         _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         if not prev_result.get("force") and result.sha256 != _EMPTY_SHA256:
             existing = db.query(Kit).filter(
@@ -269,14 +285,38 @@ def compute_hashes(self, prev_result: dict) -> dict:
             ).first()
 
             if existing:
-                kit.status = KitStatus.FAILED
-                kit.error_message = f"Duplicate of kit {existing.id} (same SHA256)"
-                db.commit()
-                logger.info(
-                    "Kit %s is duplicate of %s (sha256=%s)",
-                    kit_id, existing.id, result.sha256[:16],
+                same_investigation = (
+                    kit.investigation_id == existing.investigation_id
                 )
-                return {**prev_result, "status": "failed", "error": "duplicate_sha256"}
+                if same_investigation:
+                    kit.status = KitStatus.FAILED
+                    kit.error_message = (
+                        f"Duplicate of kit {existing.id} (same SHA256)"
+                    )
+                    kit.duplicate_of_kit_id = existing.id
+                    db.commit()
+                    logger.info(
+                        "Kit %s is same-investigation duplicate of %s "
+                        "(sha256=%s)",
+                        kit_id, existing.id, result.sha256[:16],
+                    )
+                    return {
+                        **prev_result,
+                        "status": "failed",
+                        "error": "duplicate_sha256",
+                    }
+                # Cross-investigation: set correlation pointer but keep
+                # the kit going through analysis.  Hashes will be
+                # written below (the UNIQUE constraint was dropped in
+                # migration w3s9t0u1v2n4 specifically to allow this).
+                kit.duplicate_of_kit_id = existing.id
+                logger.info(
+                    "Kit %s: cross-investigation correlation with kit %s "
+                    "(same SHA256, investigations %s vs %s) — "
+                    "proceeding with full analysis",
+                    kit_id, existing.id,
+                    kit.investigation_id, existing.investigation_id,
+                )
 
         kit.sha256 = result.sha256
         kit.md5 = result.md5
