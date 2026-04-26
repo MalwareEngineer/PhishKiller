@@ -32,6 +32,13 @@ import {
 } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus, Download, FileDiff, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -591,20 +598,23 @@ export function KitDetailPage() {
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select
-              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              value={selectedCampaignId}
-              onChange={(e) => setSelectedCampaignId(e.target.value)}
+            <Select
+              value={selectedCampaignId || undefined}
+              onValueChange={(v) => setSelectedCampaignId(v ?? "")}
             >
-              <option value="">Select a campaign...</option>
-              {(campaignsData?.items ?? [])
-                .filter((c) => !kit.campaigns.some((kc) => kc.id === c.id))
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}{c.target_brand ? ` (${c.target_brand})` : ""}
-                  </option>
-                ))}
-            </select>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="Select a campaign..." />
+              </SelectTrigger>
+              <SelectContent>
+                {(campaignsData?.items ?? [])
+                  .filter((c) => !kit.campaigns.some((kc) => kc.id === c.id))
+                  .map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}{c.target_brand ? ` (${c.target_brand})` : ""}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={!selectedCampaignId || addToCampaign.isPending}
@@ -648,16 +658,19 @@ export function KitDetailPage() {
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select
-              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              value={selectedActorId}
-              onChange={(e) => setSelectedActorId(e.target.value)}
+            <Select
+              value={selectedActorId || undefined}
+              onValueChange={(v) => setSelectedActorId(v ?? "")}
             >
-              <option value="">Select an actor...</option>
-              {(actorsData?.items ?? []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="Select an actor..." />
+              </SelectTrigger>
+              <SelectContent>
+                {(actorsData?.items ?? []).map((a) => (
+                  <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={!selectedActorId || addToActor.isPending}
@@ -702,18 +715,21 @@ export function KitDetailPage() {
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select
-              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              value={selectedFamilyId}
-              onChange={(e) => setSelectedFamilyId(e.target.value)}
+            <Select
+              value={selectedFamilyId || undefined}
+              onValueChange={(v) => setSelectedFamilyId(v ?? "")}
             >
-              <option value="">Select a family...</option>
-              {(familiesData?.items ?? [])
-                .filter((f) => !(kit.families ?? []).some((kf) => kf.id === f.id))
-                .map((f) => (
-                  <option key={f.id} value={f.id}>{f.name}</option>
-                ))}
-            </select>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="Select a family..." />
+              </SelectTrigger>
+              <SelectContent>
+                {(familiesData?.items ?? [])
+                  .filter((f) => !(kit.families ?? []).some((kf) => kf.id === f.id))
+                  .map((f) => (
+                    <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={!selectedFamilyId || addToFamily.isPending}
