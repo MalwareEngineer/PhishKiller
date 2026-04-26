@@ -344,7 +344,7 @@ export function KitDetailPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="overflow-x-auto">
+        <TabsList className="overflow-x-auto overflow-y-hidden">
           <TabsTrigger value="indicators">
             Indicators ({kit.indicators.length})
           </TabsTrigger>
