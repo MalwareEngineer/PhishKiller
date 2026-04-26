@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useActors } from "@/hooks/use-actors";
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useFamilies } from "@/hooks/use-families";
@@ -25,6 +26,13 @@ interface EntityLinkSelectorsProps {
 // no selection, same as before.
 const NONE = "__none__";
 
+// Base UI's ``<Select.Value>`` does NOT automatically render the
+// selected ``<SelectItem>``'s children — by default it renders the
+// raw ``value`` prop (a UUID in our case).  To map id → human-
+// readable name we pass a children render function that looks the
+// value up in a Map built from the loaded entity list.  Memoizing
+// the Map prevents rebuilding on every render of the parent.
+
 export function EntityLinkSelectors({
   actorId,
   campaignId,
@@ -36,6 +44,29 @@ export function EntityLinkSelectors({
   const { data: actorsData } = useActors(0, 200);
   const { data: campaignsData } = useCampaigns({ offset: 0, limit: 200 });
   const { data: familiesData } = useFamilies(0, 200);
+
+  const actorNamesById = useMemo(
+    () => new Map((actorsData?.items ?? []).map((a) => [a.id, a.name])),
+    [actorsData],
+  );
+  const campaignNamesById = useMemo(
+    () => new Map((campaignsData?.items ?? []).map((c) => [c.id, c.name])),
+    [campaignsData],
+  );
+  const familyNamesById = useMemo(
+    () => new Map((familiesData?.items ?? []).map((f) => [f.id, f.name])),
+    [familiesData],
+  );
+
+  // Render-fn factory: returns "None" for the sentinel/empty case,
+  // otherwise the entity's name (falling back to the raw value if
+  // the names cache hasn't loaded yet — beats showing a blank
+  // trigger).
+  const renderName = (names: Map<string, string>) =>
+    (value: string | null) => {
+      if (!value || value === NONE) return "None";
+      return names.get(value) ?? value;
+    };
 
   return (
     <div className="space-y-2">
@@ -50,7 +81,9 @@ export function EntityLinkSelectors({
             }
           >
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="None" />
+              <SelectValue placeholder="None">
+                {renderName(actorNamesById)}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NONE}>None</SelectItem>
@@ -69,7 +102,9 @@ export function EntityLinkSelectors({
             }
           >
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="None" />
+              <SelectValue placeholder="None">
+                {renderName(campaignNamesById)}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NONE}>None</SelectItem>
@@ -88,7 +123,9 @@ export function EntityLinkSelectors({
             }
           >
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="None" />
+              <SelectValue placeholder="None">
+                {renderName(familyNamesById)}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NONE}>None</SelectItem>
