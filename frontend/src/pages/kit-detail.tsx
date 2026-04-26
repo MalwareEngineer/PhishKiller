@@ -32,6 +32,13 @@ import {
 } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { RefreshCw, Trash2, ArrowLeft, AlertTriangle, Search, ExternalLink, Plus, Download, FileDiff, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -158,6 +165,34 @@ export function KitDetailPage() {
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [selectedActorId, setSelectedActorId] = useState("");
   const [selectedFamilyId, setSelectedFamilyId] = useState("");
+
+  // Sentinel for the "(no selection)" item at the top of each
+  // dropdown.  Base UI Select doesn't allow ``value=""`` on a
+  // SelectItem so we use a distinct token and translate on
+  // onValueChange to keep the existing empty-string state semantics
+  // (button stays disabled while empty).
+  const CLEAR_SELECTION = "__clear__";
+
+  // Display lookups: Base UI's <SelectValue> shows the raw ``value``
+  // (a UUID) by default — we pass a children render function that
+  // looks the value up here.  Built once per data load.
+  const campaignDisplayById = useMemo(
+    () => new Map(
+      (campaignsData?.items ?? []).map((c) => [
+        c.id,
+        `${c.name}${c.target_brand ? ` (${c.target_brand})` : ""}`,
+      ]),
+    ),
+    [campaignsData],
+  );
+  const actorNameById = useMemo(
+    () => new Map((actorsData?.items ?? []).map((a) => [a.id, a.name])),
+    [actorsData],
+  );
+  const familyNameById = useMemo(
+    () => new Map((familiesData?.items ?? []).map((f) => [f.id, f.name])),
+    [familiesData],
+  );
   const { data: screenshotsData } = useKitScreenshots(id!, activeTab === "screenshots");
   const { data: networkData } = useKitNetworkLog(id!, activeTab === "network");
   const { data: resourcesData } = useKitBrowserResources(id!, activeTab === "resources");
@@ -309,7 +344,7 @@ export function KitDetailPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="overflow-x-auto">
+        <TabsList className="overflow-x-auto overflow-y-hidden">
           <TabsTrigger value="indicators">
             Indicators ({kit.indicators.length})
           </TabsTrigger>
@@ -591,20 +626,33 @@ export function KitDetailPage() {
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select
-              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              value={selectedCampaignId}
-              onChange={(e) => setSelectedCampaignId(e.target.value)}
+            <Select
+              value={selectedCampaignId || undefined}
+              onValueChange={(v) =>
+                setSelectedCampaignId(v === CLEAR_SELECTION ? "" : (v ?? ""))
+              }
             >
-              <option value="">Select a campaign...</option>
-              {(campaignsData?.items ?? [])
-                .filter((c) => !kit.campaigns.some((kc) => kc.id === c.id))
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}{c.target_brand ? ` (${c.target_brand})` : ""}
-                  </option>
-                ))}
-            </select>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="Select a campaign...">
+                  {(value: string | null) => {
+                    if (!value || value === CLEAR_SELECTION) {
+                      return "Select a campaign...";
+                    }
+                    return campaignDisplayById.get(value) ?? value;
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={CLEAR_SELECTION}>(no selection)</SelectItem>
+                {(campaignsData?.items ?? [])
+                  .filter((c) => !kit.campaigns.some((kc) => kc.id === c.id))
+                  .map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}{c.target_brand ? ` (${c.target_brand})` : ""}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={!selectedCampaignId || addToCampaign.isPending}
@@ -648,16 +696,29 @@ export function KitDetailPage() {
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select
-              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              value={selectedActorId}
-              onChange={(e) => setSelectedActorId(e.target.value)}
+            <Select
+              value={selectedActorId || undefined}
+              onValueChange={(v) =>
+                setSelectedActorId(v === CLEAR_SELECTION ? "" : (v ?? ""))
+              }
             >
-              <option value="">Select an actor...</option>
-              {(actorsData?.items ?? []).map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="Select an actor...">
+                  {(value: string | null) => {
+                    if (!value || value === CLEAR_SELECTION) {
+                      return "Select an actor...";
+                    }
+                    return actorNameById.get(value) ?? value;
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={CLEAR_SELECTION}>(no selection)</SelectItem>
+                {(actorsData?.items ?? []).map((a) => (
+                  <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={!selectedActorId || addToActor.isPending}
@@ -702,18 +763,31 @@ export function KitDetailPage() {
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select
-              className="flex h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              value={selectedFamilyId}
-              onChange={(e) => setSelectedFamilyId(e.target.value)}
+            <Select
+              value={selectedFamilyId || undefined}
+              onValueChange={(v) =>
+                setSelectedFamilyId(v === CLEAR_SELECTION ? "" : (v ?? ""))
+              }
             >
-              <option value="">Select a family...</option>
-              {(familiesData?.items ?? [])
-                .filter((f) => !(kit.families ?? []).some((kf) => kf.id === f.id))
-                .map((f) => (
-                  <option key={f.id} value={f.id}>{f.name}</option>
-                ))}
-            </select>
+              <SelectTrigger className="w-full max-w-xs">
+                <SelectValue placeholder="Select a family...">
+                  {(value: string | null) => {
+                    if (!value || value === CLEAR_SELECTION) {
+                      return "Select a family...";
+                    }
+                    return familyNameById.get(value) ?? value;
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={CLEAR_SELECTION}>(no selection)</SelectItem>
+                {(familiesData?.items ?? [])
+                  .filter((f) => !(kit.families ?? []).some((kf) => kf.id === f.id))
+                  .map((f) => (
+                    <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               disabled={!selectedFamilyId || addToFamily.isPending}

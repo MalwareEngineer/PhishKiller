@@ -1,6 +1,14 @@
+import { useMemo } from "react";
 import { useActors } from "@/hooks/use-actors";
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useFamilies } from "@/hooks/use-families";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface EntityLinkSelectorsProps {
   actorId: string | undefined;
@@ -10,6 +18,20 @@ interface EntityLinkSelectorsProps {
   onCampaignChange: (id: string | undefined) => void;
   onFamilyChange: (id: string | undefined) => void;
 }
+
+// Sentinel for the "None" option.  Base UI Select doesn't allow
+// ``value=""`` on a SelectItem (it conflicts with the unselected
+// state), so we use a distinct token here and translate at the
+// component boundary.  Callers continue to receive ``undefined`` for
+// no selection, same as before.
+const NONE = "__none__";
+
+// Base UI's ``<Select.Value>`` does NOT automatically render the
+// selected ``<SelectItem>``'s children — by default it renders the
+// raw ``value`` prop (a UUID in our case).  To map id → human-
+// readable name we pass a children render function that looks the
+// value up in a Map built from the loaded entity list.  Memoizing
+// the Map prevents rebuilding on every render of the parent.
 
 export function EntityLinkSelectors({
   actorId,
@@ -23,8 +45,28 @@ export function EntityLinkSelectors({
   const { data: campaignsData } = useCampaigns({ offset: 0, limit: 200 });
   const { data: familiesData } = useFamilies(0, 200);
 
-  const selectClass =
-    "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
+  const actorNamesById = useMemo(
+    () => new Map((actorsData?.items ?? []).map((a) => [a.id, a.name])),
+    [actorsData],
+  );
+  const campaignNamesById = useMemo(
+    () => new Map((campaignsData?.items ?? []).map((c) => [c.id, c.name])),
+    [campaignsData],
+  );
+  const familyNamesById = useMemo(
+    () => new Map((familiesData?.items ?? []).map((f) => [f.id, f.name])),
+    [familiesData],
+  );
+
+  // Render-fn factory: returns "None" for the sentinel/empty case,
+  // otherwise the entity's name (falling back to the raw value if
+  // the names cache hasn't loaded yet — beats showing a blank
+  // trigger).
+  const renderName = (names: Map<string, string>) =>
+    (value: string | null) => {
+      if (!value || value === NONE) return "None";
+      return names.get(value) ?? value;
+    };
 
   return (
     <div className="space-y-2">
@@ -32,42 +74,66 @@ export function EntityLinkSelectors({
       <div className="grid grid-cols-3 gap-3">
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">Actor</label>
-          <select
-            className={selectClass}
-            value={actorId ?? ""}
-            onChange={(e) => onActorChange(e.target.value || undefined)}
+          <Select
+            value={actorId ?? NONE}
+            onValueChange={(v) =>
+              onActorChange(v === NONE ? undefined : v)
+            }
           >
-            <option value="">None</option>
-            {(actorsData?.items ?? []).map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="None">
+                {renderName(actorNamesById)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NONE}>None</SelectItem>
+              {(actorsData?.items ?? []).map((a) => (
+                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">Campaign</label>
-          <select
-            className={selectClass}
-            value={campaignId ?? ""}
-            onChange={(e) => onCampaignChange(e.target.value || undefined)}
+          <Select
+            value={campaignId ?? NONE}
+            onValueChange={(v) =>
+              onCampaignChange(v === NONE ? undefined : v)
+            }
           >
-            <option value="">None</option>
-            {(campaignsData?.items ?? []).map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="None">
+                {renderName(campaignNamesById)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NONE}>None</SelectItem>
+              {(campaignsData?.items ?? []).map((c) => (
+                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">Family</label>
-          <select
-            className={selectClass}
-            value={familyId ?? ""}
-            onChange={(e) => onFamilyChange(e.target.value || undefined)}
+          <Select
+            value={familyId ?? NONE}
+            onValueChange={(v) =>
+              onFamilyChange(v === NONE ? undefined : v)
+            }
           >
-            <option value="">None</option>
-            {(familiesData?.items ?? []).map((f) => (
-              <option key={f.id} value={f.id}>{f.name}</option>
-            ))}
-          </select>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="None">
+                {renderName(familyNamesById)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NONE}>None</SelectItem>
+              {(familiesData?.items ?? []).map((f) => (
+                <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
     </div>
