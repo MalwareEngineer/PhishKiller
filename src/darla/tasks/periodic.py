@@ -32,4 +32,18 @@ celery_app.conf.beat_schedule = {
         "args": [60],
         "options": {"queue": "celery"},
     },
+    "cleanup-duplicate-kit-artifacts-daily": {
+        # Tombstone same-investigation duplicate kits in COMPLETED
+        # investigations older than 24h.  Drops the on-disk artifacts
+        # (page.html, requests.json, screenshots, sub-resources) but
+        # keeps the Kit row + duplicate_of_kit_id pointer + error
+        # message so the audit trail of pool-enumeration attempts
+        # survives.  Daily cadence matches the 24h grace window:
+        # operators get a full day to inspect a freshly-completed
+        # investigation before its bulky duplicates are GC'd.
+        "task": "darla.tasks.recovery.cleanup_completed_investigation_duplicates",
+        "schedule": crontab(minute=15, hour=4),  # daily at 04:15 UTC
+        "args": [24],
+        "options": {"queue": "celery"},
+    },
 }
