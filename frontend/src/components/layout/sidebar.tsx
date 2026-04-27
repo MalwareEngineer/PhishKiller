@@ -12,6 +12,7 @@ import {
   ChevronRight,
   FileDiff,
   Sparkles,
+  Fingerprint,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ const navItems = [
   { to: "/families", icon: Layers, label: "Families" },
   { to: "/phish-diff", icon: FileDiff, label: "PhishDiff" },
   { to: "/phish-match", icon: Sparkles, label: "PhishMatch" },
+  { to: "/phishprint", icon: Fingerprint, label: "PhishPrint" },
 ];
 
 export function Sidebar() {

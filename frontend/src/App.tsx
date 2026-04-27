@@ -15,6 +15,8 @@ import { FamilyDetailPage } from "@/pages/family-detail";
 import { PhishDiffPage } from "@/pages/phish-diff";
 import { PhishMatchPage } from "@/pages/phish-match";
 import { PhishMatchInboxPage } from "@/pages/phish-match-inbox";
+import { PhishPrintPage } from "@/pages/phishprint";
+import { VictimDetailPage } from "@/pages/victim-detail";
 
 export function App() {
   return (
@@ -35,6 +37,8 @@ export function App() {
         <Route path="phish-diff" element={<PhishDiffPage />} />
         <Route path="phish-match" element={<PhishMatchInboxPage />} />
         <Route path="phish-match/:kitId" element={<PhishMatchPage />} />
+        <Route path="phishprint" element={<PhishPrintPage />} />
+        <Route path="phishprint/victims/:id" element={<VictimDetailPage />} />
       </Route>
     </Routes>
   );
