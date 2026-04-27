@@ -96,7 +96,7 @@ def _try_decode_b64_state(raw: str) -> str | None:
 
     The real-world pattern: attackers base64-encode the victim's email
     into ``state`` so their AITM backend can correlate the click with
-    the outbound lure (e.g. ``aG9uZGF5QGJ2LmNvbQ==`` → ``honday@bv.com``).
+    the outbound lure (e.g. ``YWxpY2VAYWNtZS5jb20=`` → ``alice@acme.com``).
     We deliberately return None on non-decodable garbage rather than
     guessing — a raw state value like ``csrf-abc123`` must not be
     presented as if it were decoded PII.

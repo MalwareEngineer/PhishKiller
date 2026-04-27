@@ -146,6 +146,46 @@ def parse_eml(self, prev_result: dict) -> dict:
                     ))
                     eml_iocs_added += 1
 
+            # Recipient addresses (To/Cc/Bcc) — emit Indicator rows
+            # for ALL recipients (full IOC visibility, even on
+            # non-monitored domains where attackers test their own
+            # infrastructure) and route through the unified victim
+            # pipeline so monitored-domain employees are promoted to
+            # PhishPrint Victim entities with the correct source
+            # channel.
+            from darla.models.victim import VictimObservationSource
+            from darla.services.victim_service import observe_victim_email
+
+            _recipient_headers = [
+                ("To", "eml_to_header", VictimObservationSource.EML_TO),
+                ("Cc", "eml_cc_header", VictimObservationSource.EML_CC),
+                ("Bcc", "eml_bcc_header", VictimObservationSource.EML_BCC),
+            ]
+            for header_name, ioc_context, victim_source in _recipient_headers:
+                header_val = result.headers.get(header_name, "")
+                if not header_val:
+                    continue
+                # ``getaddresses`` handles "Name <addr>" and comma-
+                # separated lists correctly — including obfuscated
+                # forms attackers occasionally use in lure headers.
+                import email.utils as _eu
+                for _name, addr in _eu.getaddresses([header_val]):
+                    if not addr or "@" not in addr:
+                        continue
+                    addr_lower = addr.strip().lower()
+                    db.add(Indicator(
+                        type=IndicatorType.EMAIL,
+                        value=addr_lower,
+                        context=ioc_context,
+                        source_file=filepath,
+                        confidence=90,
+                        kit_id=kit.id,
+                    ))
+                    observe_victim_email(
+                        db, kit.id, addr_lower, victim_source,
+                    )
+                    eml_iocs_added += 1
+
             # Sending IPs from Received headers
             received_all = result.headers.get("Received-All", "")
             ip_re = re.compile(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")

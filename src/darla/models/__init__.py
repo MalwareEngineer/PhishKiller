@@ -15,6 +15,13 @@ from darla.models.family import Family
 from darla.models.indicator import Indicator, IndicatorType
 from darla.models.investigation import Investigation, InvestigationStatus
 from darla.models.kit import Kit, KitStatus
+from darla.models.monitored_domain import MonitoredDomain
+from darla.models.victim import (
+    KitVictim,
+    Victim,
+    VictimObservationSource,
+    VictimType,
+)
 
 __all__ = [
     "AnalysisResult",
@@ -29,6 +36,11 @@ __all__ = [
     "InvestigationStatus",
     "Kit",
     "KitStatus",
+    "KitVictim",
+    "MonitoredDomain",
+    "Victim",
+    "VictimObservationSource",
+    "VictimType",
     "campaign_actors",
     "campaign_kits",
     "family_actors",

@@ -98,9 +98,10 @@ def test_rejects_empty_and_bad_input() -> None:
 # extract_oauth_iocs — the real-world AITM lure shape
 # ---------------------------------------------------------------------------
 
-# One of the 5 captured campaign URLs (client_id 78ce50cb-...).  Decoded
-# state ``aG9uZGF5QGJ2LmNvbQ==`` = ``honday@bv.com`` — the victim's
-# email smuggled through the OAuth ``state`` param.
+# Synthetic test lure modelled on a captured campaign URL shape.
+# The state param decodes to a synthetic placeholder email
+# (``YWxpY2VAYWNtZS5jb20=`` → ``alice@acme.com``) so this fixture is
+# safe to ship in the public repo without leaking real victim PII.
 _REAL_LURE = (
     "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
     "?client_id=78ce50cb-54eb-42b2-9e79-9c71b0309da7"
@@ -108,7 +109,7 @@ _REAL_LURE = (
     "&response_mode=query"
     "&scope=openid+profile+email+https://graph.microsoft.com/User.Read"
     "&prompt=none"
-    "&state=aG9uZGF5QGJ2LmNvbQ=="
+    "&state=YWxpY2VAYWNtZS5jb20="
 )
 
 
@@ -128,9 +129,9 @@ def test_real_lure_extracts_full_campaign_fingerprint() -> None:
     assert iocs["silent_auth_abuse"] is True
     # State base64-decodes to the victim's email; both raw and decoded
     # must be preserved so operators can correlate.
-    assert iocs["state_raw"] == "aG9uZGF5QGJ2LmNvbQ=="
-    assert iocs["state_decoded"] == "honday@bv.com"
-    assert iocs["victim_email"] == "honday@bv.com"
+    assert iocs["state_raw"] == "YWxpY2VAYWNtZS5jb20="
+    assert iocs["state_decoded"] == "alice@acme.com"
+    assert iocs["victim_email"] == "alice@acme.com"
 
 
 def test_scope_is_split_on_plus_and_space() -> None:
@@ -277,8 +278,8 @@ def test_unpadded_b64_state_still_decoded() -> None:
     # decoder pads before attempting.
     url = (
         "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-        "?client_id=X&state=aG9uZGF5QGJ2LmNvbQ"  # no ``==``
+        "?client_id=X&state=YWxpY2VAYWNtZS5jb20"  # no ``=``
     )
     iocs = extract_oauth_iocs(url)
     assert iocs is not None
-    assert iocs["state_decoded"] == "honday@bv.com"
+    assert iocs["state_decoded"] == "alice@acme.com"

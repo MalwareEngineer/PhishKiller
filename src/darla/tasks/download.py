@@ -110,6 +110,47 @@ def download_kit(
                     oauth_iocs.get("client_id"),
                     oauth_iocs.get("tenant"),
                 )
+                # Funnel any victim/login-hint emails extracted from
+                # the OAuth URL through the unified pipeline:
+                #   * always emit an Indicator row (full search/
+                #     correlation across all observed emails),
+                #   * additionally promote to Victim entity when the
+                #     domain matches the monitored allowlist.
+                # Without this, OAuth-extracted emails were lost as
+                # stand-alone IOCs (only buried inside the
+                # OAUTH_AUTHORIZE result_data dict).
+                from darla.models.indicator import Indicator, IndicatorType
+                from darla.models.victim import VictimObservationSource
+                from darla.services.victim_service import (
+                    observe_victim_email,
+                )
+
+                _email_sources = [
+                    (
+                        oauth_iocs.get("victim_email"),
+                        "oauth_state",
+                        VictimObservationSource.OAUTH_STATE,
+                    ),
+                    (
+                        oauth_iocs.get("login_hint"),
+                        "oauth_login_hint",
+                        VictimObservationSource.OAUTH_LOGIN_HINT,
+                    ),
+                ]
+                for email_val, ioc_context, victim_source in _email_sources:
+                    if not email_val or "@" not in email_val:
+                        continue
+                    db.add(Indicator(
+                        type=IndicatorType.EMAIL,
+                        value=email_val.lower(),
+                        context=ioc_context,
+                        source_file=kit.source_url[:500],
+                        confidence=85,
+                        kit_id=kit.id,
+                    ))
+                    observe_victim_email(
+                        db, kit.id, email_val, victim_source,
+                    )
             except Exception as exc:
                 logger.warning(
                     "Kit %s: failed to persist OAuth IOCs: %s", kit_id, exc,
