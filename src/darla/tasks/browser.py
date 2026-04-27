@@ -457,6 +457,48 @@ def browser_download_kit(
         if final_url and final_url != parent_kit.source_url:
             child_kit.source_url = final_url
 
+        # AITM URL-fragment extraction.  Attackers smuggle the victim
+        # email through the URL fragment (the part after ``#``) so the
+        # AITM proxy's client-side JS can pre-fill the fake login form
+        # without the email touching the server log.  Pattern observed
+        # in the wild on volgograd-consalting / digitaltrustlayer kits.
+        # Both the redirect_uri and the original lure URL can carry it.
+        if final_url:
+            from urllib.parse import urlparse, unquote
+            from darla.models.indicator import Indicator, IndicatorType
+            from darla.models.victim import VictimObservationSource
+            from darla.services.victim_service import observe_victim_email
+
+            try:
+                fragment = urlparse(final_url).fragment or ""
+            except Exception:
+                fragment = ""
+            # Decode percent-encoded fragment (real-world kits URL-
+            # encode the email or its base64 form before appending).
+            fragment = unquote(fragment)
+            # The fragment may be raw email, base64-encoded email, or
+            # arbitrary attacker payload.  Pull the first email-shaped
+            # substring if any — keeps us robust to attackers
+            # appending other state after the email.
+            import re as _re
+            _frag_email_re = _re.compile(
+                r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
+            )
+            for match in _frag_email_re.finditer(fragment):
+                addr = match.group(0).lower()
+                db.add(Indicator(
+                    type=IndicatorType.EMAIL,
+                    value=addr,
+                    context="aitm_url_fragment",
+                    source_file=final_url[:500],
+                    confidence=85,
+                    kit_id=child_kit.id,
+                ))
+                observe_victim_email(
+                    db, child_kit.id, addr,
+                    VictimObservationSource.AITM_URL_FRAGMENT,
+                )
+
         # Mark parent as ANALYZED (first render only) — it keeps its
         # httpx-downloaded content (the raw JS loader / first-stage payload)
         if parent_kit.status != KitStatus.ANALYZED:

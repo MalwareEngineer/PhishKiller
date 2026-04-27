@@ -12,7 +12,9 @@ from darla.api import (
     indicators,
     investigations,
     kits,
+    monitored_domains,
     phishmatch,
+    victims,
 )
 
 api_router = APIRouter()
@@ -27,3 +29,8 @@ api_router.include_router(families.router, prefix="/families", tags=["families"]
 api_router.include_router(analysis.router, prefix="/analysis", tags=["analysis"])
 api_router.include_router(diff.router, prefix="/diff", tags=["diff"])
 api_router.include_router(phishmatch.router, prefix="/phishmatch", tags=["phishmatch"])
+api_router.include_router(victims.router, prefix="/victims", tags=["phishprint"])
+api_router.include_router(
+    monitored_domains.router,
+    prefix="/monitored-domains", tags=["phishprint"],
+)
