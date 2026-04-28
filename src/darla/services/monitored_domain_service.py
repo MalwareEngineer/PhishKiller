@@ -58,6 +58,11 @@ class MonitoredDomainService:
         if "description" in data:
             domain.description = data["description"]
         await self.db.flush()
+        # Refresh so the post-flush ``updated_at`` (server-side
+        # ``onupdate=now()``) is in-memory before pydantic serializes
+        # it; otherwise the lazy-load fires under async and produces
+        # a MissingGreenlet error.
+        await self.db.refresh(domain)
         return domain
 
     async def delete_domain(self, domain_id: uuid.UUID) -> bool:
