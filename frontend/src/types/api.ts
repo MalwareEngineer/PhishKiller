@@ -197,6 +197,42 @@ export interface ActorBrief {
   name: string;
 }
 
+// Actor stats — drives the rebuilt actor-detail Overview tab.
+export interface ActorBrandCount {
+  brand: string;
+  count: number;
+}
+
+export interface ActorFamilyCount {
+  family_id: string;
+  family_name: string;
+  count: number;
+}
+
+export interface ActorTimelineBucket {
+  month: string; // YYYY-MM
+  count: number;
+}
+
+export interface ActorIndicatorCount {
+  type: string;
+  value: string;
+  count: number;
+}
+
+export interface ActorStats {
+  kit_count: number;
+  campaign_count: number;
+  family_count: number;
+  indicator_count: number;
+  first_seen_computed: string | null;
+  last_seen_computed: string | null;
+  target_brand_distribution: ActorBrandCount[];
+  family_distribution: ActorFamilyCount[];
+  timeline: ActorTimelineBucket[];
+  top_indicators: ActorIndicatorCount[];
+}
+
 // ── Campaigns ──
 
 export interface CampaignSummary {

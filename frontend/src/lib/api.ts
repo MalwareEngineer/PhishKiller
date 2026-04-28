@@ -21,6 +21,8 @@ import type {
   IndicatorStats,
   ActorSummary,
   ActorDetail,
+  ActorStats,
+  CampaignBrief,
   CampaignSummary,
   CampaignDetail,
   FamilySummary,
@@ -228,6 +230,23 @@ export const actors = {
       method: "POST",
       body: JSON.stringify({ indicator_ids }),
     }),
+  // Drill-down endpoints powering the rebuilt detail-page tabs.
+  stats: (id: string) => request<ActorStats>(`/actors/${id}/stats`),
+  kits: (id: string, params?: { offset?: number; limit?: number; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.offset) q.set("offset", String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.status) q.set("status", params.status);
+    return request<PaginatedResponse<KitSummary>>(`/actors/${id}/kits?${q}`);
+  },
+  indicators: (id: string, offset = 0, limit = 50) =>
+    request<PaginatedResponse<IndicatorSummary>>(
+      `/actors/${id}/indicators?offset=${offset}&limit=${limit}`,
+    ),
+  campaigns: (id: string) =>
+    request<CampaignBrief[]>(`/actors/${id}/campaigns`),
+  families: (id: string) =>
+    request<FamilySummary[]>(`/actors/${id}/families`),
 };
 
 // ── Campaigns ──
