@@ -2,16 +2,21 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from darla.api.deps import DbSession, Pagination
 from darla.schemas.actor import (
     ActorCreate,
     ActorDetail,
     ActorListResponse,
+    ActorStats,
     ActorUpdate,
     LinkIndicatorsRequest,
 )
+from darla.schemas.campaign import CampaignSummary
+from darla.schemas.family import FamilySummary
+from darla.schemas.indicator import IndicatorListResponse
+from darla.schemas.kit import KitListResponse
 from darla.services.actor_service import ActorService
 
 router = APIRouter()
@@ -74,3 +79,70 @@ async def link_indicators(
     service = ActorService(db)
     count = await service.link_indicators(actor_id, payload.indicator_ids)
     return {"linked": count}
+
+
+# ---------------------------------------------------------------------------
+# Stats + drill-down endpoints — power the rebuilt detail page tabs.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{actor_id}/stats", response_model=ActorStats)
+async def get_actor_stats(actor_id: uuid.UUID, db: DbSession):
+    """Aggregate Overview-tab payload: counts, target-brand mix,
+    family distribution, monthly timeline, top indicators."""
+    service = ActorService(db)
+    stats = await service.get_stats(actor_id)
+    if stats is None:
+        raise HTTPException(status_code=404, detail="Actor not found")
+    return stats
+
+
+@router.get("/{actor_id}/kits", response_model=KitListResponse)
+async def list_actor_kits(
+    actor_id: uuid.UUID,
+    db: DbSession,
+    pagination: Pagination,
+    status: str | None = Query(  # noqa: A002 — matches schema
+        default=None, description="Filter by kit status",
+    ),
+):
+    """Paginated kit list for the Kits tab."""
+    service = ActorService(db)
+    items, total = await service.list_kits(
+        actor_id,
+        offset=pagination.offset,
+        limit=pagination.limit,
+        status=status,
+    )
+    return KitListResponse(items=items, total=total)
+
+
+@router.get("/{actor_id}/indicators", response_model=IndicatorListResponse)
+async def list_actor_indicators(
+    actor_id: uuid.UUID,
+    db: DbSession,
+    pagination: Pagination,
+):
+    """Paginated indicator list for the Indicators tab."""
+    service = ActorService(db)
+    items, total = await service.list_indicators(
+        actor_id, offset=pagination.offset, limit=pagination.limit,
+    )
+    return IndicatorListResponse(items=items, total=total)
+
+
+@router.get("/{actor_id}/campaigns", response_model=list[CampaignSummary])
+async def list_actor_campaigns(actor_id: uuid.UUID, db: DbSession):
+    """Campaigns linked to this actor.  Not paginated — typical
+    actors have <50 campaigns and the tab benefits from a single
+    flat list."""
+    service = ActorService(db)
+    return await service.list_campaigns(actor_id)
+
+
+@router.get("/{actor_id}/families", response_model=list[FamilySummary])
+async def list_actor_families(actor_id: uuid.UUID, db: DbSession):
+    """Families linked to this actor — same pagination rationale as
+    campaigns."""
+    service = ActorService(db)
+    return await service.list_families(actor_id)

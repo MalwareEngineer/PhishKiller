@@ -44,3 +44,55 @@ export function useDeleteActor() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["actors"] }),
   });
 }
+
+export function useActorStats(id: string | undefined) {
+  return useQuery({
+    queryKey: ["actor", id, "stats"],
+    queryFn: () => actors.stats(id!),
+    enabled: !!id,
+  });
+}
+
+export function useActorKits(
+  id: string | undefined,
+  params?: { offset?: number; limit?: number; status?: string },
+) {
+  return useQuery({
+    queryKey: [
+      "actor", id, "kits",
+      params?.offset ?? 0,
+      params?.limit ?? 25,
+      params?.status ?? "",
+    ],
+    queryFn: () => actors.kits(id!, params),
+    enabled: !!id,
+  });
+}
+
+export function useActorIndicators(
+  id: string | undefined,
+  offset = 0,
+  limit = 25,
+) {
+  return useQuery({
+    queryKey: ["actor", id, "indicators", offset, limit],
+    queryFn: () => actors.indicators(id!, offset, limit),
+    enabled: !!id,
+  });
+}
+
+export function useActorCampaigns(id: string | undefined) {
+  return useQuery({
+    queryKey: ["actor", id, "campaigns"],
+    queryFn: () => actors.campaigns(id!),
+    enabled: !!id,
+  });
+}
+
+export function useActorFamilies(id: string | undefined) {
+  return useQuery({
+    queryKey: ["actor", id, "families"],
+    queryFn: () => actors.families(id!),
+    enabled: !!id,
+  });
+}
