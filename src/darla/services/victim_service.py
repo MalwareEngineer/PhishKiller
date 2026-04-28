@@ -317,6 +317,14 @@ class VictimService:
             if key in allowed:
                 setattr(victim, key, value)
         await self.db.flush()
+        # The ``updated_at`` column has ``onupdate=now()`` server-side,
+        # so the new value lands at the DB layer but the ORM tuple is
+        # still expired post-flush.  Pydantic's response serializer
+        # would lazy-load it from the DB — which fails with a
+        # MissingGreenlet error because we're already in an async
+        # context.  Explicitly refresh so the value is in-memory before
+        # the response goes out.
+        await self.db.refresh(victim)
         return victim
 
     async def list_observations(

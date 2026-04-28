@@ -400,3 +400,63 @@ export interface TaskStatusResponse {
   status: string;
   result?: Record<string, unknown>;
 }
+
+// ── PhishPrint (victims + monitored domains) ──
+
+export type VictimType =
+  | "user"
+  | "exec"
+  | "distro"
+  | "shared_mailbox"
+  | "service"
+  | "unknown";
+
+export type VictimObservationSource =
+  | "oauth_state"
+  | "oauth_login_hint"
+  | "aitm_url_fragment"
+  | "eml_to"
+  | "eml_cc"
+  | "eml_bcc"
+  | "kit_content"
+  | "other";
+
+export interface MonitoredDomain {
+  id: string;
+  domain: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VictimSummary {
+  id: string;
+  email: string;
+  domain: string;
+  display_name: string | null;
+  type: VictimType;
+  first_seen: string | null;
+  last_seen: string | null;
+  created_at: string;
+}
+
+export interface VictimDetail extends VictimSummary {
+  notes: string | null;
+  updated_at: string;
+}
+
+export interface VictimObservationKit {
+  id: string;
+  source_url: string;
+  status: string;
+  sha256: string | null;
+  chain_depth: number;
+}
+
+export interface VictimObservation {
+  id: string;
+  kit_id: string;
+  source: VictimObservationSource;
+  observed_at: string;
+  kit: VictimObservationKit;
+}

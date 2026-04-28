@@ -31,6 +31,11 @@ import type {
   DiffPairGroupsResponse,
   DiffablePair,
   DiffCompareResponse,
+  MonitoredDomain,
+  VictimSummary,
+  VictimDetail,
+  VictimObservation,
+  VictimType,
 } from "@/types/api";
 
 const BASE = "/api/v1";
@@ -409,6 +414,60 @@ export const phishmatch = {
     request<void>(
       `/phishmatch/kit/${kitId}/attribute?entity_type=${entityType}&entity_id=${entityId}`,
       { method: "DELETE" },
+    ),
+};
+
+// ── PhishPrint ──
+
+export const monitoredDomains = {
+  list: (offset = 0, limit = 200) =>
+    request<PaginatedResponse<MonitoredDomain>>(
+      `/monitored-domains?offset=${offset}&limit=${limit}`,
+    ),
+  get: (id: string) =>
+    request<MonitoredDomain>(`/monitored-domains/${id}`),
+  create: (data: { domain: string; description?: string }) =>
+    request<MonitoredDomain>("/monitored-domains", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: Partial<MonitoredDomain>) =>
+    request<MonitoredDomain>(`/monitored-domains/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) =>
+    request<void>(`/monitored-domains/${id}`, { method: "DELETE" }),
+};
+
+export const victims = {
+  list: (params?: {
+    offset?: number;
+    limit?: number;
+    domain?: string;
+    type?: VictimType;
+    search?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.offset) q.set("offset", String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.domain) q.set("domain", params.domain);
+    if (params?.type) q.set("type", params.type);
+    if (params?.search) q.set("search", params.search);
+    return request<PaginatedResponse<VictimSummary>>(`/victims?${q}`);
+  },
+  get: (id: string) => request<VictimDetail>(`/victims/${id}`),
+  update: (
+    id: string,
+    data: { display_name?: string | null; type?: VictimType; notes?: string | null },
+  ) =>
+    request<VictimDetail>(`/victims/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  observations: (id: string, offset = 0, limit = 100) =>
+    request<PaginatedResponse<VictimObservation>>(
+      `/victims/${id}/observations?offset=${offset}&limit=${limit}`,
     ),
 };
 
