@@ -25,6 +25,8 @@ import type {
   CampaignBrief,
   CampaignSummary,
   CampaignDetail,
+  CampaignStats,
+  CampaignYaraRuleCount,
   FamilySummary,
   FamilyDetail,
   FamilyStats,
@@ -273,6 +275,32 @@ export const campaigns = {
       method: "POST",
       body: JSON.stringify({ kit_ids }),
     }),
+  // Drill-down endpoints powering the rebuilt campaign-detail tabs.
+  stats: (id: string) => request<CampaignStats>(`/campaigns/${id}/stats`),
+  // GET sibling of POST /campaigns/{id}/kits — backend uses
+  // /kits-list to disambiguate verb collision (same pattern as
+  // /families/{id}/actors-list).
+  kits: (id: string, params?: { offset?: number; limit?: number; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.offset) q.set("offset", String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.status) q.set("status", params.status);
+    return request<PaginatedResponse<KitSummary>>(`/campaigns/${id}/kits-list?${q}`);
+  },
+  indicators: (id: string, offset = 0, limit = 50) =>
+    request<PaginatedResponse<IndicatorSummary>>(
+      `/campaigns/${id}/indicators?offset=${offset}&limit=${limit}`,
+    ),
+  victims: (id: string, offset = 0, limit = 50) =>
+    request<PaginatedResponse<VictimSummary>>(
+      `/campaigns/${id}/victims?offset=${offset}&limit=${limit}`,
+    ),
+  actors: (id: string) =>
+    request<ActorSummary[]>(`/campaigns/${id}/actors`),
+  families: (id: string) =>
+    request<FamilySummary[]>(`/campaigns/${id}/families`),
+  yaraRules: (id: string) =>
+    request<CampaignYaraRuleCount[]>(`/campaigns/${id}/yara-rules`),
 };
 
 // ── Families ──

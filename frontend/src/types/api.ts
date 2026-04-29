@@ -257,6 +257,65 @@ export interface CampaignBrief {
   target_brand?: string;
 }
 
+// Campaign stats — drives the rebuilt campaign-detail Overview tab.
+export interface CampaignActorCount {
+  actor_id: string;
+  actor_name: string;
+  count: number;
+}
+
+export interface CampaignFamilyCount {
+  family_id: string;
+  family_name: string;
+  count: number;
+}
+
+export interface CampaignVictimCount {
+  victim_id: string;
+  email: string;
+  display_name: string | null;
+  type: string;
+  count: number;
+}
+
+export interface CampaignYaraRuleCount {
+  rule: string;
+  count: number;
+}
+
+export interface CampaignTimelineBucket {
+  month: string; // YYYY-MM
+  count: number;
+}
+
+export interface CampaignIndicatorCount {
+  type: string;
+  value: string;
+  count: number;
+}
+
+export interface CampaignVictimSourceBreakdown {
+  source: string;
+  count: number;
+}
+
+export interface CampaignStats {
+  kit_count: number;
+  actor_count: number;
+  family_count: number;
+  indicator_count: number;
+  victim_count: number;
+  first_seen_computed: string | null;
+  last_seen_computed: string | null;
+  top_actors: CampaignActorCount[];
+  top_families: CampaignFamilyCount[];
+  top_victims: CampaignVictimCount[];
+  top_yara_rules: CampaignYaraRuleCount[];
+  timeline: CampaignTimelineBucket[];
+  top_indicators: CampaignIndicatorCount[];
+  victim_source_breakdown: CampaignVictimSourceBreakdown[];
+}
+
 // ── Families ──
 
 export interface FamilySummary {
