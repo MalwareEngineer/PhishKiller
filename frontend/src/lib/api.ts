@@ -27,6 +27,8 @@ import type {
   CampaignDetail,
   FamilySummary,
   FamilyDetail,
+  FamilyStats,
+  FamilyYaraRuleCount,
   HealthResponse,
   AnalysisResultDetail,
   TaskStatusResponse,
@@ -295,6 +297,28 @@ export const families = {
       method: "POST",
       body: JSON.stringify({ actor_ids }),
     }),
+  // Drill-down endpoints powering the rebuilt family-detail tabs.
+  stats: (id: string) => request<FamilyStats>(`/families/${id}/stats`),
+  kits: (id: string, params?: { offset?: number; limit?: number; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.offset) q.set("offset", String(params.offset));
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.status) q.set("status", params.status);
+    return request<PaginatedResponse<KitSummary>>(`/families/${id}/kits?${q}`);
+  },
+  indicators: (id: string, offset = 0, limit = 50) =>
+    request<PaginatedResponse<IndicatorSummary>>(
+      `/families/${id}/indicators?offset=${offset}&limit=${limit}`,
+    ),
+  yaraRules: (id: string) =>
+    request<FamilyYaraRuleCount[]>(`/families/${id}/yara-rules`),
+  // GET sibling of POST /families/{id}/actors — different verb on the
+  // same path would collide in URLSearchParams routers, so backend
+  // uses /actors-list for the GET.
+  actors: (id: string) =>
+    request<ActorSummary[]>(`/families/${id}/actors-list`),
+  campaigns: (id: string) =>
+    request<CampaignSummary[]>(`/families/${id}/campaigns`),
 };
 
 // ── Analysis ──
