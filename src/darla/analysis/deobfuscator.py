@@ -323,6 +323,19 @@ class JSDeobfuscator:
     # seeds longest-first so the biggest payload wins when multiple match.
     _SEED_BASE64_RE = re.compile(r"""['"]([A-Za-z0-9+/=]{20,})['"]""")
 
+    # Cycled byte-array XOR loop signature.  Distinctive because the
+    # ``% length`` modulo only makes sense when one operand is a byte
+    # array used as a cyclic key, not a single integer key.  Catches
+    # the gate-2 captcha-premium / token-burning kit family:
+    #
+    #   qz2[qo0] = yb4[qo0] ^ qo5[qo0 % qo5.length];
+    #
+    # Variable names are randomized; the structural shape is what
+    # we lock onto.
+    _BYTE_XOR_CYCLE_RE = re.compile(
+        r"""\[\s*\w+\s*\]\s*\^\s*\w+\s*\[\s*\w+\s*%\s*\w+\s*\.\s*length\s*\]""",
+    )
+
     # URL pattern for extracted decoded content
     URL_PATTERN = re.compile(
         r"""https?://[^\s"'<>\]\)\\]+""",
@@ -344,6 +357,19 @@ class JSDeobfuscator:
             if inner:
                 techniques.append("js_xor_base64_nested")
                 decoded_parts.append(inner)
+
+        # Try base64 ciphertext XOR'd against base64 key, byte-cycled.
+        # This is the captcha-premium / burned-token gate pattern where
+        # the loader has two long base64 strings and a ``[i] ^ [i %
+        # key.length]`` loop, then ``new Function(decoded)()`` executes
+        # the result.  The decoded blob almost always contains the real
+        # C2 / next-stage URL plus the cloak ruleset — surfacing it
+        # gives IOC extraction something to anchor on instead of the
+        # decoy retail-site DOM the gate redirects us to.
+        b64_xor = self._try_b64_xor_b64(content)
+        if b64_xor and b64_xor not in decoded_parts:
+            techniques.append("js_b64_xor_b64")
+            decoded_parts.append(b64_xor)
 
         # Try multi-stage loader chains: parse the decoder's source for a
         # sequence of known primitives (atob / hex-XOR / reverse / ROT13 /
@@ -465,6 +491,126 @@ class JSDeobfuscator:
                 continue
 
         return None
+
+    # ------------------------------------------------------------------
+    # Byte-cycled XOR with a base64 key (gate-2 captcha-premium pattern)
+    # ------------------------------------------------------------------
+
+    # Validation tokens — decoded blob should look like real JS or
+    # contain a URL.  Loose set, avoids false positives on random
+    # binary that happens to UTF-8 decode.
+    _DECODED_JS_MARKERS = (
+        "function", "var ", "const ", "let ",
+        "window.", "document.", "location",
+        "fetch(", "eval(", "=>", "navigator.",
+        "addEventListener", "submit", "XMLHttpRequest",
+    )
+
+    @staticmethod
+    def _xor_cycled(cipher: bytes, key: bytes) -> bytes:
+        """XOR ``cipher`` against ``key``, cycling the key byte-wise.
+
+        Pure helper; no I/O.  Returns the bytes — caller decodes /
+        validates as UTF-8.
+        """
+        if not key:
+            return cipher
+        klen = len(key)
+        return bytes(c ^ key[i % klen] for i, c in enumerate(cipher))
+
+    def _try_b64_xor_b64(self, content: str) -> str | None:
+        """Decode the gate-2 / captcha-premium pattern.
+
+        Pattern:
+          let cipher_b64 = "<long_base64>";
+          let key_b64    = "<short_base64>";
+          let cb = Uint8Array.from(atob(cipher_b64), c => c.charCodeAt(0));
+          let kb = Uint8Array.from(atob(key_b64),    c => c.charCodeAt(0));
+          let pt = new Uint8Array(cb.length);
+          for (let i = 0; i < cb.length; i++) pt[i] = cb[i] ^ kb[i % kb.length];
+          (new Function(new TextDecoder().decode(pt)))();
+
+        We don't pattern-match the variable names (they're randomized).
+        We pin on the structural ``[i] ^ [j % k.length]`` loop signature
+        plus at least two base64 string literals in the same source.
+
+        Strategy:
+          1. Reject early unless the cycled-XOR loop is present.
+          2. Collect all base64 literals (length >= 16; the key blob
+             can be short, so we lower the floor here vs the existing
+             ``_SEED_BASE64_RE``).
+          3. Try every unordered pair as (cipher, key).  Cipher is
+             usually the longer of the two; key is usually 16-64 bytes
+             after b64-decode.
+          4. Return the first decoded result that decodes as UTF-8 and
+             contains JS markers (function / var / const / window. /
+             location / fetch / etc.) or a plain URL.
+
+        Returns the decoded JS string, or None if nothing fits.
+        """
+        if not self._BYTE_XOR_CYCLE_RE.search(content):
+            return None
+
+        # Collect candidate base64 literals.  Use a lower floor than the
+        # main seed pattern because the *key* can be short (~24 chars
+        # base64-encoded for a 16-byte key) — the existing 40-char
+        # threshold on ``JS_BASE64_STRING`` would skip the key.
+        b64_re = re.compile(r"""['"]([A-Za-z0-9+/=]{16,})['"]""")
+        seeds: list[str] = []
+        seen: set[str] = set()
+        for m in b64_re.finditer(content):
+            s = m.group(1)
+            if s not in seen:
+                seen.add(s)
+                seeds.append(s)
+        if len(seeds) < 2:
+            return None
+
+        # Sort longest-first so the biggest candidates anchor as
+        # cipher first — but we still try every ordering since the
+        # key is sometimes nearly as long as the cipher (small
+        # payloads).  Cap pair count to keep this O(n²) loop
+        # bounded on pages with lots of incidental base64 strings.
+        seeds.sort(key=len, reverse=True)
+        seeds = seeds[:8]
+
+        best: str | None = None
+        for i in range(len(seeds)):
+            for j in range(len(seeds)):
+                if i == j:
+                    continue
+                try:
+                    cipher = base64.b64decode(seeds[i], validate=False)
+                    key = base64.b64decode(seeds[j], validate=False)
+                except Exception:
+                    continue
+                if not cipher or not key:
+                    continue
+                # Cap output size to match the rest of this module.
+                if len(cipher) > MAX_OUTPUT_SIZE:
+                    continue
+                try:
+                    pt = self._xor_cycled(cipher, key)
+                    decoded = pt.decode("utf-8", errors="strict")
+                except (UnicodeDecodeError, Exception):
+                    continue
+                if len(decoded) < 20:
+                    continue
+                # Validate: the decoded blob must look like JS / contain
+                # a URL.  Strict UTF-8 above already filtered most random
+                # XOR pairings; this catches the rest.
+                lower = decoded.lower()
+                has_marker = any(
+                    m in lower for m in self._DECODED_JS_MARKERS
+                )
+                has_url = bool(self.URL_PATTERN.search(decoded))
+                if not has_marker and not has_url:
+                    continue
+                # Prefer longer plausible decodes (more likely the real
+                # payload vs a coincidental pairing).
+                if best is None or len(decoded) > len(best):
+                    best = decoded
+        return best
 
     # ------------------------------------------------------------------
     # Multi-stage layered chain decoder
