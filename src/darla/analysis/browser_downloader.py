@@ -421,32 +421,116 @@ def _should_capture_body(content_type: str) -> bool:
     return False
 
 
+_SPOOFED_RESIDENTIAL_IP = {
+    "ip": "73.162.19.42",
+    "hostname": "c-73-162-19-42.hsd1.ca.comcast.net",
+    "city": "San Jose",
+    "region": "California",
+    "country": "US",
+    "country_code": "US",
+    "country_name": "United States",
+    "loc": "37.3382,-121.8863",
+    "latitude": 37.3382,
+    "longitude": -121.8863,
+    "org": "AS7922 Comcast Cable Communications, LLC",
+    "asn": "AS7922",
+    "as_name": "Comcast Cable Communications, LLC",
+    "isp": "Comcast Cable Communications, LLC",
+    "postal": "95113",
+    "zip": "95113",
+    "timezone": "America/Los_Angeles",
+    "is_proxy": False,
+    "is_vpn": False,
+    "is_hosting": False,
+    "is_datacenter": False,
+    "is_tor": False,
+    "is_anonymous": False,
+    "is_known_attacker": False,
+    "is_known_abuser": False,
+    "is_threat": False,
+    "is_bogon": False,
+    "is_crawler": False,
+    "company": {
+        "name": "Comcast Cable Communications, LLC",
+        "type": "isp",
+    },
+    "asn_data": {
+        "asn": 7922,
+        "name": "COMCAST-7922",
+        "domain": "comcast.com",
+        "type": "isp",
+        "org": "Comcast Cable Communications, LLC",
+    },
+}
+
+
+# IP/ASN/geo cloaking services that phishing kits hit from client-side JS
+# to decide whether to render the real phish or redirect to a benign
+# decoy page (temu.com, dhgate, mvideo, etc.).  Without interception
+# these services return our worker's actual datacenter ASN; the kit's
+# JS sees `is_hosting=true` / `is_datacenter=true` / cloud ASN names
+# and redirects, so we never capture the credential-harvesting page.
+#
+# Patterns are Playwright glob patterns — see ``_register_cloak_routes``
+# below.  Add new endpoints here as we observe them in the wild.
+_CLOAK_ROUTE_PATTERNS = (
+    "**/ipinfo.io/**",
+    "**/api.ipapi.is/**",
+    "**/ipapi.is/**",
+    "**/ipapi.co/**",
+    "**/api.ipify.org/**",
+    "**/ipify.org/**",
+    "**/ip-api.com/**",
+    "**/api.iplocation.net/**",
+    "**/iplocation.net/**",
+    "**/geoplugin.net/**",
+    "**/freegeoip.app/**",
+    "**/api.country.is/**",
+    "**/extreme-ip-lookup.com/**",
+    "**/ipgeolocation.io/**",
+    "**/api.ipgeolocation.io/**",
+)
+
+
 async def _handle_ipinfo_route(route) -> None:
-    """Intercept ipinfo.io requests used by cloaking gates.
+    """Intercept IP/ASN/geo cloaking lookups used by phishing gates.
 
     Returns a spoofed residential-looking response so IP-based cloaking
-    checks pass.  The phishing page sees a clean ISP name instead of a
-    cloud provider, allowing the real content to render.
+    checks pass — clean residential ISP, no proxy / VPN / hosting flags.
+    Many cloak gates use slightly different field names (ipinfo.io
+    returns ``org``, ipapi.is returns ``company.name`` + ``is_hosting``,
+    ipapi.co returns ``country``, etc.); the spoofed body covers all the
+    common shapes so any of them sees a "clean" residential IP and lets
+    the real phish render.
     """
     import json as _json
 
-    spoofed = {
-        "ip": "73.162.19.42",
-        "hostname": "c-73-162-19-42.hsd1.ca.comcast.net",
-        "city": "San Jose",
-        "region": "California",
-        "country": "US",
-        "loc": "37.3382,-121.8863",
-        "org": "AS7922 Comcast Cable Communications, LLC",
-        "postal": "95113",
-        "timezone": "America/Los_Angeles",
-    }
-    logger.debug("Intercepted ipinfo request: %s", route.request.url)
+    logger.debug("Intercepted cloak lookup: %s", route.request.url)
     await route.fulfill(
         status=200,
         content_type="application/json",
-        body=_json.dumps(spoofed),
+        body=_json.dumps(_SPOOFED_RESIDENTIAL_IP),
     )
+
+
+async def _register_cloak_routes(page) -> None:
+    """Attach cloak-interception handlers for all known IP-lookup
+    services on the given page.  Idempotent: safe to call after a
+    fresh-context retry.
+
+    Each ``page.route()`` call accepts only ONE glob, so we iterate
+    over ``_CLOAK_ROUTE_PATTERNS`` and register the same handler on
+    each.  Failures (already-registered) are swallowed so a fresh
+    page after Turnstile timeout doesn't blow up if it inherited a
+    handler from the prior page.
+    """
+    for pattern in _CLOAK_ROUTE_PATTERNS:
+        try:
+            await page.route(pattern, _handle_ipinfo_route)
+        except Exception as e:
+            logger.debug(
+                "Failed to register cloak route %s: %s", pattern, e,
+            )
 
 
 async def _take_screenshot(page, screenshots_dir: Path, stage: str) -> Path | None:
@@ -634,8 +718,11 @@ async def _async_browser_download(
             page.on("response", _on_response)
             page.on("websocket", _on_websocket)
 
-            # Intercept IP-info lookups used by cloaking gates.
-            await page.route("**/ipinfo.io/**", _handle_ipinfo_route)
+            # Intercept IP/geo cloaking lookups used by phishing gates
+            # (ipinfo.io, ipapi.is, ipapi.co, ip-api.com, etc.) so the
+            # kit's JS sees a clean residential ASN and renders the real
+            # phish instead of redirecting to a decoy site.
+            await _register_cloak_routes(page)
 
             start_time = asyncio.get_event_loop().time()
             nav_start_time = time.monotonic()
@@ -1341,41 +1428,8 @@ async def _detect_bot_gate(page) -> dict | None:
                     };
                 }
 
-                // --- Strategy 1: clickable elements with verify text ---
-                const candidates = [
-                    ...document.querySelectorAll(
-                        'button, a, input[type="button"], input[type="submit"], '
-                        + '[role="button"], [onclick], div[class*="btn"], span[class*="btn"], '
-                        + '[class*="call-action"], [class*="cta"]'
-                    )
-                ];
-
-                const verifyPatterns = [
-                    /^verify$/i, /^verify now$/i, /^verify you are human$/i,
-                    /^check$/i, /^continue$/i, /^i'?m not a robot$/i,
-                    /^press & hold$/i, /^click to continue$/i,
-                    /^confirm$/i, /^human verification$/i,
-                    /^click to verify/i, /^verify your browser/i,
-                    /^verify to /i, /play.*voicemail/i, /listen.*message/i,
-                    /access.*voicemail/i, /^play now$/i, /^listen now$/i,
-                ];
-
-                for (const el of candidates) {
-                    const text = (el.textContent || el.value || '').trim();
-                    if (text.length > 60 || text.length < 3) continue;
-                    for (const pat of verifyPatterns) {
-                        if (pat.test(text)) {
-                            return {
-                                type: 'verify_button',
-                                selector: makeSelector(el),
-                                text: text,
-                                tagName: el.tagName,
-                            };
-                        }
-                    }
-                }
-
-                // --- Strategy 2: div/span checkbox gates ---
+                // Hoisted out of Strategy 2 because Strategy 1's
+                // skip-when-form-driven check below needs them too.
                 const pageText = document.body ? document.body.innerText : '';
                 const gateTextPats = [
                     /prove you are human/i,
@@ -1396,6 +1450,83 @@ async def _detect_bot_gate(page) -> dict | None:
                 ];
                 const hasGateText = gateTextPats.some(p => p.test(pageText));
 
+                // Strategy-priority guard: if the page has a hidden form
+                // with submit-token fields AND a small clickable element
+                // (checkbox-style div/span), the form is driven by the
+                // checkbox click, not by any "Verify" anchor that might
+                // also be on the page.  Skip Strategy 1 in that case so
+                // Strategy 2 / 4 can return the right element.
+                //
+                // Without this, kits with both a "Verify" link and a
+                // verifyCheckbox (e.g. teamfiledocumet.com pattern) match
+                // Strategy 1 first; we click the link, the gate JS clears
+                // the wrapper but never submits the form, and the kit
+                // gets stuck on the gate page (TLSH-matched as ancestor
+                // duplicate).
+                const submitTokenForm = document.querySelector(
+                    'form[method] input[type="hidden"][name*="token"], '
+                    + 'form[method] input[type="hidden"][name*="captcha"], '
+                    + 'form[method] input[type="hidden"][name*="nonce"], '
+                    + 'form[method] input[type="hidden"][name*="challenge"]'
+                );
+                let smallClickable = null;
+                if (submitTokenForm) {
+                    const sweep = document.querySelectorAll('div, span');
+                    for (const d of sweep) {
+                        const cs = window.getComputedStyle(d);
+                        const r = d.getBoundingClientRect();
+                        if (cs.cursor === 'pointer'
+                            && r.width >= 12 && r.width <= 60
+                            && r.height >= 12 && r.height <= 60
+                            && cs.display !== 'none') {
+                            smallClickable = d;
+                            break;
+                        }
+                    }
+                }
+                const skipVerifyButtonStrategy = !!(
+                    submitTokenForm && hasGateText && smallClickable
+                );
+
+                // --- Strategy 1: clickable elements with verify text ---
+                const candidates = [
+                    ...document.querySelectorAll(
+                        'button, a, input[type="button"], input[type="submit"], '
+                        + '[role="button"], [onclick], div[class*="btn"], span[class*="btn"], '
+                        + '[class*="call-action"], [class*="cta"]'
+                    )
+                ];
+
+                const verifyPatterns = [
+                    /^verify$/i, /^verify now$/i, /^verify you are human$/i,
+                    /^check$/i, /^continue$/i, /^i'?m not a robot$/i,
+                    /^press & hold$/i, /^click to continue$/i,
+                    /^confirm$/i, /^human verification$/i,
+                    /^click to verify/i, /^verify your browser/i,
+                    /^verify to /i, /play.*voicemail/i, /listen.*message/i,
+                    /access.*voicemail/i, /^play now$/i, /^listen now$/i,
+                ];
+
+                if (!skipVerifyButtonStrategy) {
+                    for (const el of candidates) {
+                        const text = (el.textContent || el.value || '').trim();
+                        if (text.length > 60 || text.length < 3) continue;
+                        for (const pat of verifyPatterns) {
+                            if (pat.test(text)) {
+                                return {
+                                    type: 'verify_button',
+                                    selector: makeSelector(el),
+                                    text: text,
+                                    tagName: el.tagName,
+                                };
+                            }
+                        }
+                    }
+                }
+
+                // --- Strategy 2: div/span checkbox gates ---
+                // ``pageText`` / ``gateTextPats`` / ``hasGateText`` are
+                // hoisted above so Strategy 1's skip guard can use them.
                 if (hasGateText) {
                     const clickables = [...document.querySelectorAll(
                         'div[class*="check"], div[class*="target"], '
