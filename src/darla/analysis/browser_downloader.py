@@ -812,12 +812,85 @@ async def _async_browser_download(
                 "status": None,
                 "content_type": "text/html",
                 "index": 0,
+                "role": "final",
             })
+
+            # Cross-origin redirect preservation.
+            #
+            # When the page navigates away from the original URL (cloak-and-
+            # decoy gates, burned-token redirects, geo/ASN-based pivots) the
+            # ``page.content()`` snapshot above holds the *final* DOM — often
+            # an unrelated decoy site (temu.com, dhgate, etc.).  The original
+            # URL's response body, captured by ``_on_response`` above, would
+            # otherwise be dropped by the de-duplication branch below because
+            # ``resp["url"] == url``.  That body is the gate HTML — the only
+            # content with attribution value for the kit, since the decoy
+            # landing is by definition noise.
+            #
+            # Save it as ``initial.html`` so IOC extraction, YARA, TLSH, and
+            # the inspector view all see the gate.  The ``role`` field on
+            # the manifest entry lets downstream code distinguish "what we
+            # asked for" from "where we ended up."
+            saved_initial_html = False
+            if final_url and final_url != url:
+                initial_resp = next(
+                    (
+                        r for r in captured_responses
+                        if r["url"] == url
+                        and "html" in (r.get("content_type") or "").lower()
+                    ),
+                    None,
+                )
+                if initial_resp is not None:
+                    try:
+                        body = initial_resp["body"]
+                        initial_path = dest_path / "initial.html"
+                        if isinstance(body, bytes):
+                            try:
+                                initial_path.write_text(
+                                    body.decode("utf-8", errors="replace"),
+                                    encoding="utf-8",
+                                )
+                            except Exception:
+                                initial_path.write_bytes(body)
+                        else:
+                            initial_path.write_text(
+                                str(body), encoding="utf-8",
+                            )
+                        manifest_entries.append({
+                            "filename": "initial.html",
+                            "url": url,
+                            "status": initial_resp.get("status"),
+                            "content_type": initial_resp.get(
+                                "content_type", "text/html",
+                            ),
+                            "index": initial_resp.get("index", 0),
+                            "role": "initial",
+                        })
+                        saved_initial_html = True
+                        logger.info(
+                            "Preserved gate response as initial.html "
+                            "(redirect: %s -> %s)",
+                            url, final_url,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to save initial.html for %s: %s", url, e,
+                        )
+
             if captured_responses:
                 resources_dir.mkdir(parents=True, exist_ok=True)
                 for resp in captured_responses:
-                    # Skip the main document (already saved as page.html)
-                    if resp["url"] == final_url or resp["url"] == url:
+                    # Skip the final document — already saved as page.html.
+                    if resp["url"] == final_url:
+                        continue
+                    # Skip the initial response if we promoted it to
+                    # initial.html above (avoids a duplicate copy under
+                    # _browser_resources/).
+                    if saved_initial_html and resp["url"] == url:
+                        continue
+                    # Same-URL with no redirect: page.html already holds it.
+                    if not saved_initial_html and resp["url"] == url:
                         continue
                     try:
                         res_filename = _sanitize_filename(
