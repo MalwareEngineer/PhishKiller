@@ -7,7 +7,6 @@ import {
   Users,
   Target,
   Layers,
-  Shield,
   ChevronLeft,
   ChevronRight,
   FileDiff,
@@ -16,6 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { DarlaLogo } from "@/components/shared/darla-logo";
 import { useState } from "react";
 
 const navItems = [
@@ -42,7 +42,7 @@ export function Sidebar() {
       )}
     >
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <Shield className="h-6 w-6 shrink-0 text-emerald-500" />
+        <DarlaLogo className="h-6 w-6 text-emerald-500" />
         {!collapsed && (
           <span className="text-lg font-bold tracking-tight">Darla</span>
         )}
