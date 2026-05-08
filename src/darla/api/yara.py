@@ -8,7 +8,7 @@ Sandboxing summary:
 - Per-scan timeout enforced via yara-python's ``timeout=`` arg, plus a
   thread wall-clock ceiling.
 - Hard ceilings on file count, per-file size, and total bytes.
-- Path traversal guarded in ``yara_playground.kit_files_for_scan``.
+- Path traversal guarded in ``yara_playground.enumerate_kit_scan_targets``.
 
 No PII leaves the server beyond what the analyst supplied:
 - Logs record kit IDs, rule counts, durations — never rule source bodies
@@ -24,10 +24,12 @@ import binascii
 import contextlib
 import logging
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import select
 
 from darla.analysis.yara_playground import (
     PLAYGROUND_SCANNABLE_EXTENSIONS,
@@ -37,13 +39,14 @@ from darla.analysis.yara_playground import (
     ScanResult,
     TargetError,
     compile_source,
-    enumerate_kit_files,
+    enumerate_kit_scan_targets,
     is_yara_available,
-    kit_files_for_scan,
     scan_bytes,
     scan_paths,
 )
+from darla.api.deps import DbSession
 from darla.config import get_settings
+from darla.models.kit import Kit
 from darla.schemas.yara import (
     CompileErrorOut,
     CompileRequest,
@@ -233,7 +236,7 @@ async def compile_rule(req: CompileRequest):
 
 
 @router.post("/playground", response_model=PlaygroundResponse)
-async def playground_scan(req: PlaygroundRequest):
+async def playground_scan(req: PlaygroundRequest, db: DbSession):
     _ensure_available()
 
     if not req.kits and not req.raw:
@@ -254,18 +257,45 @@ async def playground_scan(req: PlaygroundRequest):
     opts = _opts_from_in(req.options)
     settings = get_settings()
 
+    # Resolve every selected kit's raw download path up-front (one DB
+    # round-trip total).  Done in async scope so the sync ``_run`` worker
+    # below stays fully filesystem-bound.
+    capped_kits = req.kits[:50]
+    local_paths: dict[str, str | None] = {}
+    if capped_kits:
+        kit_uuids: list[uuid.UUID] = []
+        for kt in capped_kits:
+            try:
+                kit_uuids.append(uuid.UUID(kt.kit_id))
+            except ValueError:
+                # Bad UUID — skip silently; will surface as 0 files
+                # for that kit, consistent with how a missing extract
+                # dir behaves.
+                continue
+        if kit_uuids:
+            rows = (await db.execute(
+                select(Kit.id, Kit.local_path).where(Kit.id.in_(kit_uuids))
+            )).all()
+            local_paths = {str(r.id): r.local_path for r in rows}
+
     def _run() -> ScanResult:
         merged = ScanResult()
 
-        # Resolve kit-file targets.
+        # Resolve kit-file targets across all storage locations
+        # (extracted tree + raw download + browser-resources captures).
         path_targets: list[tuple[Path, str | None, str]] = []
-        for kt in req.kits[:50]:  # also cap on number of kits
+        for kt in capped_kits:
             rels = kt.relative_paths or None
-            path_targets.extend(
-                kit_files_for_scan(
-                    settings.kit_extract_dir, kt.kit_id, relative_paths=rels,
-                )
+            _, tgts = enumerate_kit_scan_targets(
+                kit_id=kt.kit_id,
+                local_path=local_paths.get(kt.kit_id),
+                extract_dir=settings.kit_extract_dir,
+                download_dir=settings.kit_download_dir,
+                extensions=opts.extensions,
+                max_size_mb=opts.max_file_size_mb,
+                relative_paths=rels,
             )
+            path_targets.extend(tgts)
 
         if path_targets:
             r = scan_paths(compiled, paths=path_targets, opts=opts)
@@ -545,19 +575,49 @@ async def delete_user_rule(name: str):
 
 
 @router.get("/scannable-files/{kit_id}", response_model=ScannableFilesResponse)
-async def scannable_files(kit_id: str, max_size_mb: int = 100):
-    """Return the file inventory for a kit's extracted tree."""
-    # Light validation — kit IDs are UUID strings; reject anything else
-    # to prevent path-shaped inputs reaching enumerate_kit_files.
-    if not _RULE_NAME_RE.match(kit_id.replace("-", "")) or len(kit_id) > 64:
-        raise HTTPException(status_code=400, detail="Invalid kit_id")
+async def scannable_files(kit_id: str, db: DbSession, max_size_mb: int = 100):
+    """Return the file inventory for a kit across all storage locations:
+
+    - Extracted tree at ``/app/extracted/{kit_id}/`` (if extraction ran).
+    - Raw download (``kit.local_path``) — typically ``page.html`` for
+      browser-rendered kits or ``download.bin`` for archives.
+    - Browser-resources captures at ``/app/downloads/{kit_id}/_browser_resources/``
+      — every JS/HTML/CSS the rendered page loaded.
+
+    Returns an empty list if the kit row is missing (UUID typo / orphan
+    extracted dir without a corresponding kit) — consistent with the
+    existing behaviour of "kit doesn't exist → no files".
+    """
+    # Validate UUID shape to keep path-style inputs out of the enumerator.
+    try:
+        kit_uuid = uuid.UUID(kit_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid kit_id") from None
 
     settings = get_settings()
-    files = enumerate_kit_files(
-        settings.kit_extract_dir,
-        kit_id,
-        max_size_mb=min(max(1, max_size_mb), 100),
+    capped_max = min(max(1, max_size_mb), 100)
+
+    # Look up the kit's local_path so the raw-download target gets included.
+    # Missing rows (orphan extracted dirs) still return any extracted files
+    # we find on disk.
+    row = (await db.execute(
+        select(Kit.local_path).where(Kit.id == kit_uuid)
+    )).first()
+    local_path = row[0] if row else None
+
+    inventory, _ = enumerate_kit_scan_targets(
+        kit_id=kit_id,
+        local_path=local_path,
+        extract_dir=settings.kit_extract_dir,
+        download_dir=settings.kit_download_dir,
+        max_size_mb=capped_max,
     )
+
+    counts: dict[str, int] = {}
+    for f in inventory:
+        if f.scannable:
+            counts[f.source] = counts.get(f.source, 0) + 1
+
     return ScannableFilesResponse(
         kit_id=kit_id,
         files=[
@@ -567,9 +627,11 @@ async def scannable_files(kit_id: str, max_size_mb: int = 100):
                 mime_type=f.mime_type,
                 extension=f.extension,
                 scannable=f.scannable,
+                source=f.source,
             )
-            for f in files
+            for f in inventory
         ],
-        total=len(files),
-        scannable_count=sum(1 for f in files if f.scannable),
+        total=len(inventory),
+        scannable_count=sum(1 for f in inventory if f.scannable),
+        counts_by_source=counts,
     )

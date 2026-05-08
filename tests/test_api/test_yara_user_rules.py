@@ -202,3 +202,121 @@ def test_save_writes_under_user_dir_only(client: TestClient, tmp_path: Path):
     assert r.status_code in (400, 404, 405)
     rogue = tmp_path / "rules" / "escaped.yar"
     assert not rogue.exists()
+
+
+# ── Multi-source kit scanning (browser-rendered HTML + extracted + raw) ──
+#
+# The user reported "0 files scanned" for kit e2442aec-… even though that
+# kit has page.html + _browser_resources/ in /app/downloads.  Cause was
+# Phase 1 only walking /app/extracted.  These tests cover the fix end-to-
+# end at the API layer, with a mocked DB session so we don't need
+# postgres in the test environment.
+
+
+@pytest.fixture
+def kit_aware_client(tmp_path: Path, monkeypatch):
+    """TestClient with a mocked DB session that returns a fixed local_path
+    for one known kit, plus extract/download dirs scaffolded under tmp.
+    """
+    rules_dir = tmp_path / "rules"
+    (rules_dir / "user").mkdir(parents=True)
+    extract_dir = tmp_path / "extracted"
+    download_dir = tmp_path / "downloads"
+    extract_dir.mkdir()
+    download_dir.mkdir()
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "yara_rules_dir", str(rules_dir))
+    monkeypatch.setattr(settings, "kit_extract_dir", str(extract_dir))
+    monkeypatch.setattr(settings, "kit_download_dir", str(download_dir))
+
+    # Build a fake kit with the same shape as the user's e2442aec-…:
+    # only page.html + _browser_resources, no extracted dir.
+    kit_id = "11111111-2222-3333-4444-555555555555"
+    kit_dir = download_dir / kit_id
+    kit_dir.mkdir()
+    page = kit_dir / "page.html"
+    page.write_text("<html>hello playground</html>")
+    br = kit_dir / "_browser_resources"
+    br.mkdir()
+    (br / "001_loader.js").write_text("var x = 'playground';")
+
+    # Mock DB session that supports both query shapes the router uses:
+    #   select(Kit.id, Kit.local_path)   → r.id, r.local_path  (playground)
+    #   select(Kit.local_path)           → r[0]                (scannable-files)
+    class _FakeRow:
+        def __init__(self, kid: str, path: str):
+            self.id = kid
+            self.local_path = path
+        def __iter__(self):
+            yield self.local_path
+        def __getitem__(self, i):
+            return [self.local_path][i]
+
+    class _FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+        def all(self):
+            return self._rows
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeSession:
+        async def execute(self, stmt):  # noqa: ARG002 — we ignore the stmt
+            return _FakeResult([_FakeRow(kit_id, str(page))])
+
+    async def _override_get_db():
+        yield _FakeSession()
+
+    from darla.database import get_db
+    app = FastAPI()
+    app.include_router(yara_router, prefix="/api/v1/yara")
+    app.dependency_overrides[get_db] = _override_get_db
+
+    client = TestClient(app)
+    client.kit_id = kit_id  # type: ignore[attr-defined]
+    return client
+
+
+def test_scannable_files_includes_raw_and_browser_resources(kit_aware_client: TestClient):
+    """The user's bug: a browser-rendered kit must surface page.html (raw)
+    AND _browser_resources/*.js (browser_resource) — not 0 files.
+    """
+    kid = kit_aware_client.kit_id  # type: ignore[attr-defined]
+    r = kit_aware_client.get(f"/api/v1/yara/scannable-files/{kid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    sources = {f["source"] for f in body["files"]}
+    assert "raw" in sources, "page.html should appear with source=raw"
+    assert "browser_resource" in sources, "_browser_resources/*.js should appear"
+    assert body["scannable_count"] >= 2
+    # counts_by_source should add up
+    assert sum(body["counts_by_source"].values()) == body["scannable_count"]
+
+
+def test_playground_scans_browser_rendered_kit(kit_aware_client: TestClient):
+    """End-to-end: rule scanning a kit with no extracted dir should now
+    produce matches against page.html and the browser resources.
+    """
+    kid = kit_aware_client.kit_id  # type: ignore[attr-defined]
+    r = kit_aware_client.post(
+        "/api/v1/yara/playground",
+        json={
+            "rule_source": GOOD_RULE,
+            "kits": [{"kit_id": kid}],
+            "options": {"include_strings": True, "string_context_bytes": 16},
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["compile"]["ok"] is True
+    assert body["stats"]["files_scanned"] >= 2
+    matched_paths = {m["target_path"] for m in body["matches"]}
+    assert "page.html" in matched_paths
+    assert any("_browser_resources/" in p for p in matched_paths)
+
+
+def test_scannable_files_rejects_non_uuid(kit_aware_client: TestClient):
+    r = kit_aware_client.get("/api/v1/yara/scannable-files/not-a-uuid")
+    assert r.status_code == 400

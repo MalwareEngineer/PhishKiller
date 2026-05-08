@@ -676,13 +676,28 @@ function formatBytes(n: number): string {
 function ScannableFilesPreview({ kitId }: { kitId: string }) {
   const { data } = useScannableFiles(kitId);
   if (!data) return null;
+  const breakdown: string[] = [];
+  const byS = data.counts_by_source ?? {};
+  if (byS.extracted) breakdown.push(`${byS.extracted} extracted`);
+  if (byS.raw) breakdown.push(`${byS.raw} raw`);
+  if (byS.browser_resource) breakdown.push(`${byS.browser_resource} browser`);
   return (
     <div className="rounded-md border border-border p-2 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-1">
         <FileSearch className="h-3 w-3" />
         Kit has <span className="font-medium text-foreground">{data.scannable_count}</span> scannable
-        files (of {data.total} total).
+        file{data.scannable_count === 1 ? "" : "s"}
+        {breakdown.length > 0 && (
+          <span className="opacity-70"> ({breakdown.join(", ")})</span>
+        )}
+        {" "}of {data.total} total.
       </div>
+      {data.scannable_count === 0 && (
+        <div className="mt-1 italic">
+          No scannable text content on disk for this kit. The artifact
+          may be a binary archive that was already discarded after analysis.
+        </div>
+      )}
     </div>
   );
 }

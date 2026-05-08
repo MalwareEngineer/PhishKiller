@@ -117,6 +117,11 @@ class ScannableFile(BaseModel):
     mime_type: str | None = None
     extension: str
     scannable: bool
+    # "extracted" | "raw" | "browser_resource" — drives a colour /
+    # tooltip in the UI so analysts can tell whether a match came from
+    # the unpacked archive vs the rendered page vs a captured network
+    # resource.
+    source: str = "extracted"
 
 
 class ScannableFilesResponse(BaseModel):
@@ -124,6 +129,9 @@ class ScannableFilesResponse(BaseModel):
     files: list[ScannableFile]
     total: int
     scannable_count: int
+    # Per-source counts so the UI can render a quick breakdown badge
+    # (e.g. "12 scannable: 3 extracted, 1 raw, 8 browser_resource").
+    counts_by_source: dict[str, int] = {}
 
 
 class YaraStatusResponse(BaseModel):
