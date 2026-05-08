@@ -1,37 +1,31 @@
 import { cn } from "@/lib/utils";
 
 /**
- * The Darla brand mark — outlined dead fish in a fishbowl.
+ * Darla brand mark — the textured-orange fiery wordmark + matching
+ * D glyph.  Full-colour raster artwork, displayed as ``<img>``: no
+ * theming logic, no mask-image tricks, just the artwork as drawn.
  *
- * Renders the favicon SVG via a CSS ``mask-image`` so the silhouette
- * gets painted in whatever the surrounding text color is (via
- * ``bg-current``).  This keeps a single source of truth — the SVG
- * file at ``/favicon.svg`` — and lets the logo inherit the dark
- * theme's foreground colour, the emerald accent, ``muted-foreground``
- * for collapsed sidebar states, etc., without per-theme asset
- * duplication or inlining a ~26 KB blob into the JS bundle.
+ * Use ``variant="full"`` for the wordmark (sidebar expanded, splash,
+ * about page) and ``variant="mark"`` for the D-only glyph (sidebar
+ * collapsed, favicon-style spots, tight headers).
  */
-export function DarlaLogo({ className }: { className?: string }) {
+export function DarlaLogo({
+  variant = "full",
+  className,
+}: {
+  variant?: "full" | "mark";
+  className?: string;
+}) {
+  const src = variant === "full" ? "/DARLA.png" : "/D.png";
+  // Both source PNGs are exported tight — no transparent margin —
+  // so a small inset shadow / glow lives at the exact edge.  Don't
+  // add padding here; let the parent decide the size box.
   return (
-    <span
-      role="img"
-      aria-label="Darla"
-      className={cn("inline-block bg-current shrink-0", className)}
-      style={{
-        // `mask-image` paints `bg-current` only where the SVG is
-        // opaque; transparent regions punch through.  The favicon
-        // SVG uses fill-rule="evenodd" so the inner cutouts (X eye,
-        // scale lines, etc.) come through as transparent gaps —
-        // works the same way under a mask.
-        maskImage: "url(/favicon.svg)",
-        maskSize: "contain",
-        maskRepeat: "no-repeat",
-        maskPosition: "center",
-        WebkitMaskImage: "url(/favicon.svg)",
-        WebkitMaskSize: "contain",
-        WebkitMaskRepeat: "no-repeat",
-        WebkitMaskPosition: "center",
-      }}
+    <img
+      src={src}
+      alt="Darla"
+      draggable={false}
+      className={cn("select-none", className)}
     />
   );
 }
