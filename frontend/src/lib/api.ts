@@ -48,6 +48,7 @@ import type {
   YaraPlaygroundResponse,
   YaraRuleFileSummary,
   YaraRuleFileSource,
+  YaraSaveRuleResponse,
   YaraScannableFilesResponse,
 } from "@/types/api";
 
@@ -566,6 +567,13 @@ export const yara = {
   rules: () => request<YaraRuleFileSummary[]>("/yara/rules"),
   rule: (name: string) =>
     request<YaraRuleFileSource>(`/yara/rules/${encodeURIComponent(name)}`),
+  saveUserRule: (name: string, content: string) =>
+    request<YaraSaveRuleResponse>(`/yara/rules/user/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    }),
+  deleteUserRule: (name: string) =>
+    request<void>(`/yara/rules/user/${encodeURIComponent(name)}`, { method: "DELETE" }),
   scannableFiles: (kitId: string, max_size_mb?: number) => {
     const q = max_size_mb ? `?max_size_mb=${max_size_mb}` : "";
     return request<YaraScannableFilesResponse>(`/yara/scannable-files/${kitId}${q}`);

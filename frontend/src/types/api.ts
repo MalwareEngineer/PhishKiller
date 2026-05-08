@@ -562,6 +562,15 @@ export interface YaraStatusResponse {
   available: boolean;
   rules_dir: string;
   builtin_rule_files: number;
+  user_rule_files: number;
+}
+
+export interface YaraSaveRuleResponse {
+  name: string;
+  relative_path: string;
+  size: number;
+  compile_ok: boolean;
+  compile_errors: YaraCompileError[];
 }
 
 export interface YaraCompileError {
@@ -625,7 +634,8 @@ export interface YaraKitTarget {
 
 export interface YaraRawTarget {
   name: string;
-  content: string;
+  content?: string;
+  content_b64?: string;
 }
 
 export interface YaraPlaygroundRequest {
@@ -647,13 +657,13 @@ export interface YaraRuleFileSummary {
   relative_path: string;
   size: number;
   rule_count: number;
-  source: "builtin" | "third_party";
+  source: "builtin" | "third_party" | "user";
 }
 
 export interface YaraRuleFileSource {
   name: string;
   relative_path: string;
-  source: "builtin" | "third_party";
+  source: "builtin" | "third_party" | "user";
   content: string;
 }
 

@@ -73,9 +73,13 @@ class KitTargetIn(BaseModel):
 
 class RawTargetIn(BaseModel):
     name: str = Field(..., max_length=200)
-    # Plain text only.  Paste tab is for analyst snippets, not binaries —
-    # uploads (Phase 2) will use a separate endpoint.
-    content: str = Field(..., max_length=2_000_000)
+    # Either text content (paste tab) or base64-encoded bytes (upload tab).
+    # When ``content_b64`` is non-empty it takes precedence and is decoded
+    # into raw bytes.  When empty, ``content`` is treated as utf-8 text.
+    # The 16 MB cap on b64 corresponds to ~12 MB decoded; per-target size
+    # is also clamped by ``max_file_size_mb`` server-side.
+    content: str = Field("", max_length=2_000_000)
+    content_b64: str = Field("", max_length=16_000_000)
 
 
 class PlaygroundRequest(BaseModel):
@@ -97,7 +101,7 @@ class RuleFileSummary(BaseModel):
     relative_path: str
     size: int
     rule_count: int
-    source: str        # "builtin" | "third_party"
+    source: str        # "builtin" | "third_party" | "user"
 
 
 class RuleFileSource(BaseModel):
@@ -126,3 +130,18 @@ class YaraStatusResponse(BaseModel):
     available: bool
     rules_dir: str
     builtin_rule_files: int
+    user_rule_files: int = 0
+
+
+class SaveRuleRequest(BaseModel):
+    # Just the source — the URL path carries the name.  Validated against
+    # an allowlist regex in the API layer.
+    content: str = Field(..., max_length=200_000)
+
+
+class SaveRuleResponse(BaseModel):
+    name: str
+    relative_path: str
+    size: int
+    compile_ok: bool
+    compile_errors: list[CompileErrorOut] = []

@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { yara } from "@/lib/api";
 import type { YaraPlaygroundRequest } from "@/types/api";
 
@@ -43,5 +43,29 @@ export function useCompileRule() {
 export function useScanPlayground() {
   return useMutation({
     mutationFn: (req: YaraPlaygroundRequest) => yara.playground(req),
+  });
+}
+
+export function useSaveUserRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, content }: { name: string; content: string }) =>
+      yara.saveUserRule(name, content),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["yara", "rules"] });
+      qc.invalidateQueries({ queryKey: ["yara", "rule", data.relative_path] });
+      qc.invalidateQueries({ queryKey: ["yara", "status"] });
+    },
+  });
+}
+
+export function useDeleteUserRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => yara.deleteUserRule(name),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["yara", "rules"] });
+      qc.invalidateQueries({ queryKey: ["yara", "status"] });
+    },
   });
 }

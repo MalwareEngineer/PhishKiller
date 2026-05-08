@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useKits } from "@/hooks/use-kits";
 import {
+  useDeleteUserRule,
+  useSaveUserRule,
   useScannableFiles,
   useScanPlayground,
   useYaraRule,
@@ -31,14 +33,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Play, AlertTriangle, X, FileSearch, Trash2 } from "lucide-react";
+import { Play, AlertTriangle, X, FileSearch, Trash2, Save, Upload } from "lucide-react";
 import type {
   YaraKitTarget,
   YaraMatch,
   YaraPlaygroundRequest,
+  YaraRawTarget,
   YaraScanOptions,
   YaraStringMatch,
 } from "@/types/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const STARTER_RULE = `// Sample rule — edit me, then click Run.
 //
@@ -91,7 +101,14 @@ export function YaraPage() {
   const [selectedKitIds, setSelectedKitIds] = useState<string[]>(initialKit ? [initialKit] : []);
   const [pasteName, setPasteName] = useState("paste.txt");
   const [pasteContent, setPasteContent] = useState("");
-  const [targetTab, setTargetTab] = useState<"kits" | "paste">("kits");
+  const [uploads, setUploads] = useState<{ name: string; size: number; b64: string }[]>([]);
+  const [targetTab, setTargetTab] = useState<"kits" | "paste" | "upload">("kits");
+
+  // Save dialog
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const saveRule = useSaveUserRule();
+  const deleteRule = useDeleteUserRule();
 
   // Options
   const [maxFiles, setMaxFiles] = useState(500);
@@ -116,11 +133,15 @@ export function YaraPage() {
       return;
     }
     const kits: YaraKitTarget[] = selectedKitIds.map((id) => ({ kit_id: id }));
-    const raw = pasteContent.trim()
-      ? [{ name: pasteName || "paste.txt", content: pasteContent }]
-      : [];
+    const raw: YaraRawTarget[] = [];
+    if (pasteContent.trim()) {
+      raw.push({ name: pasteName || "paste.txt", content: pasteContent });
+    }
+    for (const u of uploads) {
+      raw.push({ name: u.name, content_b64: u.b64 });
+    }
     if (kits.length === 0 && raw.length === 0) {
-      toast.error("Pick at least one kit or paste some text first");
+      toast.error("Pick a kit, paste a snippet, or upload a file first");
       return;
     }
 
@@ -163,6 +184,55 @@ export function YaraPage() {
 
   const result = scan.data;
 
+  // Inferred "current saved name" — only set when the loaded rule is a
+  // user rule; built-in rules can't be overwritten so the Save button
+  // becomes Save As.
+  const currentUserRuleName =
+    loadedRule.data?.source === "user" ? loadedRule.data.name : null;
+
+  const handleSave = async (name: string) => {
+    if (!name) {
+      toast.error("Pick a name first");
+      return;
+    }
+    try {
+      const r = await saveRule.mutateAsync({ name, content: ruleSource });
+      if (!r.compile_ok) {
+        toast.error("Rule didn't compile — fix errors before saving");
+        return;
+      }
+      toast.success(`Saved as user/${r.name}.yar`);
+      setSaveDialogOpen(false);
+      setSaveAsName("");
+      setActiveRuleName(r.relative_path);
+      setSearchParams((prev) => {
+        const p = new URLSearchParams(prev);
+        p.set("rule", r.relative_path);
+        return p;
+      });
+    } catch (e) {
+      toast.error(`Save failed: ${(e as Error).message}`);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!currentUserRuleName) return;
+    if (!confirm(`Delete user rule "${currentUserRuleName}"?`)) return;
+    try {
+      await deleteRule.mutateAsync(currentUserRuleName);
+      toast.success(`Deleted user/${currentUserRuleName}.yar`);
+      setActiveRuleName("");
+      setRuleSource(STARTER_RULE);
+      setSearchParams((prev) => {
+        const p = new URLSearchParams(prev);
+        p.delete("rule");
+        return p;
+      });
+    } catch (e) {
+      toast.error(`Delete failed: ${(e as Error).message}`);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
@@ -174,7 +244,7 @@ export function YaraPage() {
               <>
                 {" "}<span className="opacity-70">
                   {status.data.available
-                    ? `${status.data.builtin_rule_files} builtin rule files`
+                    ? `${status.data.builtin_rule_files} builtin · ${status.data.user_rule_files} user rule files`
                     : "yara-python not installed in API"}
                 </span>
               </>
@@ -195,17 +265,51 @@ export function YaraPage() {
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
             <CardTitle className="text-base">Rule editor</CardTitle>
-            <RulePicker
-              activeName={activeRuleName}
-              onPick={(name) => {
-                setActiveRuleName(name);
-                if (name) setSearchParams((prev) => {
-                  const p = new URLSearchParams(prev);
-                  p.set("rule", name);
-                  return p;
-                });
-              }}
-            />
+            <div className="flex items-center gap-2">
+              <RulePicker
+                activeName={activeRuleName}
+                onPick={(name) => {
+                  setActiveRuleName(name);
+                  if (name) setSearchParams((prev) => {
+                    const p = new URLSearchParams(prev);
+                    p.set("rule", name);
+                    return p;
+                  });
+                }}
+              />
+              {currentUserRuleName ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleSave(currentUserRuleName)}
+                    disabled={saveRule.isPending}
+                    title="Overwrite the current user rule"
+                  >
+                    <Save className="mr-1 h-3 w-3" /> Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleDelete}
+                    disabled={deleteRule.isPending}
+                    title="Delete this user rule"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setSaveAsName(currentUserRuleName ?? "");
+                  setSaveDialogOpen(true);
+                }}
+              >
+                <Save className="mr-1 h-3 w-3" /> Save as…
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <YaraEditor value={ruleSource} onChange={setRuleSource} />
@@ -213,16 +317,52 @@ export function YaraPage() {
           </CardContent>
         </Card>
 
+        <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Save rule</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                Saved to <code className="font-mono">rules/user/&lt;name&gt;.yar</code>.
+                Letters, digits, <code>_</code> and <code>-</code> only; ≤ 64 chars.
+                User rules are gitignored — copy out to the team rules repo to ship.
+              </p>
+              <Input
+                placeholder="my_rule_name"
+                value={saveAsName}
+                onChange={(e) => setSaveAsName(e.target.value)}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSave(saveAsName);
+                }}
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setSaveDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => handleSave(saveAsName)}
+                disabled={!saveAsName || saveRule.isPending}
+              >
+                Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* ── Targets pane ── */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Targets</CardTitle>
           </CardHeader>
           <CardContent>
-            <Tabs value={targetTab} onValueChange={(v) => setTargetTab(v as "kits" | "paste")}>
+            <Tabs value={targetTab} onValueChange={(v) => setTargetTab(v as "kits" | "paste" | "upload")}>
               <TabsList>
                 <TabsTrigger value="kits">Stored kits</TabsTrigger>
                 <TabsTrigger value="paste">Paste</TabsTrigger>
+                <TabsTrigger value="upload">Upload</TabsTrigger>
               </TabsList>
               <TabsContent value="kits" className="space-y-3 pt-2">
                 <KitTargetPicker
@@ -245,6 +385,9 @@ export function YaraPage() {
                 <p className="text-xs text-muted-foreground">
                   Snippet is sent to the API per scan; not persisted server-side.
                 </p>
+              </TabsContent>
+              <TabsContent value="upload" className="space-y-2 pt-2">
+                <UploadTargetPicker uploads={uploads} onChange={setUploads} maxSizeMb={maxFileSizeMb} />
               </TabsContent>
             </Tabs>
 
@@ -328,6 +471,11 @@ export function YaraPage() {
 function RulePicker({ activeName, onPick }: { activeName: string; onPick: (name: string) => void }) {
   const { data: rules } = useYaraRules();
   if (!rules?.length) return null;
+  // Sort: user first (most relevant for an analyst), then builtin, then third_party.
+  const sortRank = (s: string) => (s === "user" ? 0 : s === "builtin" ? 1 : 2);
+  const sorted = [...rules].sort(
+    (a, b) => sortRank(a.source) - sortRank(b.source) || a.relative_path.localeCompare(b.relative_path),
+  );
   return (
     <Select value={activeName || "__none__"} onValueChange={(v) => onPick(v === "__none__" ? "" : (v as string))}>
       <SelectTrigger size="sm" className="min-w-[220px]">
@@ -335,9 +483,12 @@ function RulePicker({ activeName, onPick }: { activeName: string; onPick: (name:
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="__none__">— starter template —</SelectItem>
-        {rules.map((r) => (
+        {sorted.map((r) => (
           <SelectItem key={r.relative_path} value={r.relative_path}>
-            {r.relative_path} ({r.rule_count})
+            <span className="font-mono text-xs">{r.relative_path}</span>
+            <span className="ml-2 text-[10px] text-muted-foreground">
+              {r.source === "user" ? "user" : r.source === "third_party" ? "t4d" : "builtin"} · {r.rule_count}
+            </span>
           </SelectItem>
         ))}
       </SelectContent>
@@ -429,6 +580,93 @@ function KitTargetPicker({
       {selected.length === 1 && <ScannableFilesPreview kitId={selected[0]} />}
     </div>
   );
+}
+
+function UploadTargetPicker({
+  uploads,
+  onChange,
+  maxSizeMb,
+}: {
+  uploads: { name: string; size: number; b64: string }[];
+  onChange: (next: { name: string; size: number; b64: string }[]) => void;
+  maxSizeMb: number;
+}) {
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const next = [...uploads];
+    for (const file of Array.from(files)) {
+      if (file.size > maxSizeMb * 1024 * 1024) {
+        toast.error(`${file.name} exceeds ${maxSizeMb} MB cap`);
+        continue;
+      }
+      const buf = await file.arrayBuffer();
+      const b64 = arrayBufferToBase64(buf);
+      next.push({ name: file.name, size: file.size, b64 });
+      if (next.length >= 20) {
+        toast.warning("Upload tab capped at 20 files per scan");
+        break;
+      }
+    }
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-2">
+      <label className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border bg-muted/20 p-6 text-xs text-muted-foreground transition-colors hover:bg-muted/40 cursor-pointer">
+        <Upload className="h-5 w-5" />
+        <span>Click to choose files (up to {maxSizeMb} MB each, 20 max per scan)</span>
+        <span className="text-[10px] opacity-60">
+          Files are read in your browser and sent base64-encoded with the scan request.
+          Nothing is persisted server-side.
+        </span>
+        <input
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => handleFiles(e.target.files)}
+        />
+      </label>
+      {uploads.length > 0 && (
+        <ul className="divide-y divide-border rounded-md border border-border text-xs">
+          {uploads.map((u, i) => (
+            <li key={i} className="flex items-center justify-between gap-2 p-2">
+              <div className="flex min-w-0 flex-col">
+                <span className="truncate font-mono">{u.name}</span>
+                <span className="text-[10px] text-muted-foreground">{formatBytes(u.size)}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onChange(uploads.filter((_, j) => j !== i))}
+                className="opacity-70 hover:opacity-100"
+                aria-label="Remove"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  // Avoid String.fromCharCode(...new Uint8Array(buf)) which blows the
+  // call-stack on multi-MB buffers.  Chunk into 32 KB pieces.
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function ScannableFilesPreview({ kitId }: { kitId: string }) {

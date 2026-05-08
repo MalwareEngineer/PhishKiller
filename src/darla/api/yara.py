@@ -19,6 +19,9 @@ No PII leaves the server beyond what the analyst supplied:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import contextlib
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +53,8 @@ from darla.schemas.yara import (
     PlaygroundResponse,
     RuleFileSource,
     RuleFileSummary,
+    SaveRuleRequest,
+    SaveRuleResponse,
     ScannableFile,
     ScannableFilesResponse,
     ScanOptionsIn,
@@ -72,6 +77,39 @@ _SCAN_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yara-play
 _WALLCLOCK_GRACE_SECONDS = 5
 
 _RULE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+# Stricter regex for user-saveable rule filenames.  Disallows path
+# separators, dots (other than the .yar extension we add ourselves),
+# leading/trailing dashes.  Mirrors common YARA rule naming.
+_USER_RULE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,63}$")
+
+
+def _user_rules_dir() -> Path:
+    settings = get_settings()
+    return Path(settings.yara_rules_dir).resolve() / "user"
+
+
+def _resolve_user_rule_path(name: str) -> Path:
+    """Validate ``name`` and return the absolute path under rules/user/.
+
+    Raises HTTPException(400) on any unsafe input.  Resolved path is
+    re-checked against the user dir to defeat symlink games.
+    """
+    if not _USER_RULE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid rule name. Use letters, digits, _ and - only, "
+                "starting with a letter, ≤ 64 chars."
+            ),
+        )
+    user_dir = _user_rules_dir()
+    candidate = (user_dir / f"{name}.yar").resolve()
+    try:
+        candidate.relative_to(user_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid rule path") from None
+    return candidate
 
 
 def _ensure_available() -> None:
@@ -162,14 +200,24 @@ async def yara_status():
     settings = get_settings()
     rules_path = Path(settings.yara_rules_dir)
     builtin = 0
+    user = 0
     if rules_path.is_dir():
-        builtin = sum(1 for _ in rules_path.glob("**/*.yar")) + sum(
-            1 for _ in rules_path.glob("**/*.yara")
-        )
+        for fp in rules_path.rglob("*"):
+            if not fp.is_file() or fp.suffix.lower() not in (".yar", ".yara"):
+                continue
+            try:
+                rel = fp.relative_to(rules_path).as_posix()
+            except ValueError:
+                continue
+            if rel.startswith("user/"):
+                user += 1
+            else:
+                builtin += 1
     return YaraStatusResponse(
         available=is_yara_available(),
         rules_dir=str(rules_path),
         builtin_rule_files=builtin,
+        user_rule_files=user,
     )
 
 
@@ -228,7 +276,18 @@ async def playground_scan(req: PlaygroundRequest):
         for raw in req.raw[:20]:
             if merged.files_scanned >= opts.max_files:
                 break
-            data = raw.content.encode("utf-8", errors="replace")
+            # content_b64 wins over content (binary upload path).
+            if raw.content_b64:
+                try:
+                    data = base64.b64decode(raw.content_b64, validate=True)
+                except (ValueError, binascii.Error):
+                    merged.target_errors.append(
+                        TargetError(target=raw.name, error="invalid base64")
+                    )
+                    merged.files_skipped += 1
+                    continue
+            else:
+                data = raw.content.encode("utf-8", errors="replace")
             if len(data) > opts.max_file_size_mb * 1024 * 1024:
                 merged.target_errors.append(
                     TargetError(target=raw.name, error="exceeds max_file_size_mb")
@@ -311,8 +370,11 @@ def _merge(into: ScanResult, src: ScanResult) -> None:
 
 @router.get("/rules", response_model=list[RuleFileSummary])
 async def list_rules():
-    """List installed YARA rule files (read-only).  Excludes ``rules/user/``
-    which is Phase 2.
+    """List installed YARA rule files.  Tags each entry with its source:
+
+    - ``user`` — analyst-saved rules under ``rules/user/``.
+    - ``third_party`` — rules under ``rules/t4d/`` (gitsubmodule).
+    - ``builtin`` — everything else (production rule bundle).
     """
     settings = get_settings()
     rules_path = Path(settings.yara_rules_dir)
@@ -327,8 +389,12 @@ async def list_rules():
             rel = fp.relative_to(rules_path).as_posix()
         except ValueError:
             continue
-        # Tag third-party (t4d submodule) so the UI can colour it differently.
-        source_kind = "third_party" if rel.startswith("t4d/") else "builtin"
+        if rel.startswith("user/"):
+            source_kind = "user"
+        elif rel.startswith("t4d/"):
+            source_kind = "third_party"
+        else:
+            source_kind = "builtin"
         try:
             text = fp.read_text(errors="replace")
         except OSError:
@@ -392,7 +458,12 @@ async def get_rule(name: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid rule path") from None
 
-    source_kind = "third_party" if rel.startswith("t4d/") else "builtin"
+    if rel.startswith("user/"):
+        source_kind = "user"
+    elif rel.startswith("t4d/"):
+        source_kind = "third_party"
+    else:
+        source_kind = "builtin"
     try:
         content = candidate.read_text(errors="replace")
     except OSError as e:
@@ -404,6 +475,73 @@ async def get_rule(name: str):
         source=source_kind,
         content=content,
     )
+
+
+@router.put("/rules/user/{name}", response_model=SaveRuleResponse)
+async def save_user_rule(name: str, req: SaveRuleRequest):
+    """Save (or overwrite) an analyst rule under ``rules/user/{name}.yar``.
+
+    Compiles before writing — refuses to persist a rule that doesn't
+    parse, so the prod scanner won't choke on the next worker restart.
+    """
+    _ensure_available()
+    target = _resolve_user_rule_path(name)
+
+    # Compile-check first.  If compile fails we still return 200 with
+    # ``compile_ok=False`` and the errors, mirroring the playground
+    # contract — but we do not write the file.
+    compile_result, _ = compile_source(req.content)
+    if not compile_result.ok:
+        return SaveRuleResponse(
+            name=name,
+            relative_path=f"user/{name}.yar",
+            size=0,
+            compile_ok=False,
+            compile_errors=[
+                CompileErrorOut(line=e.line, column=e.column, message=e.message)
+                for e in compile_result.errors
+            ],
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write via tmp + replace so a crash mid-write can't leave
+    # a half-flushed rule that breaks the prod scanner.
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    try:
+        tmp.write_text(req.content, encoding="utf-8", newline="\n")
+        tmp.replace(target)
+    except OSError as e:
+        if tmp.exists():
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}") from None
+
+    size = target.stat().st_size
+    logger.info(
+        "yara playground save: name=%s size=%d rules=%d",
+        name, size, compile_result.rules_count,
+    )
+    return SaveRuleResponse(
+        name=name,
+        relative_path=f"user/{name}.yar",
+        size=size,
+        compile_ok=True,
+        compile_errors=[],
+    )
+
+
+@router.delete("/rules/user/{name}", status_code=204)
+async def delete_user_rule(name: str):
+    """Delete an analyst rule.  No-op (404) if the rule doesn't exist."""
+    target = _resolve_user_rule_path(name)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Rule not found")
+    try:
+        target.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}") from None
+    logger.info("yara playground delete: name=%s", name)
+    return None
 
 
 @router.get("/scannable-files/{kit_id}", response_model=ScannableFilesResponse)
