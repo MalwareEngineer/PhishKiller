@@ -58,7 +58,11 @@ private/
 
 # YARA signatures — t4d is third-party, custom rules are tracked
 rules/t4d/
+# Analyst scratch from the in-app Yara playground.  May contain PII
+# (kit URLs, victim email patterns) baked into rule strings — keep local.
+rules/user/
 !rules/.gitkeep
+!rules/user/.gitkeep
 
 # Claude Code
 .claude/

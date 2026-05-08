@@ -555,3 +555,129 @@ export interface VictimObservation {
   observed_at: string;
   kit: VictimObservationKit;
 }
+
+// ── YARA Playground ──
+
+export interface YaraStatusResponse {
+  available: boolean;
+  rules_dir: string;
+  builtin_rule_files: number;
+  user_rule_files: number;
+}
+
+export interface YaraSaveRuleResponse {
+  name: string;
+  relative_path: string;
+  size: number;
+  compile_ok: boolean;
+  compile_errors: YaraCompileError[];
+}
+
+export interface YaraCompileError {
+  line: number | null;
+  column: number | null;
+  message: string;
+}
+
+export interface YaraCompileResult {
+  ok: boolean;
+  rules_count: number;
+  errors: YaraCompileError[];
+  warnings: string[];
+}
+
+export interface YaraStringMatch {
+  identifier: string;
+  offset: number;
+  matched: string;
+  context_before: string;
+  context_after: string;
+}
+
+export interface YaraMatch {
+  rule: string;
+  namespace: string;
+  tags: string[];
+  meta: Record<string, string | number | boolean>;
+  target_kit_id: string | null;
+  target_path: string;
+  target_size: number;
+  target_mime: string | null;
+  strings: YaraStringMatch[];
+}
+
+export interface YaraTargetError {
+  target: string;
+  error: string;
+}
+
+export interface YaraScanStats {
+  files_scanned: number;
+  files_skipped: number;
+  bytes_scanned: number;
+  duration_ms: number;
+}
+
+export interface YaraScanOptions {
+  timeout_seconds?: number;
+  max_files?: number;
+  max_file_size_mb?: number;
+  include_strings?: boolean;
+  string_context_bytes?: number;
+  extensions?: string[];
+}
+
+export interface YaraKitTarget {
+  kit_id: string;
+  relative_paths?: string[];
+}
+
+export interface YaraRawTarget {
+  name: string;
+  content?: string;
+  content_b64?: string;
+}
+
+export interface YaraPlaygroundRequest {
+  rule_source: string;
+  kits?: YaraKitTarget[];
+  raw?: YaraRawTarget[];
+  options?: YaraScanOptions;
+}
+
+export interface YaraPlaygroundResponse {
+  compile: YaraCompileResult;
+  stats: YaraScanStats;
+  matches: YaraMatch[];
+  target_errors: YaraTargetError[];
+}
+
+export interface YaraRuleFileSummary {
+  name: string;
+  relative_path: string;
+  size: number;
+  rule_count: number;
+  source: "builtin" | "third_party" | "user";
+}
+
+export interface YaraRuleFileSource {
+  name: string;
+  relative_path: string;
+  source: "builtin" | "third_party" | "user";
+  content: string;
+}
+
+export interface YaraScannableFile {
+  relative_path: string;
+  size: number;
+  mime_type: string | null;
+  extension: string;
+  scannable: boolean;
+}
+
+export interface YaraScannableFilesResponse {
+  kit_id: string;
+  files: YaraScannableFile[];
+  total: number;
+  scannable_count: number;
+}

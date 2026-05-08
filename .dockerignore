@@ -3,6 +3,7 @@
 .env
 downloads/
 extracted/
+rules/user/
 __pycache__/
 *.pyc
 .mypy_cache/
