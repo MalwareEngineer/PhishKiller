@@ -371,6 +371,17 @@ def scan_paths(
     return result
 
 
+# Subdirectory under /app/downloads/{kit_id}/ that holds per-resource captures
+# from a browser render — every JS/HTML/CSS/JSON the page loaded.  These are
+# high-value YARA targets so we include them by default.
+BROWSER_RESOURCES_SUBDIR = "_browser_resources"
+
+# Subdirs / files inside the download dir that should NOT be scanned.
+# ``_screenshots`` is binary PNGs; ``requests.json`` is the network log
+# (no malicious payloads, just URL metadata that would clutter results).
+DOWNLOAD_SKIP_NAMES: frozenset[str] = frozenset({"_screenshots", "requests.json"})
+
+
 @dataclass
 class FileEntry:
     relative_path: str
@@ -378,6 +389,11 @@ class FileEntry:
     mime_type: str | None
     extension: str
     scannable: bool
+    # Where the file lives — drives display in the UI and drives the
+    # "display_path" prefix when scanning so analysts can tell whether a
+    # match came from the unpacked archive vs the rendered page vs a
+    # captured browser resource.
+    source: str = "extracted"  # "extracted" | "raw" | "browser_resource"
 
 
 def enumerate_kit_files(
@@ -473,3 +489,247 @@ def kit_files_for_scan(
         if candidate.is_file():
             resolved.append((candidate, kit_id, rel.replace(os.sep, "/")))
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# Multi-source enumeration — covers the three places kit content can live:
+#
+#   1. /app/extracted/{kit_id}/                 — unpacked archive contents
+#   2. /app/downloads/{kit_id}/<file>           — raw download (kit.local_path)
+#   3. /app/downloads/{kit_id}/_browser_resources/  — per-request captures
+#                                                  from the rendered page
+#
+# Browser-rendered HTML kits (mime_type=text/html, ~54% of analyzed kits at
+# time of writing) have NO extracted dir — their entire scannable surface is
+# in the downloads dir.  Walking only /app/extracted/ misses them entirely,
+# which is what the user hit with kit e2442aec-….
+# ---------------------------------------------------------------------------
+
+
+def _walk_dir_targets(
+    base: Path,
+    *,
+    kit_id: str,
+    source: str,
+    display_prefix: str = "",
+    extensions: frozenset[str] | None,
+    max_bytes: int,
+    skip_names: frozenset[str] = frozenset(),
+) -> tuple[list[FileEntry], list[tuple[Path, str | None, str]]]:
+    """Walk ``base`` and return (FileEntry inventory, scan-target tuples).
+
+    The two outputs share the same files but in different shapes — the
+    inventory drives /yara/scannable-files, the tuples feed scan_paths.
+    Shared logic is what makes them produce a consistent view.
+    """
+    inventory: list[FileEntry] = []
+    targets: list[tuple[Path, str | None, str]] = []
+    if not base.is_dir():
+        return inventory, targets
+
+    try:
+        base_resolved = base.resolve()
+    except OSError:
+        return inventory, targets
+
+    ext_set = extensions or PLAYGROUND_SCANNABLE_EXTENSIONS
+
+    for fp in sorted(base.rglob("*")):
+        if not fp.is_file():
+            continue
+        try:
+            rel = fp.relative_to(base)
+        except ValueError:
+            continue
+        # Skip the noise dirs / files we never want to scan even when
+        # they match the extension allowlist (e.g. requests.json).
+        rel_parts = rel.parts
+        if rel_parts and rel_parts[0] in skip_names:
+            continue
+        if fp.name in skip_names:
+            continue
+
+        # Symlink containment.
+        try:
+            resolved = fp.resolve()
+            if not str(resolved).startswith(str(base_resolved)):
+                continue
+        except OSError:
+            continue
+
+        try:
+            size = fp.stat().st_size
+        except OSError:
+            continue
+
+        ext = fp.suffix.lower()
+        basename = fp.name.lower()
+        scannable = (
+            (ext in ext_set or basename == ".htaccess")
+            and size <= max_bytes
+        )
+        mime, _ = mimetypes.guess_type(fp.name)
+        rel_posix = rel.as_posix().replace(os.sep, "/")
+        display = f"{display_prefix}{rel_posix}" if display_prefix else rel_posix
+
+        inventory.append(FileEntry(
+            relative_path=display,
+            size=size,
+            mime_type=mime,
+            extension=ext.lstrip("."),
+            scannable=scannable,
+            source=source,
+        ))
+        if scannable:
+            targets.append((fp, kit_id, display))
+
+    return inventory, targets
+
+
+def _resolve_local_path_target(
+    local_path: str | None,
+    download_base: Path,
+    *,
+    kit_id: str,
+    extensions: frozenset[str] | None,
+    max_bytes: int,
+) -> tuple[FileEntry | None, tuple[Path, str | None, str] | None]:
+    """Add the kit's raw download (``kit.local_path``) as a scan target.
+
+    Skipped if local_path is missing, escapes the download dir (defense
+    against absolute paths from a hostile DB row), or is the same file
+    we'd already pick up by walking ``/app/downloads/{kit_id}/`` — the
+    walker covers it via the inventory loop, but we still want to mark
+    it as ``source="raw"`` for clarity in the UI.
+    """
+    if not local_path:
+        return None, None
+    fp = Path(local_path)
+    if not fp.is_file():
+        return None, None
+    try:
+        fp_resolved = fp.resolve()
+        base_resolved = download_base.resolve()
+        if not str(fp_resolved).startswith(str(base_resolved)):
+            return None, None
+        rel = fp_resolved.relative_to(base_resolved).as_posix()
+    except (OSError, ValueError):
+        return None, None
+    try:
+        size = fp.stat().st_size
+    except OSError:
+        return None, None
+
+    ext = fp.suffix.lower()
+    basename = fp.name.lower()
+    ext_set = extensions or PLAYGROUND_SCANNABLE_EXTENSIONS
+    scannable = (
+        (ext in ext_set or basename == ".htaccess")
+        and size <= max_bytes
+    )
+    mime, _ = mimetypes.guess_type(fp.name)
+    display = rel  # already kit-id-prefixed since base = download_base/kit_id
+    entry = FileEntry(
+        relative_path=display,
+        size=size,
+        mime_type=mime,
+        extension=ext.lstrip("."),
+        scannable=scannable,
+        source="raw",
+    )
+    target = (fp, kit_id, display) if scannable else None
+    return entry, target
+
+
+def enumerate_kit_scan_targets(
+    *,
+    kit_id: str,
+    local_path: str | None,
+    extract_dir: str,
+    download_dir: str,
+    extensions: frozenset[str] | None = None,
+    max_size_mb: int = MAX_FILE_SIZE_MB_CEILING,
+    relative_paths: list[str] | None = None,
+) -> tuple[list[FileEntry], list[tuple[Path, str | None, str]]]:
+    """Resolve every scannable file across all storage locations for a kit.
+
+    Returns ``(inventory, scan_targets)``:
+      - ``inventory`` — every file (scannable + non-scannable) for the
+        /yara/scannable-files response.
+      - ``scan_targets`` — the (path, kit_id, display_path) tuples to
+        feed to ``scan_paths``.
+
+    When ``relative_paths`` is provided, only those files are returned —
+    they're resolved against either the extracted dir or the downloads
+    dir based on which exists, with traversal protection.
+    """
+    max_bytes = max_size_mb * 1024 * 1024
+    extract_base = (Path(extract_dir) / kit_id).resolve()
+    download_base = (Path(download_dir) / kit_id).resolve()
+
+    # Constrained mode — analyst picked specific files in the UI.
+    if relative_paths is not None:
+        targets: list[tuple[Path, str | None, str]] = []
+        for rel in relative_paths:
+            if not rel or rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
+                continue
+            for base in (extract_base, download_base):
+                if not base.is_dir():
+                    continue
+                candidate = (base / rel).resolve()
+                try:
+                    candidate.relative_to(base)
+                except ValueError:
+                    continue
+                if candidate.is_file():
+                    targets.append((candidate, kit_id, rel.replace(os.sep, "/")))
+                    break
+        return [], targets
+
+    # Default mode — full inventory across all sources.
+    full_inventory: list[FileEntry] = []
+    full_targets: list[tuple[Path, str | None, str]] = []
+
+    # 1. Extracted tree (no display prefix — keep the existing path shape
+    #    so saved scans stay stable).
+    inv, tgts = _walk_dir_targets(
+        extract_base,
+        kit_id=kit_id, source="extracted",
+        display_prefix="",
+        extensions=extensions, max_bytes=max_bytes,
+    )
+    full_inventory.extend(inv)
+    full_targets.extend(tgts)
+
+    seen_paths: set[Path] = {Path(t[0]).resolve() for t in full_targets}
+
+    # 2. Browser-resources subdirectory (rendered-page captures).
+    browser_base = download_base / BROWSER_RESOURCES_SUBDIR
+    inv, tgts = _walk_dir_targets(
+        browser_base,
+        kit_id=kit_id, source="browser_resource",
+        display_prefix=f"{BROWSER_RESOURCES_SUBDIR}/",
+        extensions=extensions, max_bytes=max_bytes,
+    )
+    full_inventory.extend(inv)
+    for t in tgts:
+        rp = Path(t[0]).resolve()
+        if rp not in seen_paths:
+            full_targets.append(t)
+            seen_paths.add(rp)
+
+    # 3. Raw download via kit.local_path — typically the rendered
+    #    ``page.html`` or a single-file artifact like ``download.bin``.
+    raw_entry, raw_target = _resolve_local_path_target(
+        local_path, download_base,
+        kit_id=kit_id, extensions=extensions, max_bytes=max_bytes,
+    )
+    if raw_entry is not None:
+        full_inventory.append(raw_entry)
+        if raw_target is not None:
+            rp = Path(raw_target[0]).resolve()
+            if rp not in seen_paths:
+                full_targets.append(raw_target)
+                seen_paths.add(rp)
+
+    return full_inventory, full_targets

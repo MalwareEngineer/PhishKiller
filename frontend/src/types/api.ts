@@ -667,12 +667,15 @@ export interface YaraRuleFileSource {
   content: string;
 }
 
+export type YaraFileSource = "extracted" | "raw" | "browser_resource";
+
 export interface YaraScannableFile {
   relative_path: string;
   size: number;
   mime_type: string | null;
   extension: string;
   scannable: boolean;
+  source: YaraFileSource;
 }
 
 export interface YaraScannableFilesResponse {
@@ -680,4 +683,5 @@ export interface YaraScannableFilesResponse {
   files: YaraScannableFile[];
   total: number;
   scannable_count: number;
+  counts_by_source: Partial<Record<YaraFileSource, number>>;
 }
