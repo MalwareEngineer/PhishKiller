@@ -7,7 +7,6 @@ import {
   Users,
   Target,
   Layers,
-  Shield,
   ChevronLeft,
   ChevronRight,
   FileDiff,
@@ -16,6 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { DarlaLogo } from "@/components/shared/darla-logo";
 import { useState } from "react";
 
 const navItems = [
@@ -41,10 +41,21 @@ export function Sidebar() {
         collapsed ? "w-16" : "w-56"
       )}
     >
-      <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <Shield className="h-6 w-6 shrink-0 text-emerald-500" />
-        {!collapsed && (
-          <span className="text-lg font-bold tracking-tight">Darla</span>
+      <div
+        className={cn(
+          "flex h-14 items-center border-b border-border",
+          collapsed ? "justify-center px-2" : "px-4",
+        )}
+      >
+        {collapsed ? (
+          // ``D`` glyph (415x470 source) — height-driven, ~28px tall.
+          <DarlaLogo variant="mark" className="h-7 w-auto" />
+        ) : (
+          // Full ``DARLA`` wordmark (715x185 ≈ 3.86:1) — fits cleanly
+          // inside the w-56 sidebar at this height.  Replaces the old
+          // icon + text combo since the wordmark already carries the
+          // brand name.
+          <DarlaLogo variant="full" className="h-8 w-auto" />
         )}
       </div>
 
