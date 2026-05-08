@@ -52,9 +52,13 @@ import {
 
 const STARTER_RULE = `// Sample rule — edit me, then click Run.
 //
-// Targets: pick a stored kit on the right, or paste a snippet in the
-// "Paste" tab.  Save passing rules out to your team's rules repo when
-// you're done — playground edits live in this browser tab only.
+// Targets: pick a stored kit on the right, paste a snippet in the
+// "Paste" tab, or upload a file.  Save passing rules out to your
+// team's rules repo when you're done — playground edits live in
+// this browser tab only.
+//
+// Module imports (pe, dotnet, math, hash, …) are supported.
+// 'include' directives are blocked.
 
 rule example_phish {
     meta:

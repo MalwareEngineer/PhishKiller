@@ -74,6 +74,22 @@ def test_compile_rejects_include():
     assert "include" in result.errors[0].message.lower()
 
 
+@pytest.mark.parametrize("module_src", [
+    'import "pe"\nrule x { condition: pe.is_pe }',
+    'import "dotnet"\nrule x { condition: dotnet.is_dotnet }',
+    'import "math"\nrule x { condition: math.entropy(0, filesize) > 7 }',
+    'import "hash"\nrule x { condition: hash.md5(0, filesize) == "d41d8cd98f00b204e9800998ecf8427e" }',
+])
+def test_compile_allows_module_imports(module_src: str):
+    """``import`` (modules like pe, dotnet, math, hash) is distinct from
+    ``include`` (file-system rule loading) — playground rules must be
+    able to use modules even though we block include directives.
+    """
+    result, compiled = compile_source(module_src)
+    assert result.ok is True, [e.message for e in result.errors]
+    assert compiled is not None
+
+
 def test_compile_rejects_empty():
     result, _ = compile_source("")
     assert result.ok is False

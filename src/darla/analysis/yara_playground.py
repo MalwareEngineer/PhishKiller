@@ -41,8 +41,14 @@ MAX_FILE_SIZE_MB_CEILING = 100
 TIMEOUT_SECONDS_CEILING = 60
 
 # Reject ``include`` directives at compile time — playground rules must be
-# self-contained.  Match the YARA grammar: ``include "path"`` (whitespace
-# tolerant, line-anchored to avoid false positives inside string literals).
+# self-contained, can't pull arbitrary files off the API host's disk.
+# Match the YARA grammar: ``include "path"`` (whitespace tolerant,
+# line-anchored to avoid false positives inside string literals).
+#
+# NOTE: This deliberately does NOT match ``import`` — module imports
+# (``import "pe"``, ``import "dotnet"``, ``import "math"``, ``import "hash"``,
+# etc.) are first-class YARA features compiled into yara-python and pose no
+# filesystem-traversal risk.  Analysts need them for any non-trivial rule.
 _INCLUDE_RE = re.compile(r'^\s*include\s+"', re.MULTILINE)
 
 
