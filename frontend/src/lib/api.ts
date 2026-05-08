@@ -42,6 +42,13 @@ import type {
   VictimDetail,
   VictimObservation,
   VictimType,
+  YaraStatusResponse,
+  YaraCompileResult,
+  YaraPlaygroundRequest,
+  YaraPlaygroundResponse,
+  YaraRuleFileSummary,
+  YaraRuleFileSource,
+  YaraScannableFilesResponse,
 } from "@/types/api";
 
 const BASE = "/api/v1";
@@ -540,6 +547,29 @@ export const victims = {
     request<PaginatedResponse<VictimObservation>>(
       `/victims/${id}/observations?offset=${offset}&limit=${limit}`,
     ),
+};
+
+// ── YARA Playground ──
+
+export const yara = {
+  status: () => request<YaraStatusResponse>("/yara/status"),
+  compile: (rule_source: string) =>
+    request<YaraCompileResult>("/yara/compile", {
+      method: "POST",
+      body: JSON.stringify({ rule_source }),
+    }),
+  playground: (req: YaraPlaygroundRequest) =>
+    request<YaraPlaygroundResponse>("/yara/playground", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  rules: () => request<YaraRuleFileSummary[]>("/yara/rules"),
+  rule: (name: string) =>
+    request<YaraRuleFileSource>(`/yara/rules/${encodeURIComponent(name)}`),
+  scannableFiles: (kitId: string, max_size_mb?: number) => {
+    const q = max_size_mb ? `?max_size_mb=${max_size_mb}` : "";
+    return request<YaraScannableFilesResponse>(`/yara/scannable-files/${kitId}${q}`);
+  },
 };
 
 // ── Health ──

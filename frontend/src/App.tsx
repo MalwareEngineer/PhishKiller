@@ -13,6 +13,7 @@ import { CampaignDetailPage } from "@/pages/campaign-detail";
 import { FamiliesPage } from "@/pages/families";
 import { FamilyDetailPage } from "@/pages/family-detail";
 import { PhishDiffPage } from "@/pages/phish-diff";
+import { YaraPage } from "@/pages/yara";
 import { PhishMatchPage } from "@/pages/phish-match";
 import { PhishMatchInboxPage } from "@/pages/phish-match-inbox";
 import { PhishPrintPage } from "@/pages/phishprint";
@@ -34,6 +35,7 @@ export function App() {
         <Route path="campaigns/:id" element={<CampaignDetailPage />} />
         <Route path="families" element={<FamiliesPage />} />
         <Route path="families/:id" element={<FamilyDetailPage />} />
+        <Route path="yara" element={<YaraPage />} />
         <Route path="phish-diff" element={<PhishDiffPage />} />
         <Route path="phish-match" element={<PhishMatchInboxPage />} />
         <Route path="phish-match/:kitId" element={<PhishMatchPage />} />

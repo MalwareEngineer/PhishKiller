@@ -12,6 +12,7 @@ import {
   FileDiff,
   Sparkles,
   Fingerprint,
+  ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ const navItems = [
   { to: "/actors", icon: Users, label: "Actors" },
   { to: "/campaigns", icon: Target, label: "Campaigns" },
   { to: "/families", icon: Layers, label: "Families" },
+  { to: "/yara", icon: ScanLine, label: "Yara" },
   { to: "/phish-diff", icon: FileDiff, label: "PhishDiff" },
   { to: "/phish-match", icon: Sparkles, label: "PhishMatch" },
   { to: "/phishprint", icon: Fingerprint, label: "PhishPrint" },
