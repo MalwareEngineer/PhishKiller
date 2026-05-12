@@ -106,6 +106,84 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # ─── Auth & Identity (RFC 0001) ──────────────────────────────────────
+    #
+    # Defaults are tuned for community / local-evaluation use:
+    # ``auth_enabled=False`` lets ``docker compose up`` work without an
+    # IdP.  Production deployments set ``auth_enabled=True`` (hardcoded
+    # in the deployment-repo Terraform — see RFC §16 guardrail #2).
+    #
+    # When ``auth_enabled=False``, six startup guardrails (RFC §16)
+    # refuse to run anywhere that looks like production: requires the
+    # explicit ack token, refuses non-localhost binds, refuses to start
+    # if AWS IMDS is reachable, refuses to start outside debug mode.
+    # See ``darla.auth.guardrails``.
+
+    # Master switch.  False = community/local mode (no auth, with
+    # safety guardrails).  True = OIDC enforcement on protected routes.
+    auth_enabled: bool = False
+
+    # Required exact-string acknowledgement when ``auth_enabled=False``.
+    # Verbose enough that no one sets this by accident or copies it
+    # without noticing.  Any other value (including the default empty
+    # string) causes the guardrails to refuse startup.
+    i_understand_auth_is_off: str = ""
+
+    # uvicorn host.  Guardrails refuse anything but ``127.0.0.1`` /
+    # ``localhost`` when ``auth_enabled=False`` — disabled-mode
+    # deployments must not be network-reachable.
+    bind_address: str = "127.0.0.1"
+
+    # OIDC issuer URL — only consulted when auth is enabled.  Used both
+    # for the ``iss`` claim check on incoming JWTs and for OIDC discovery
+    # (``<issuer>/.well-known/openid-configuration`` → ``jwks_uri``).
+    # Examples:
+    #   Entra:    https://login.microsoftonline.com/<tenant-id>/v2.0
+    #   Okta:     https://<your-org>.okta.com/oauth2/default
+    #   Keycloak: https://<host>/realms/<realm>
+    oidc_issuer: str = ""
+
+    # Expected ``aud`` claim — usually the API's client/application ID
+    # in your IdP.  For Entra, this is the "Darla API" registration's
+    # Application (client) ID.
+    oidc_audience: str = ""
+
+    # Optional override for the JWKS URL.  Leave blank to auto-discover
+    # via ``<issuer>/.well-known/openid-configuration``.  Set explicitly
+    # only if the IdP doesn't expose discovery (rare) or you want to
+    # pin the JWKS endpoint.
+    oidc_jwks_url: str = ""
+
+    # JWKS cache TTL in seconds.  Defaults to 1 hour — IdP key rotation
+    # cadences range from days (Auth0) to ~24h (Entra), so 1h gives us
+    # a worst-case 1h window of accepting tokens signed by a key the
+    # IdP just rotated out.  ``kid`` mismatch triggers a forced refresh
+    # regardless of TTL, so legitimate rotations resolve within one
+    # rejected request.
+    oidc_jwks_cache_ttl: int = 3600
+
+    # JSON path inside the JWT to find the user's stable subject.
+    # OIDC standard is ``sub``.  Entra deployments override to ``oid``
+    # because Entra's ``sub`` is per-app pairwise (would change if we
+    # spin up a second app registration).
+    oidc_subject_claim: str = "sub"
+
+    # JSON path inside the JWT to find the role(s) array.  Supports
+    # dotted paths for nested objects (e.g. Keycloak's
+    # ``realm_access.roles``).  Per-IdP defaults:
+    #   Entra:    "roles"     (custom claim from app role assignment)
+    #   Okta:     "groups"    (with a "groups" claim added to the auth server)
+    #   Keycloak: "realm_access.roles"
+    #   Auth0:    "https://your-app.example.com/roles"  (custom namespace)
+    oidc_role_claim: str = "roles"
+
+    # The exact string in the role-claim array that grants viewer /
+    # analyst access.  These match the App Role values configured in
+    # the IdP.  Configurable so deployments using existing groups
+    # (e.g. ``sg-darla-analysts``) can map without renaming.
+    oidc_viewer_role_value: str = "Darla.Viewer"
+    oidc_analyst_role_value: str = "Darla.Analyst"
+
 
 
 @lru_cache
