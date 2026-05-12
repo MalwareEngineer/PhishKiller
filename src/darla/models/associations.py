@@ -33,6 +33,14 @@ from darla.models.base import Base
 
 _EVIDENCE_COLUMNS = lambda: [  # noqa: E731 — lambda keeps columns hashable per-table
     Column("attributed_by", String(255), nullable=True),
+    # OIDC subject of the attributing user, populated by the auth
+    # middleware when auth is enabled (RFC 0001 §5.3).  Coexists with
+    # the legacy free-string ``attributed_by`` column — UI prefers
+    # subject-resolved ``User.display_name`` and falls back to the
+    # legacy string for pre-auth rows.  No backfill of historical
+    # rows is performed.  Service-account writes use ``attributed_by``
+    # with a ``"system:"`` prefix and leave this column NULL.
+    Column("attributed_by_subject", String(128), nullable=True),
     Column(
         "attributed_at",
         DateTime(timezone=True),
