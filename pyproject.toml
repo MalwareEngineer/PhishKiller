@@ -29,6 +29,10 @@ dependencies = [
     "python-Levenshtein>=0.26.0",
     "cryptography>=43.0.0",
     "brotli>=1.1.0",
+    # JWT validation for OIDC bearer tokens (RFC 0001).  python-jose
+    # rather than authlib because we only need the offline JWT verifier
+    # — the [cryptography] extra pulls the RS256/ES256 backends.
+    "python-jose[cryptography]>=3.3.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +43,10 @@ dev = [
     "httpx",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    # Async SQLite driver — used by the auth middleware tests to
+    # exercise JIT user provisioning end-to-end without standing up
+    # a Postgres dependency.
+    "aiosqlite>=0.20.0",
 ]
 tlsh = [
     "py-tlsh>=4.7.2",
