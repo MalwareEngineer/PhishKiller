@@ -87,19 +87,72 @@ function pickRole(roles: string[] | undefined): Role | null {
   return null;
 }
 
-/** Convert an `oidc-client-ts` `User` into our flatter shape. */
+/**
+ * Decode a JWT's payload segment.  No signature verification — the
+ * backend is the authoritative validator (see darla.auth.middleware).
+ * We just need to inspect claims for UI display.
+ *
+ * Returns `{}` on any error rather than throwing — a malformed token
+ * is treated as "no claims", which collapses to a 403-equivalent UI
+ * state and forces a fresh sign-in.
+ */
+function decodeJwtPayload(jwt: string): Record<string, unknown> {
+  try {
+    const parts = jwt.split(".");
+    if (parts.length !== 3) return {};
+    // JWT uses base64url (URL-safe variant) — convert to standard
+    // base64 for atob, padding with '=' as needed.
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (payload.length % 4) payload += "=";
+    return JSON.parse(atob(payload)) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Convert an `oidc-client-ts` `User` into our flatter shape.
+ *
+ * Identity fields (subject, name, upn) come from the ID token via
+ * `user.profile` — that's its semantic purpose.  But **roles come
+ * from the access token**, because that's what the backend's
+ * `darla.auth.middleware` will validate against.
+ *
+ * Why this matters: Entra (and some other IdPs) emit app-role
+ * assignments only in the access token by default — the ID token's
+ * `roles` claim, when present at all, may carry different content
+ * (directory roles like "Global Admin", not app-role assignments).
+ * Reading roles from `user.profile` made the UI think a freshly-
+ * assigned analyst had no role, and gated them onto /unauthorized
+ * while the backend would have happily accepted them.  Decode the
+ * access token instead so the UI and the API always agree.
+ */
 function toAuthUser(user: User): AuthUser {
-  // Access-token claims, not id-token claims — Entra's role claim
-  // ships in the access token (id-token's `roles` is informational
-  // for the SPA, not authoritative).
-  // oidc-client-ts decodes both into `user.profile`; the role claim
-  // is reachable directly there for any compliant provider.
-  const profile = user.profile as Record<string, unknown>;
-  const subject = String(profile.sub ?? profile.oid ?? "");
-  const displayName = String(profile.name ?? profile.preferred_username ?? subject);
-  const upn = String(profile.preferred_username ?? profile.upn ?? "");
-  const rawRoles = profile.roles;
+  const idClaims = user.profile as Record<string, unknown>;
+  const accessClaims = decodeJwtPayload(user.access_token);
+
+  // Identity — ID token is the right source.  Fall back to access
+  // token's `oid`/`sub` if a custom subject claim configured
+  // upstream isn't in the ID token.
+  const subject = String(
+    idClaims.sub ?? idClaims.oid ?? accessClaims.oid ?? accessClaims.sub ?? "",
+  );
+  const displayName = String(
+    idClaims.name ?? accessClaims.name ?? idClaims.preferred_username ?? subject,
+  );
+  const upn = String(
+    idClaims.preferred_username ??
+      idClaims.email ??
+      accessClaims.preferred_username ??
+      accessClaims.email ??
+      "",
+  );
+
+  // Authorization — access token is the right source (must match
+  // what the backend sees).  ID token roles is a last-resort fallback
+  // for IdPs that put roles only in the ID token.
+  const rawRoles = accessClaims.roles ?? idClaims.roles;
   const roles = Array.isArray(rawRoles) ? rawRoles.map(String) : [];
+
   return { subject, displayName, upn, role: pickRole(roles) };
 }
 
