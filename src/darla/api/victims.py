@@ -10,9 +10,11 @@ Operators interact with the existing rows: list, view, edit
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
+from darla.models import UserRole
 from darla.models.victim import VictimType
 from darla.schemas.victim import (
     VictimDetail,
@@ -23,6 +25,11 @@ from darla.schemas.victim import (
 from darla.services.victim_service import VictimService
 
 router = APIRouter()
+
+# Victim writes will move to a CLI/CSV-driven path in Phase 6 (RFC §9);
+# until then, ANALYST-gated rather than anonymous.  Reads stay analyst-
+# adjacent for the per-employee dashboard.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 @router.get("", response_model=VictimListResponse)
@@ -63,7 +70,7 @@ async def get_victim(victim_id: uuid.UUID, db: DbSession):
     return victim
 
 
-@router.put("/{victim_id}", response_model=VictimDetail)
+@router.put("/{victim_id}", response_model=VictimDetail, dependencies=_ANALYST)
 async def update_victim(
     victim_id: uuid.UUID, payload: VictimUpdate, db: DbSession,
 ):

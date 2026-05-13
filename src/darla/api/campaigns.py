@@ -2,9 +2,11 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
+from darla.models import UserRole
 from darla.schemas.actor import ActorSummary
 from darla.schemas.campaign import (
     AddKitsRequest,
@@ -22,6 +24,9 @@ from darla.schemas.victim import VictimListResponse
 from darla.services.campaign_service import CampaignService
 
 router = APIRouter()
+
+# See darla.api.actors for rationale on the shorthand.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 @router.get("", response_model=CampaignListResponse)
@@ -43,7 +48,12 @@ async def list_campaigns(
     return CampaignListResponse(items=campaigns, total=total)
 
 
-@router.post("", response_model=CampaignDetail, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=CampaignDetail,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=_ANALYST,
+)
 async def create_campaign(payload: CampaignCreate, db: DbSession):
     service = CampaignService(db)
     campaign = await service.create_campaign(payload.model_dump())
@@ -59,7 +69,7 @@ async def get_campaign(campaign_id: uuid.UUID, db: DbSession):
     return campaign
 
 
-@router.put("/{campaign_id}", response_model=CampaignDetail)
+@router.put("/{campaign_id}", response_model=CampaignDetail, dependencies=_ANALYST)
 async def update_campaign(
     campaign_id: uuid.UUID, payload: CampaignUpdate, db: DbSession
 ):
@@ -72,7 +82,11 @@ async def update_campaign(
     return campaign
 
 
-@router.delete("/{campaign_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{campaign_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
+)
 async def delete_campaign(campaign_id: uuid.UUID, db: DbSession):
     service = CampaignService(db)
     deleted = await service.delete_campaign(campaign_id)
@@ -80,7 +94,7 @@ async def delete_campaign(campaign_id: uuid.UUID, db: DbSession):
         raise HTTPException(status_code=404, detail="Campaign not found")
 
 
-@router.post("/{campaign_id}/kits")
+@router.post("/{campaign_id}/kits", dependencies=_ANALYST)
 async def add_kits_to_campaign(
     campaign_id: uuid.UUID, payload: AddKitsRequest, db: DbSession
 ):

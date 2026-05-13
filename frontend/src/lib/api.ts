@@ -603,5 +603,10 @@ export const yara = {
 // ── Health ──
 
 export const health = {
-  check: () => request<HealthResponse>("/health"),
+  // ``/health`` is the anonymous LB liveness probe — returns 200/503
+  // with no body so it must NOT be JSON-parsed.  ``/health/detail`` is
+  // the analyst-gated triage endpoint that returns DB/Redis status.
+  // The header badge calls /detail because the SPA is always running
+  // inside the Shell guard, so the user is already authenticated.
+  check: () => request<HealthResponse>("/health/detail"),
 };

@@ -3,10 +3,12 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
 from darla.config import get_settings
+from darla.models import UserRole
 from darla.schemas.kit import (
     BrowserResourcesResponse,
     DeobfuscationPreviewResponse,
@@ -28,6 +30,9 @@ from darla.schemas.kit import (
 from darla.services.kit_service import KitService
 
 router = APIRouter()
+
+# See darla.api.actors for rationale on the shorthand.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 async def _link_kit_to_entities(
@@ -86,7 +91,12 @@ async def list_kits(
     return KitListResponse(items=kits, total=total)
 
 
-@router.post("", response_model=KitSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "",
+    response_model=KitSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
+)
 async def create_kit(payload: KitCreate, db: DbSession) -> KitSubmitResponse:
     service = KitService(db)
     kit, task_id, duplicate = await service.submit_kit(
@@ -114,7 +124,12 @@ async def create_kit(payload: KitCreate, db: DbSession) -> KitSubmitResponse:
     )
 
 
-@router.post("/upload", response_model=KitSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/upload",
+    response_model=KitSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
+)
 async def upload_kit(
     db: DbSession,
     file: UploadFile,
@@ -179,6 +194,7 @@ async def upload_kit(
     "/upload/bulk",
     response_model=KitBulkUploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
 )
 async def bulk_upload_kits(
     db: DbSession,
@@ -263,7 +279,12 @@ async def bulk_upload_kits(
     )
 
 
-@router.post("/bulk", response_model=KitBulkResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/bulk",
+    response_model=KitBulkResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
+)
 async def bulk_submit(payload: KitBulkCreate, db: DbSession) -> KitBulkResponse:
     """Submit multiple URLs for download and analysis."""
     if len(payload.urls) > 500:
@@ -324,7 +345,7 @@ async def search_kits(
     return {"items": items, "total": total}
 
 
-@router.post("/bulk-delete")
+@router.post("/bulk-delete", dependencies=_ANALYST)
 async def bulk_delete_kits(payload: dict, db: DbSession):
     """Delete multiple kits by ID."""
     ids = payload.get("ids", [])
@@ -362,7 +383,11 @@ async def delete_preview(kit_id: uuid.UUID, db: DbSession) -> KitDeletePreview:
     return KitDeletePreview(**preview)
 
 
-@router.delete("/{kit_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{kit_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
+)
 async def delete_kit(kit_id: uuid.UUID, db: DbSession) -> None:
     service = KitService(db)
     deleted = await service.delete_kit(kit_id)
@@ -448,7 +473,11 @@ async def get_kit_deobfuscation_preview(kit_id: uuid.UUID, db: DbSession) -> Deo
     return DeobfuscationPreviewResponse(pairs=pairs)
 
 
-@router.post("/{kit_id}/reanalyze", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{kit_id}/reanalyze",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
+)
 async def reanalyze_kit(kit_id: uuid.UUID, db: DbSession):
     service = KitService(db)
     try:
@@ -458,7 +487,7 @@ async def reanalyze_kit(kit_id: uuid.UUID, db: DbSession):
     return {"kit_id": str(kit_id), "task_id": task_id}
 
 
-@router.post("/{kit_id}/add-to-campaign")
+@router.post("/{kit_id}/add-to-campaign", dependencies=_ANALYST)
 async def add_kit_to_campaign(
     kit_id: uuid.UUID,
     payload: dict,
@@ -515,7 +544,7 @@ async def add_kit_to_campaign(
     }
 
 
-@router.post("/{kit_id}/add-to-actor")
+@router.post("/{kit_id}/add-to-actor", dependencies=_ANALYST)
 async def add_kit_to_actor(
     kit_id: uuid.UUID,
     payload: dict,
@@ -585,7 +614,7 @@ async def add_kit_to_actor(
     }
 
 
-@router.post("/{kit_id}/add-to-family")
+@router.post("/{kit_id}/add-to-family", dependencies=_ANALYST)
 async def add_kit_to_family(
     kit_id: uuid.UUID,
     payload: dict,

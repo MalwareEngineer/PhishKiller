@@ -2,9 +2,11 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
+from darla.models import UserRole
 from darla.schemas.actor import ActorSummary
 from darla.schemas.campaign import CampaignSummary
 from darla.schemas.family import (
@@ -23,6 +25,9 @@ from darla.services.family_service import FamilyService
 
 router = APIRouter()
 
+# See darla.api.actors for rationale on the shorthand.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
+
 
 @router.get("", response_model=FamilyListResponse)
 async def list_families(db: DbSession, pagination: Pagination):
@@ -33,7 +38,12 @@ async def list_families(db: DbSession, pagination: Pagination):
     return FamilyListResponse(items=families, total=total)
 
 
-@router.post("", response_model=FamilyDetail, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=FamilyDetail,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=_ANALYST,
+)
 async def create_family(payload: FamilyCreate, db: DbSession):
     service = FamilyService(db)
     family = await service.create_family(payload.model_dump())
@@ -49,7 +59,7 @@ async def get_family(family_id: uuid.UUID, db: DbSession):
     return family
 
 
-@router.put("/{family_id}", response_model=FamilyDetail)
+@router.put("/{family_id}", response_model=FamilyDetail, dependencies=_ANALYST)
 async def update_family(family_id: uuid.UUID, payload: FamilyUpdate, db: DbSession):
     service = FamilyService(db)
     family = await service.update_family(
@@ -60,7 +70,11 @@ async def update_family(family_id: uuid.UUID, payload: FamilyUpdate, db: DbSessi
     return family
 
 
-@router.delete("/{family_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{family_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
+)
 async def delete_family(family_id: uuid.UUID, db: DbSession):
     service = FamilyService(db)
     deleted = await service.delete_family(family_id)
@@ -68,7 +82,7 @@ async def delete_family(family_id: uuid.UUID, db: DbSession):
         raise HTTPException(status_code=404, detail="Family not found")
 
 
-@router.post("/{family_id}/kits")
+@router.post("/{family_id}/kits", dependencies=_ANALYST)
 async def link_kits(
     family_id: uuid.UUID, payload: LinkKitsRequest, db: DbSession
 ):
@@ -80,7 +94,7 @@ async def link_kits(
     return {"added": count}
 
 
-@router.post("/{family_id}/actors")
+@router.post("/{family_id}/actors", dependencies=_ANALYST)
 async def link_actors(
     family_id: uuid.UUID, payload: LinkActorsRequest, db: DbSession
 ):
