@@ -1,3 +1,4 @@
+import { getAuthHeaders } from "@/lib/auth-token";
 import type {
   PaginatedResponse,
   KitSummary,
@@ -55,8 +56,15 @@ import type {
 const BASE = "/api/v1";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // getAuthHeaders() returns {} in disabled mode and {Authorization: Bearer ...}
+  // in OIDC mode.  Caller-supplied `init.headers` win on conflict so a future
+  // call site can override the auth header explicitly if it ever needs to.
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+      ...init?.headers,
+    },
     ...init,
   });
   if (!res.ok) {
@@ -91,7 +99,14 @@ export const kits = {
     if (entityIds?.actor_id) form.append("actor_id", entityIds.actor_id);
     if (entityIds?.campaign_id) form.append("campaign_id", entityIds.campaign_id);
     if (entityIds?.family_id) form.append("family_id", entityIds.family_id);
-    const res = await fetch(`${BASE}/kits/upload`, { method: "POST", body: form });
+    // FormData uploads — let the browser set Content-Type with the
+    // multipart boundary, but still attach the bearer token via
+    // getAuthHeaders() (no-op in disabled mode).
+    const res = await fetch(`${BASE}/kits/upload`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: form,
+    });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     return res.json() as Promise<KitSubmitResponse>;
   },
@@ -116,7 +131,11 @@ export const kits = {
     if (entityIds?.actor_id) form.append("actor_id", entityIds.actor_id);
     if (entityIds?.campaign_id) form.append("campaign_id", entityIds.campaign_id);
     if (entityIds?.family_id) form.append("family_id", entityIds.family_id);
-    const res = await fetch(`${BASE}/kits/upload/bulk`, { method: "POST", body: form });
+    const res = await fetch(`${BASE}/kits/upload/bulk`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: form,
+    });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
     return res.json() as Promise<KitBulkUploadResponse>;
   },
@@ -183,6 +202,7 @@ export const investigations = {
   createFromFile: async (formData: FormData) => {
     const res = await fetch(`${BASE}/investigations/upload`, {
       method: "POST",
+      headers: getAuthHeaders(),
       body: formData,
     });
     if (!res.ok) {
