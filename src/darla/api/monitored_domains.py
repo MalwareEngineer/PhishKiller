@@ -2,9 +2,11 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
+from darla.models import UserRole
 from darla.schemas.victim import (
     MonitoredDomainCreate,
     MonitoredDomainListResponse,
@@ -14,6 +16,12 @@ from darla.schemas.victim import (
 from darla.services.monitored_domain_service import MonitoredDomainService
 
 router = APIRouter()
+
+# NOTE: These write endpoints are scheduled to be REMOVED in Phase 6
+# (RFC §9) — monitored-domain mutations will move to a YAML-driven
+# CLI reload path.  Until then, gate them behind ANALYST so they're
+# not anonymous in the interim.  Reads stay (Phase 6 keeps them).
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 @router.get("", response_model=MonitoredDomainListResponse)
@@ -29,6 +37,7 @@ async def list_monitored_domains(db: DbSession, pagination: Pagination):
     "",
     response_model=MonitoredDomainOut,
     status_code=status.HTTP_201_CREATED,
+    dependencies=_ANALYST,
 )
 async def create_monitored_domain(
     payload: MonitoredDomainCreate, db: DbSession,
@@ -55,7 +64,7 @@ async def get_monitored_domain(domain_id: uuid.UUID, db: DbSession):
     return domain
 
 
-@router.put("/{domain_id}", response_model=MonitoredDomainOut)
+@router.put("/{domain_id}", response_model=MonitoredDomainOut, dependencies=_ANALYST)
 async def update_monitored_domain(
     domain_id: uuid.UUID, payload: MonitoredDomainUpdate, db: DbSession,
 ):
@@ -68,7 +77,11 @@ async def update_monitored_domain(
     return domain
 
 
-@router.delete("/{domain_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{domain_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
+)
 async def delete_monitored_domain(domain_id: uuid.UUID, db: DbSession):
     service = MonitoredDomainService(db)
     deleted = await service.delete_domain(domain_id)

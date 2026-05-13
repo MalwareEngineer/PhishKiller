@@ -3,10 +3,12 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
 from darla.config import get_settings
+from darla.models import UserRole
 from darla.schemas.investigation import (
     InvestigationCreate,
     InvestigationDetail,
@@ -20,6 +22,9 @@ from darla.schemas.kit import KitSummary
 from darla.services.investigation_service import InvestigationService
 
 router = APIRouter()
+
+# See darla.api.actors for rationale on the shorthand.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 @router.get("", response_model=InvestigationListResponse)
@@ -37,7 +42,12 @@ async def list_investigations(
     )
 
 
-@router.post("", response_model=InvestigationSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "",
+    response_model=InvestigationSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
+)
 async def create_investigation(
     payload: InvestigationCreate,
     db: DbSession,
@@ -75,7 +85,12 @@ async def create_investigation(
     )
 
 
-@router.post("/upload", response_model=InvestigationSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/upload",
+    response_model=InvestigationSubmitResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_ANALYST,
+)
 async def create_investigation_from_file(
     db: DbSession,
     file: UploadFile,
@@ -162,7 +177,7 @@ async def get_investigation(
     return detail
 
 
-@router.put("/{investigation_id}", response_model=InvestigationDetail)
+@router.put("/{investigation_id}", response_model=InvestigationDetail, dependencies=_ANALYST)
 async def update_investigation(
     investigation_id: uuid.UUID, payload: InvestigationUpdate, db: DbSession
 ) -> InvestigationDetail:
@@ -178,7 +193,11 @@ async def update_investigation(
     return detail
 
 
-@router.delete("/{investigation_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{investigation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
+)
 async def delete_investigation(investigation_id: uuid.UUID, db: DbSession) -> None:
     service = InvestigationService(db)
     deleted = await service.delete_investigation(investigation_id)
@@ -187,7 +206,7 @@ async def delete_investigation(investigation_id: uuid.UUID, db: DbSession) -> No
     await db.commit()
 
 
-@router.post("/bulk-delete")
+@router.post("/bulk-delete", dependencies=_ANALYST)
 async def bulk_delete_investigations(
     payload: dict,
     db: DbSession,

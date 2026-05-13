@@ -28,7 +28,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from darla.analysis.yara_playground import (
@@ -45,7 +45,9 @@ from darla.analysis.yara_playground import (
     scan_paths,
 )
 from darla.api.deps import DbSession
+from darla.auth import require_role
 from darla.config import get_settings
+from darla.models import UserRole
 from darla.models.kit import Kit
 from darla.schemas.yara import (
     CompileErrorOut,
@@ -197,6 +199,12 @@ def _opts_from_in(o: ScanOptionsIn) -> ScanOpts:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# Compile / playground / rule mutations all consume non-trivial CPU
+# (YARA scanning) or alter the global pipeline (saved user rules
+# affect every future kit analysis).  Gate them behind ANALYST so an
+# unauthenticated viewer can't burn worker time or shape detections.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
+
 
 @router.get("/status", response_model=YaraStatusResponse)
 async def yara_status():
@@ -224,7 +232,7 @@ async def yara_status():
     )
 
 
-@router.post("/compile", response_model=CompileResultOut)
+@router.post("/compile", response_model=CompileResultOut, dependencies=_ANALYST)
 async def compile_rule(req: CompileRequest):
     _ensure_available()
     result, _ = compile_source(req.rule_source)
@@ -235,7 +243,7 @@ async def compile_rule(req: CompileRequest):
     return _to_compile_out(result)
 
 
-@router.post("/playground", response_model=PlaygroundResponse)
+@router.post("/playground", response_model=PlaygroundResponse, dependencies=_ANALYST)
 async def playground_scan(req: PlaygroundRequest, db: DbSession):
     _ensure_available()
 
@@ -507,7 +515,7 @@ async def get_rule(name: str):
     )
 
 
-@router.put("/rules/user/{name}", response_model=SaveRuleResponse)
+@router.put("/rules/user/{name}", response_model=SaveRuleResponse, dependencies=_ANALYST)
 async def save_user_rule(name: str, req: SaveRuleRequest):
     """Save (or overwrite) an analyst rule under ``rules/user/{name}.yar``.
 
@@ -560,7 +568,7 @@ async def save_user_rule(name: str, req: SaveRuleRequest):
     )
 
 
-@router.delete("/rules/user/{name}", status_code=204)
+@router.delete("/rules/user/{name}", status_code=204, dependencies=_ANALYST)
 async def delete_user_rule(name: str):
     """Delete an analyst rule.  No-op (404) if the rule doesn't exist."""
     target = _resolve_user_rule_path(name)

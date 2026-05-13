@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import insert, select, update
@@ -30,7 +30,9 @@ from darla.analysis.phishmatch import (
     PhishMatchScorer,
 )
 from darla.api.deps import DbSession
+from darla.auth import require_role
 from darla.database import get_sync_db
+from darla.models import UserRole
 from darla.models.actor import Actor
 from darla.models.associations import (
     CONFIDENCE_VALUES,
@@ -43,6 +45,9 @@ from darla.models.family import Family
 from darla.models.kit import Kit
 
 router = APIRouter()
+
+# See darla.api.actors for rationale on the shorthand.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 EntityTypeLit = Literal["actor", "family", "campaign"]
@@ -163,6 +168,7 @@ async def phishmatch_suggestions_for_entity(
     "/kit/{kit_id}/attribute",
     response_model=AttributeResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=_ANALYST,
 )
 async def attribute_kit(
     kit_id: uuid.UUID, payload: AttributeRequest, db: DbSession
@@ -252,6 +258,7 @@ async def attribute_kit(
 @router.delete(
     "/kit/{kit_id}/attribute",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
 )
 async def unattribute_kit(
     kit_id: uuid.UUID,

@@ -1,45 +1,76 @@
 """Health check endpoints.
 
-Two-mode behaviour driven by ``auth_enabled`` (RFC §16 guardrail #5,
-§17.4):
+Two routes (RFC 0001 §16 guardrail #5, §17.4):
 
-* **Auth disabled** — endpoint always returns HTTP 503 with an empty
-  body.  Production load balancers (ALB/ECS) consequently refuse to
-  route traffic to a disabled-mode container; overriding the
-  healthcheck to accept it requires a separate, conscious infra
-  change.  Empty body so an anonymous caller learns nothing about
-  the deployment beyond "this isn't healthy."
-* **Auth enabled** — returns the legacy detailed body (DB + Redis
-  status) for backwards compatibility.  Phase 4 will split this into
-  an anonymous 200/503-only endpoint plus an analyst-gated detail
-  endpoint, per RFC §17.4 non-disclosure.
+* **``GET /health``** — anonymous, non-disclosing.  Returns HTTP 200
+  with an empty body when the service is up and auth is enabled, or
+  HTTP 503 with an empty body when auth is *disabled* (load
+  balancers refuse to route traffic to a disabled-mode container).
+  Critically, this endpoint **never reveals** whether auth is enabled,
+  what version is running, what services are healthy, or any other
+  operational detail to anonymous callers.  An attacker scanning the
+  internet learns only "this responds" or "this doesn't."
+
+* **``GET /health/detail``** — analyst-gated.  Returns the full DB /
+  Redis / etc. status JSON that ops needs for triage.  Only reachable
+  with a valid analyst token, and only when auth is enabled (in
+  disabled mode the route still works for any caller because
+  ``require_role`` is a no-op then, but that's fine since the
+  guardrails force localhost-only bind).
 """
 
-from fastapi import APIRouter, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Response, status
 
 from darla.api.deps import DbSession
+from darla.auth import require_role
 from darla.config import get_settings
+from darla.models import User, UserRole
 from darla.schemas.common import HealthResponse, HealthService
 
 router = APIRouter()
 
 
-@router.get(
-    "",
-    response_model=HealthResponse | None,
-    responses={503: {"description": "Disabled-mode (auth off) — empty body"}},
-)
-async def health_check(db: DbSession, response: Response):
+@router.get("", status_code=status.HTTP_200_OK)
+async def health_check() -> Response:
+    """Anonymous, non-disclosing liveness probe.
+
+    Implementation notes:
+
+    * No DB / Redis call here.  A passing health check just means the
+      process is alive and the gate-keeping policy says it should
+      accept traffic.  Liveness is intentionally cheap.
+    * No JSON body, no headers leaking auth state.  Load balancers
+      only need the status code.
+    * Disabled-mode → 503 (the guardrail).  Note that the disabled-
+      mode response is INDISTINGUISHABLE from a generic "service
+      unhealthy" 503 — anonymous probes can't tell why.
+    """
     settings = get_settings()
     if not settings.auth_enabled:
-        # Disabled-mode guardrail — refuse the LB.  Empty body, no JSON,
-        # no headers that disclose auth state.
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response(status_code=status.HTTP_200_OK)
 
+
+@router.get("/detail", response_model=HealthResponse)
+async def health_detail(
+    db: DbSession,
+    user: Annotated[User | None, Depends(require_role(UserRole.ANALYST))],
+) -> HealthResponse:
+    """Detailed service status — DB + Redis + per-service breakdown.
+
+    Analyst-gated because the response reveals deployment shape (which
+    services run, error messages from internal probes) that's useful
+    to an attacker.  In disabled mode this is reachable without a
+    token, which is fine because the §16 localhost-only bind guardrail
+    keeps it off the network.
+    """
+    del user  # accepted only to enforce role gate
+
+    settings = get_settings()
     services: dict[str, HealthService] = {}
 
-    # Check database
     try:
         from sqlalchemy import text
 
@@ -48,7 +79,6 @@ async def health_check(db: DbSession, response: Response):
     except Exception as e:
         services["database"] = HealthService(status="error", detail=str(e))
 
-    # Check Redis
     try:
         import redis as redis_lib
 

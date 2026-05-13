@@ -2,9 +2,11 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from darla.api.deps import DbSession, Pagination
+from darla.auth import require_role
+from darla.models import UserRole
 from darla.schemas.actor import (
     ActorCreate,
     ActorDetail,
@@ -20,6 +22,12 @@ from darla.schemas.kit import KitListResponse
 from darla.services.actor_service import ActorService
 
 router = APIRouter()
+
+# Shorthand reused on every write endpoint in this module.  Read
+# endpoints rely solely on the router-level ``Depends(current_user)``
+# applied in ``darla.api.router`` — they pass the auth check but
+# don't require the elevated role.
+_ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 
 @router.get("", response_model=ActorListResponse)
@@ -37,7 +45,12 @@ async def list_actors(
     return ActorListResponse(items=actors, total=total)
 
 
-@router.post("", response_model=ActorDetail, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ActorDetail,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=_ANALYST,
+)
 async def create_actor(payload: ActorCreate, db: DbSession):
     service = ActorService(db)
     actor = await service.create_actor(payload.model_dump())
@@ -53,7 +66,7 @@ async def get_actor(actor_id: uuid.UUID, db: DbSession):
     return actor
 
 
-@router.put("/{actor_id}", response_model=ActorDetail)
+@router.put("/{actor_id}", response_model=ActorDetail, dependencies=_ANALYST)
 async def update_actor(actor_id: uuid.UUID, payload: ActorUpdate, db: DbSession):
     service = ActorService(db)
     actor = await service.update_actor(
@@ -64,7 +77,11 @@ async def update_actor(actor_id: uuid.UUID, payload: ActorUpdate, db: DbSession)
     return actor
 
 
-@router.delete("/{actor_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{actor_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_ANALYST,
+)
 async def delete_actor(actor_id: uuid.UUID, db: DbSession):
     service = ActorService(db)
     deleted = await service.delete_actor(actor_id)
@@ -72,7 +89,7 @@ async def delete_actor(actor_id: uuid.UUID, db: DbSession):
         raise HTTPException(status_code=404, detail="Actor not found")
 
 
-@router.post("/{actor_id}/link")
+@router.post("/{actor_id}/link", dependencies=_ANALYST)
 async def link_indicators(
     actor_id: uuid.UUID, payload: LinkIndicatorsRequest, db: DbSession
 ):
