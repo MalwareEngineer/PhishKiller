@@ -10,10 +10,10 @@ Operators interact with the existing rows: list, view, edit
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from darla.api.deps import DbSession, Pagination
-from darla.auth import require_role
+from darla.auth import require_role, set_audit_extra
 from darla.models import UserRole
 from darla.models.victim import VictimType
 from darla.schemas.victim import (
@@ -34,6 +34,7 @@ _ANALYST = [Depends(require_role(UserRole.ANALYST))]
 
 @router.get("", response_model=VictimListResponse)
 async def list_victims(
+    request: Request,
     db: DbSession,
     pagination: Pagination,
     domain: str | None = Query(default=None, description="Exact domain filter"),
@@ -49,6 +50,10 @@ async def list_victims(
     Sorting is fixed at ``last_seen DESC`` (most recently targeted
     first); add a ``sort`` query param later if operators need
     something else.
+
+    Audit: records the IDs of victims returned in ``audit_log.extra``
+    so "who saw which victims this quarter" reports are a single
+    indexed query (RFC §5.2).
     """
     service = VictimService(db)
     items, total = await service.list_victims(
@@ -58,21 +63,28 @@ async def list_victims(
         type_=type,
         search=search,
     )
+    set_audit_extra(request, victim_ids=[str(v.id) for v in items])
     return VictimListResponse(items=items, total=total)
 
 
 @router.get("/{victim_id}", response_model=VictimDetail)
-async def get_victim(victim_id: uuid.UUID, db: DbSession):
+async def get_victim(victim_id: uuid.UUID, request: Request, db: DbSession):
     service = VictimService(db)
     victim = await service.get_victim(victim_id)
     if victim is None:
         raise HTTPException(status_code=404, detail="Victim not found")
+    # Single-victim read — record the ID accessed so the audit log
+    # can answer per-victim "who looked at this person's record" queries.
+    set_audit_extra(request, victim_ids=[str(victim.id)])
     return victim
 
 
 @router.put("/{victim_id}", response_model=VictimDetail, dependencies=_ANALYST)
 async def update_victim(
-    victim_id: uuid.UUID, payload: VictimUpdate, db: DbSession,
+    victim_id: uuid.UUID,
+    payload: VictimUpdate,
+    request: Request,
+    db: DbSession,
 ):
     service = VictimService(db)
     victim = await service.update_victim(
@@ -80,6 +92,7 @@ async def update_victim(
     )
     if victim is None:
         raise HTTPException(status_code=404, detail="Victim not found")
+    set_audit_extra(request, victim_ids=[str(victim.id)])
     return victim
 
 
@@ -89,6 +102,7 @@ async def update_victim(
 )
 async def list_victim_observations(
     victim_id: uuid.UUID,
+    request: Request,
     db: DbSession,
     pagination: Pagination,
 ):
@@ -99,4 +113,5 @@ async def list_victim_observations(
     items, total = await service.list_observations(
         victim_id, offset=pagination.offset, limit=pagination.limit,
     )
+    set_audit_extra(request, victim_ids=[str(victim_id)])
     return VictimObservationListResponse(items=items, total=total)

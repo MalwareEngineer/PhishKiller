@@ -18,6 +18,7 @@ The middleware is wired up by :func:`darla.main.create_app`; nothing in
 this package mutates global state at import time.
 """
 
+from darla.auth.audit import AuditLogMiddleware, set_audit_extra
 from darla.auth.guardrails import run_startup_guardrails
 from darla.auth.middleware import (
     DisabledAuthLoggingMiddleware,
@@ -26,8 +27,10 @@ from darla.auth.middleware import (
 )
 
 __all__ = [
+    "AuditLogMiddleware",
     "DisabledAuthLoggingMiddleware",
     "current_user",
     "require_role",
     "run_startup_guardrails",
+    "set_audit_extra",
 ]
