@@ -7,7 +7,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from darla.api.router import api_router
-from darla.auth import DisabledAuthLoggingMiddleware, run_startup_guardrails
+from darla.auth import (
+    AuditLogMiddleware,
+    DisabledAuthLoggingMiddleware,
+    run_startup_guardrails,
+)
 from darla.config import get_settings
 from darla.database import async_engine
 
@@ -33,10 +37,18 @@ def create_app() -> FastAPI:
         description="Phishing kit tracking and analysis platform",
         lifespan=lifespan,
     )
-    # Disabled-mode logging middleware is added unconditionally — it
-    # checks ``settings.auth_enabled`` per-request and no-ops when
-    # auth is on.  Cheap; keeps the wiring static.
+    # Middleware order matters — Starlette runs middlewares in reverse
+    # of registration (last added = outermost wrap = runs first on the
+    # way in, last on the way out).  We want:
+    #
+    #   CORS (outermost)         — handle preflights without auth/audit
+    #   AuditLog                 — capture every request, including 401s
+    #   DisabledAuthLogging      — emits CRITICAL log per request in disabled mode
+    #   <route handler>          — current_user dep runs here
+    #
+    # So registration order is: DisabledAuthLogging, AuditLog, CORS.
     app.add_middleware(DisabledAuthLoggingMiddleware)
+    app.add_middleware(AuditLogMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
